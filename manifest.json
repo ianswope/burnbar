@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "nixfred.burnbar",
   "name": "Burn Bar",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "author": "nixfred",
   "license": "MIT",
   "description": "Live thermal heat map of Claude and Codex token burn, mirrored around a shared now line, with weekly quota gauges.",

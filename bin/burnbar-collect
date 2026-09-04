@@ -1,0 +1,303 @@
+#!/usr/bin/env python3
+"""burnbar-collect — buckets Claude + Codex token burn into a rolling window.
+
+Reads the raw agent transcripts (the only place per-turn token deltas carry
+timestamps) and writes one small JSON the QML widget watches.
+
+Python 3 with no third-party imports on purpose: Omarchy depends on uwsm and
+kitty, both of which depend on python, so python3 is present on every Omarchy
+install. bun is not an Omarchy dependency and cannot be assumed.
+
+State lives under XDG_STATE_HOME, never inside the plugin directory: a plugin
+writing in its own dir makes Omarchy rebuild every plugin service.
+
+Claude:  ~/.claude/projects/**/*.jsonl   assistant lines carry message.usage.
+         The same assistant message is re-serialized up to 3x as it streams,
+         so message.id is a mandatory dedupe key.
+Codex:   ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl   event_msg lines with
+         payload.type == "token_count" carry info.last_token_usage, already
+         a per-turn delta.
+"""
+
+import json
+import os
+import sys
+import time
+from pathlib import Path
+
+HOME = Path.home()
+STATE = Path(os.environ.get("XDG_STATE_HOME") or HOME / ".local" / "state")
+OUT_DIR = STATE / "omarchy" / "burnbar"
+OUT_FILE = OUT_DIR / "history.json"
+CACHE_FILE = OUT_DIR / "scan-cache.json"
+USAGE_DIR = STATE / "omarchy" / "agents" / "usage"
+
+CLAUDE_ROOT = HOME / ".claude" / "projects"
+CODEX_ROOT = HOME / ".codex" / "sessions"
+
+
+def int_arg(flag, fallback, low, high):
+    argv = sys.argv
+    if flag in argv:
+        i = argv.index(flag)
+        if i + 1 < len(argv):
+            try:
+                return max(low, min(high, int(argv[i + 1])))
+            except ValueError:
+                pass
+    return fallback
+
+
+WINDOW_MIN = int_arg("--window", 360, 30, 1440)
+BUCKETS = int_arg("--buckets", 12, 6, 32)
+BUCKET_MS = round(WINDOW_MIN * 60_000 / BUCKETS)
+
+now_ms = int(time.time() * 1000)
+# Anchor to the bucket grid so cells march instead of jittering.
+grid_now = (now_ms // BUCKET_MS) * BUCKET_MS
+window_start = grid_now - (BUCKETS - 1) * BUCKET_MS
+
+buckets = [{"t": window_start + i * BUCKET_MS, "claude": 0, "codex": 0}
+           for i in range(BUCKETS)]
+
+
+def bucket_for(ts):
+    if ts < window_start:
+        return None
+    idx = (ts - window_start) // BUCKET_MS
+    return buckets[idx] if 0 <= idx < BUCKETS else None
+
+
+def parse_ts(value):
+    """ISO-8601 with a trailing Z, as both agents emit. Returns epoch ms."""
+    if not value:
+        return None
+    try:
+        text = str(value).replace("Z", "+00:00")
+        from datetime import datetime
+        return int(datetime.fromisoformat(text).timestamp() * 1000)
+    except Exception:
+        return None
+
+
+# ── incremental scan cache ───────────────────────────────────────────────────
+# Transcripts are append-only, so a file whose size and mtime are unchanged
+# contributes exactly what it contributed last run. Cache that contribution
+# so the window sliding forward does not force a full re-read.
+try:
+    cache = json.loads(CACHE_FILE.read_text()) if CACHE_FILE.exists() else {}
+    if not isinstance(cache, dict):
+        cache = {}
+except Exception:
+    cache = {}
+next_cache = {}
+
+
+def scan(path, extract):
+    """Return every point in `path`, re-parsing as little as possible.
+
+    Transcripts are append-only, so a file that merely grew is read from the
+    previous byte offset rather than from the start. Without this the active
+    session's multi-megabyte transcript is re-parsed in full every few seconds,
+    which is the whole cost of the collector.
+    """
+    try:
+        st = path.stat()
+    except OSError:
+        return []
+    # A file untouched since the window opened cannot hold points inside it.
+    if st.st_mtime * 1000 < window_start:
+        return []
+
+    key = str(path)
+    hit = cache.get(key)
+    if hit and hit.get("size") == st.st_size and hit.get("mtime") == st.st_mtime:
+        next_cache[key] = hit
+        return hit["points"]
+
+    # Resume only when the file strictly grew; a shrink means it was rewritten
+    # and the cached offset is meaningless.
+    start = 0
+    points = []
+    if hit and isinstance(hit.get("offset"), int) and st.st_size >= hit["offset"]:
+        start = hit["offset"]
+        points = list(hit.get("points") or [])
+
+    offset = start
+    try:
+        with path.open("rb") as fh:
+            fh.seek(start)
+            data = fh.read()
+    except OSError:
+        return []
+
+    # Stop at the last newline: a trailing fragment is a half-written record,
+    # and consuming it would both drop the record and desync the offset.
+    cut = data.rfind(b"\n")
+    if cut == -1:
+        next_cache[key] = {"size": st.st_size, "mtime": st.st_mtime,
+                           "offset": offset, "points": points}
+        return points
+    offset = start + cut + 1
+
+    for raw in data[:cut].split(b"\n"):
+        if not raw:
+            continue
+        pt = extract(raw.decode("utf-8", "replace"))
+        if pt:
+            points.append(pt)
+
+    next_cache[key] = {"size": st.st_size, "mtime": st.st_mtime,
+                       "offset": offset, "points": points}
+    return points
+
+
+def claude_extract(line):
+    if "usage" not in line:
+        return None
+    try:
+        d = json.loads(line)
+    except Exception:
+        return None
+    msg = d.get("message") or {}
+    usage = msg.get("usage")
+    if not isinstance(usage, dict):
+        return None
+    ts = parse_ts(d.get("timestamp"))
+    if ts is None:
+        return None
+    # Billable work: fresh input + what we paid to write cache + output.
+    # Cache reads are excluded on purpose — they are the cheap path and would
+    # swamp the scale (939M read vs 24M written on the machine this was built on).
+    tokens = (int(usage.get("input_tokens") or 0)
+              + int(usage.get("cache_creation_input_tokens") or 0)
+              + int(usage.get("output_tokens") or 0))
+    if tokens <= 0:
+        return None
+    return [ts, tokens, str(msg.get("id") or ""), str(msg.get("model") or "unknown")]
+
+
+def codex_extract(line):
+    if "token_count" not in line:
+        return None
+    try:
+        d = json.loads(line)
+    except Exception:
+        return None
+    payload = d.get("payload") or {}
+    if payload.get("type") != "token_count":
+        return None
+    last = (payload.get("info") or {}).get("last_token_usage")
+    if not isinstance(last, dict):
+        return None
+    ts = parse_ts(d.get("timestamp"))
+    if ts is None:
+        return None
+    tokens = (int(last.get("input_tokens") or 0)
+              - int(last.get("cached_input_tokens") or 0)
+              + int(last.get("cache_write_input_tokens") or 0)
+              + int(last.get("output_tokens") or 0))
+    if tokens <= 0:
+        return None
+    return [ts, tokens, "", "codex"]
+
+
+def walk(root, match):
+    if not root.is_dir():
+        return
+    for dirpath, _dirnames, filenames in os.walk(root):
+        for name in filenames:
+            if match(name):
+                yield Path(dirpath) / name
+
+
+# ── Claude ───────────────────────────────────────────────────────────────────
+claude_by_model = {}
+claude_seen = set()
+claude_files = 0
+
+for f in walk(CLAUDE_ROOT, lambda n: n.endswith(".jsonl")):
+    pts = scan(f, claude_extract)
+    touched = False
+    for ts, tokens, mid, model in pts:
+        if mid:
+            if mid in claude_seen:
+                continue
+            claude_seen.add(mid)
+        b = bucket_for(ts)
+        if b is None:
+            continue
+        b["claude"] += tokens
+        claude_by_model[model] = claude_by_model.get(model, 0) + tokens
+        touched = True
+    if touched:
+        claude_files += 1
+
+# ── Codex ────────────────────────────────────────────────────────────────────
+codex_by_model = {}
+codex_files = 0
+
+for f in walk(CODEX_ROOT, lambda n: n.startswith("rollout-") and n.endswith(".jsonl")):
+    pts = scan(f, codex_extract)
+    touched = False
+    for ts, tokens, _mid, _model in pts:
+        b = bucket_for(ts)
+        if b is None:
+            continue
+        b["codex"] += tokens
+        codex_by_model["codex"] = codex_by_model.get("codex", 0) + tokens
+        touched = True
+    if touched:
+        codex_files += 1
+
+
+# ── limits, straight off the records omarchy-agent-usage-update maintains ────
+def limits_for(agent):
+    try:
+        raw = json.loads((USAGE_DIR / f"{agent}.json").read_text())
+        out = raw.get("limits")
+        if not isinstance(out, list):
+            return []
+        return [{"label": str(l.get("label") or ""),
+                 "percent": float(l.get("percent") or 0),
+                 "resetsAt": str(l.get("resetsAt") or "")}
+                for l in out if isinstance(l, dict)]
+    except Exception:
+        return []
+
+
+payload = {
+    "generatedAt": now_ms,
+    "windowMinutes": WINDOW_MIN,
+    "bucketMinutes": BUCKET_MS / 60_000,
+    "bucketCount": BUCKETS,
+    "buckets": buckets,
+    "claude": {
+        "total": sum(b["claude"] for b in buckets),
+        "peak": max((b["claude"] for b in buckets), default=0),
+        "sessions": claude_files,
+        "byModel": claude_by_model,
+        "limits": limits_for("claude"),
+    },
+    "codex": {
+        "total": sum(b["codex"] for b in buckets),
+        "peak": max((b["codex"] for b in buckets), default=0),
+        "sessions": codex_files,
+        "byModel": codex_by_model,
+        "limits": limits_for("codex"),
+    },
+}
+
+OUT_DIR.mkdir(parents=True, exist_ok=True)
+# Write-then-rename so the watching FileView never observes a half file.
+tmp = OUT_FILE.with_suffix(".json.tmp")
+tmp.write_text(json.dumps(payload))
+tmp.replace(OUT_FILE)
+
+try:
+    CACHE_FILE.write_text(json.dumps(next_cache))
+except OSError:
+    pass  # the cache is an optimisation; losing it only costs one slow run
+
+if "--print" in sys.argv:
+    print(json.dumps(payload, indent=2))

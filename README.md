@@ -20,7 +20,7 @@ visual language so the two scales are never confused. They pulse above 90%.
 
 ## Where the numbers come from
 
-`bin/burnbar-collect.ts` reads the raw transcripts, the only place per-turn token
+`bin/burnbar-collect` (Python 3, standard library only) reads the raw transcripts, the only place per-turn token
 deltas with timestamps actually live:
 
 - **Claude** — `~/.claude/projects/**/*.jsonl`, assistant lines carry
@@ -37,9 +37,33 @@ Output goes to `~/.local/state/omarchy/burnbar/history.json`. State deliberately
 never lives inside the plugin directory: a plugin writing in its own dir makes
 Omarchy rebuild every plugin service.
 
-Scanning is incremental — transcripts are append-only, so a file whose size and
-mtime are unchanged replays its cached contribution. Cold run ~1.4s, warm ~70ms,
+Scanning is incremental twice over: a file whose size and mtime are unchanged
+replays its cached contribution, and a file that merely grew is read from the
+previous byte offset rather than re-parsed whole. Cold run ~2s, warm ~120ms,
 which is what makes a 5-second refresh reasonable.
+
+Python 3 with no third-party imports is deliberate. Omarchy depends on `uwsm`
+and `kitty`, both of which depend on `python`, so `python3` is present on every
+Omarchy install; `bun` is not an Omarchy dependency and cannot be assumed.
+
+If the collector cannot run, the strip turns solid red and the tooltip says why.
+It never fails silently.
+
+## Privacy
+
+Burn Bar reads your Claude and Codex transcripts to count tokens, and keeps only
+numbers from them. It makes no network requests. Read `SECURITY.md` before
+installing.
+
+## Tests
+
+```sh
+./tests/test.sh
+```
+
+Validates the manifest, asserts cell count equals bucket count, and runs the
+collector against a synthetic fixture that checks `message.id` dedupe, cache-read
+exclusion, Codex delta math, cache idempotency, and the tail read.
 
 ## Settings
 

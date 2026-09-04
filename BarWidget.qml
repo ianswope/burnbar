@@ -74,6 +74,7 @@ BarWidget {
   // cold → warm → hot → amber → white. Four segments, deliberately uneven: most
   // of the resolution sits in the low-mid where day-to-day burn actually lives.
   function heat(level, cold, warm, hot) {
+    if (root.broken) return Qt.rgba(urgent.r, urgent.g, urgent.b, 1)
     var l = Math.max(0, Math.min(1, level))
     if (l < 0.30) return mix(cold, warm, l / 0.30)
     if (l < 0.62) return mix(warm, hot, (l - 0.30) / 0.32)
@@ -130,16 +131,22 @@ BarWidget {
   // the property churn for flicker nobody can see.
   property real emberPhase: 0
   Timer {
-    interval: 50
-    running: root.emberFlicker && root.visible
+    // 20fps while something is burning, 5fps when nothing is: the idle swell is
+    // a slow drift and does not need frame-accurate updates on battery.
+    interval: root.idle ? 200 : 50
+    running: root.emberFlicker && root.visible && !root.broken
     repeat: true
-    onTriggered: root.emberPhase = (root.emberPhase + 0.19) % (Math.PI * 2)
+    onTriggered: root.emberPhase =
+      (root.emberPhase + (root.idle ? 0.76 : 0.19)) % (Math.PI * 2)
   }
 
   // Nothing burning is a real and common state, and a dead-flat widget reads as
   // broken. A slow travelling swell keeps the strip alive without inventing data.
-  readonly property bool idle: !ready
-    || ((svc ? svc.claudeLatest : 0) <= 0 && (svc ? svc.codexLatest : 0) <= 0)
+  readonly property bool broken: svc ? svc.collectorBroken : false
+  // A fault must never animate like a calm idle strip — that is how a total
+  // outage hides in plain sight.
+  readonly property bool idle: !broken && (!ready
+    || ((svc ? svc.claudeLatest : 0) <= 0 && (svc ? svc.codexLatest : 0) <= 0))
 
   property real claudeFlash: 0
   property real codexFlash: 0
@@ -171,7 +178,9 @@ BarWidget {
     fixedWidth: root.configuredWidth
     active: false
     useActiveColor: false
-    tooltipText: !root.ready
+    tooltipText: root.broken
+      ? "Burn Bar FAULT — " + (root.svc ? root.svc.lastError : "collector failed")
+      : !root.ready
       ? "Burn Bar — waiting for first sample"
       : "Claude " + root.compact(root.svc.claudeTotal) + "  ·  Codex " + root.compact(root.svc.codexTotal)
         + "\nlast " + Math.round((root.svc ? root.svc.windowMinutes : 360) / 60) + "h"

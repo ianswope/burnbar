@@ -24,6 +24,9 @@ Item {
   property int bucketMinutes: 15
   property bool ready: false
   property string lastError: ""
+  // True once a collector run has actually failed, so the widget can show
+  // a fault instead of an idle animation that looks healthy.
+  property bool collectorBroken: false
 
   // Bumped every time a fresh sample lands with more burn than the last one.
   // The widget listens for this to fire its impact animation.
@@ -31,12 +34,15 @@ Item {
   property int codexPulse: 0
   property real lastClaudeLatest: 0
   property real lastCodexLatest: 0
+  property real lastBucketT: 0
 
   readonly property string stateDir: (Quickshell.env("XDG_STATE_HOME")
     || Quickshell.env("HOME") + "/.local/state") + "/omarchy/burnbar"
   readonly property string historyPath: stateDir + "/history.json"
-  readonly property string collectorPath: Quickshell.env("HOME")
-    + "/.config/omarchy/plugins/nixfred.burnbar/bin/burnbar-collect.ts"
+  // Resolved from this component's own location, not a hardcoded plugin id:
+  // the directory name changes if the plugin is cloned or renamed.
+  readonly property string collectorPath:
+    String(Qt.resolvedUrl("bin/burnbar-collect")).replace("file://", "")
 
   function setting(name, fallback) {
     var value = settings ? settings[name] : undefined
@@ -73,10 +79,11 @@ Item {
 
   function collect() {
     if (collector.running) return
-    collector.command = ["bun", root.collectorPath,
+    collector.command = ["python3", root.collectorPath,
       "--window", String(root.windowMinutes),
       "--buckets", String(root.bucketCount)]
     collector.running = true
+    watchdog.restart()
   }
 
   Process {
@@ -85,8 +92,34 @@ Item {
       onRead: data => { if (String(data).trim() !== "") root.lastError = String(data).slice(0, 240) }
     }
     onExited: function(code) {
-      if (code === 0) root.lastError = ""
+      watchdog.stop()
+      if (code === 0) {
+        root.lastError = ""
+        root.collectorBroken = false
+      } else {
+        // 127 is "command not found" — almost always a missing python3.
+        root.lastError = code === 127
+          ? "python3 not found — Burn Bar needs it to read agent usage"
+          : (root.lastError || ("collector exited " + code))
+        root.collectorBroken = true
+      }
       historyFile.reload()
+    }
+  }
+
+  // A wedged collector would otherwise freeze the strip forever, because
+  // collect() refuses to start while one is already running.
+  Timer {
+    id: watchdog
+    interval: 30000
+    repeat: false
+    onTriggered: {
+      if (collector.running) {
+        console.warn("burnbar: collector exceeded 30s, killing")
+        collector.signal(15)
+        root.lastError = "collector timed out"
+        root.collectorBroken = true
+      }
     }
   }
 
@@ -128,7 +161,17 @@ Item {
     root.ready = true
 
     // Fire an impact pulse only when the live bucket actually grew, so a
-    // no-op refresh does not make the widget twitch.
+    // no-op refresh does not make the widget twitch. On a bucket rollover the
+    // live value resets toward zero, so compare against 0 for the new bucket
+    // instead of the previous bucket's total — otherwise the first burn of
+    // every bucket is silently swallowed.
+    var latestT = root.buckets.length ? Number(root.buckets[root.buckets.length - 1].t || 0) : 0
+    var rolled = latestT !== root.lastBucketT
+    if (rolled) {
+      root.lastClaudeLatest = 0
+      root.lastCodexLatest = 0
+      root.lastBucketT = latestT
+    }
     if (root.claudeLatest > root.lastClaudeLatest) root.claudePulse++
     if (root.codexLatest > root.lastCodexLatest) root.codexPulse++
     root.lastClaudeLatest = root.claudeLatest
