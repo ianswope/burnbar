@@ -235,15 +235,30 @@ BarWidget {
   // Driven by a 20fps timer rather than a frame-rate NumberAnimation: with up to
   // 80 cells each re-deriving colour from the phase, 60fps would be three times
   // the property churn for flicker nobody can see.
+  // Two phases, both wrapped at exactly 2π — and EVERY consumer reads them at a
+  // whole-number harmonic (×1, ×2, ×3). That is what makes the wrap invisible:
+  // sin(k·(φ+2π)) === sin(k·φ) only when k is an integer. Reading the same phase
+  // at ×1.7 or ×0.35 puts a hard discontinuity in the shimmer every time it
+  // wraps, which is exactly the visual restart this replaced — the strip
+  // appeared to loop every 1.65s because that is how long the wrap took.
   property real emberPhase: 0
+  // Idle drift needs a period measured in tens of seconds, not one second, so it
+  // gets its own slow phase instead of a fractional harmonic of the fast one.
+  property real driftPhase: 0
+
   Timer {
     // 20fps while something is burning, 5fps when nothing is: the idle swell is
     // a slow drift and does not need frame-accurate updates on battery.
-    interval: root.idle && !root.localActive ? 200 : 50
+    readonly property bool resting: root.idle && !root.localActive
+    interval: resting ? 200 : 50
     running: root.emberFlicker && root.visible && !root.broken
     repeat: true
-    onTriggered: root.emberPhase =
-      (root.emberPhase + (root.idle && !root.localActive ? 0.76 : 0.19)) % (Math.PI * 2)
+    onTriggered: {
+      // Steps are scaled by interval so neither phase changes speed when the
+      // frame rate drops — only the smoothness changes.
+      root.emberPhase = (root.emberPhase + (resting ? 0.56 : 0.14)) % (Math.PI * 2)
+      root.driftPhase = (root.driftPhase + (resting ? 0.050 : 0.0125)) % (Math.PI * 2)
+    }
   }
 
   property real claudeFlash: 0
@@ -311,12 +326,16 @@ BarWidget {
         readonly property bool live: lane.newestLast ? index === lane.count - 1 : index === 0
 
         // Hot cells flicker harder — cold coals sit still, a live fire does not.
+        // ×2 and ×3 against the same phase: two harmonics that beat against each
+        // other into something that never repeats obviously, and both survive
+        // the 2π wrap untouched. The per-cell offset is what stops the lane
+        // pulsing as one block.
         readonly property real flicker: root.emberFlicker
-          ? Math.sin(root.emberPhase * 1.7 + index * 0.8 * lane.phaseSign) * 0.06 * level
-            + Math.sin(root.emberPhase * 3.1 - index * 0.4 * lane.phaseSign) * 0.035 * level
+          ? Math.sin(root.emberPhase * 2 + index * 0.8 * lane.phaseSign) * 0.06 * level
+            + Math.sin(root.emberPhase * 3 - index * 0.4 * lane.phaseSign) * 0.035 * level
           : 0
         readonly property real idleSwell: root.idle && !root.broken
-          ? 0.06 + Math.sin(root.emberPhase * 0.35 + index * 0.42 * lane.phaseSign) * 0.05 : 0
+          ? 0.06 + Math.sin(root.driftPhase + index * 0.42 * lane.phaseSign) * 0.05 : 0
 
         readonly property real heatLevel: Math.max(0,
           level + flicker + lane.flash * recency * recency * 0.25 + idleSwell)
@@ -831,12 +850,14 @@ BarWidget {
           SequentialAnimation {
             running: spark.visible && root.visible
             loops: Animation.Infinite
-            PauseAnimation { duration: Math.round(120 + spark.seed * 900) }
+            PauseAnimation { duration: Math.round(120 + spark.seed * 1600) }
             ParallelAnimation {
               NumberAnimation {
                 target: spark; property: "y"
                 from: graph.height * 0.62; to: -graph.height * 0.30
-                duration: Math.round(1500 - 700 * root.energy)
+                // Each spark rises at its own rate. Identical durations made all
+                // seven re-sync into one visible pulse, which read as a loop.
+                duration: Math.round((1300 + spark.seed * 1400) - 600 * root.energy)
                 easing.type: Easing.OutQuad
               }
               SequentialAnimation {
