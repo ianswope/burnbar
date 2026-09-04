@@ -24,7 +24,9 @@ jq -e '
   .entryPoints.service == "Service.qml" and
   .entryPoints.barWidget == "BarWidget.qml" and
   .barWidget.allowMultiple == false and
-  .barWidget.defaultSection == "center"
+  .barWidget.defaultSection == "center" and
+  .barWidget.defaults.showLocal == true and
+  (.barWidget.schema | map(.key) | index("localThreshold")) != null
 ' manifest.json >/dev/null || fail "manifest contract"
 ok "manifest contract"
 
@@ -32,11 +34,20 @@ ok "manifest contract"
 # If these defaults ever drift apart again the strip silently covers less time
 # than the tooltip claims — the bug this assertion exists to prevent.
 man_bars=$(jq -r '.barWidget.defaults.bars' manifest.json)
-qml_cells=$(grep -oP 'setting\("bars", \K[0-9]+' ../burnbar/BarWidget.qml | head -1)
+qml_cells=$(grep -oP 'setting\("bars", \K[0-9]+' BarWidget.qml | head -1)
 svc_buckets=$(grep -oP 'boundedInt\("bars", \K[0-9]+' Service.qml | head -1)
 [ "$man_bars" = "$qml_cells" ] || fail "manifest bars ($man_bars) != widget cells ($qml_cells)"
 [ "$man_bars" = "$svc_buckets" ] || fail "manifest bars ($man_bars) != service buckets ($svc_buckets)"
 ok "cell count == bucket count ($man_bars)"
+
+# Same trap on the local lane: the widget draws localCells cells, the service
+# keeps a ring localCells long. Drift and the oldest sample is drawn as zero.
+man_local=$(jq -r '.barWidget.defaults.localCells' manifest.json)
+qml_local=$(grep -oP 'setting\("localCells", \K[0-9]+' BarWidget.qml | head -1)
+svc_local=$(grep -oP 'boundedInt\("localCells", \K[0-9]+' Service.qml | head -1)
+[ "$man_local" = "$qml_local" ] || fail "manifest localCells ($man_local) != widget ($qml_local)"
+[ "$man_local" = "$svc_local" ] || fail "manifest localCells ($man_local) != service ($svc_local)"
+ok "local cell count == local ring length ($man_local)"
 
 echo "== runtime dependency =="
 command -v python3 >/dev/null || fail "python3 missing"
@@ -46,8 +57,23 @@ assert sys.version_info >= (3, 8), "python 3.8+ required"
 PY
 ok "python3 present"
 # stdlib only: a marketplace plugin must not need pip
-! grep -qE '^\s*import\s+(requests|yaml|numpy)' bin/burnbar-collect || fail "third-party import"
-ok "collector is stdlib-only"
+for script in bin/burnbar-collect bin/burnbar-local-status bin/burnbar-local-control; do
+  ! grep -qE '^\s*import\s+(requests|yaml|numpy)' "$script" || fail "third-party import in $script"
+  python3 -c "import ast,sys; ast.parse(open(sys.argv[1]).read())" "$script" || fail "$script does not parse"
+done
+ok "all three collectors are stdlib-only and parse"
+
+echo "== local intelligence unit tests =="
+python3 -m unittest discover -s tests -p 'test_local_scripts.py' -q >/dev/null \
+  || fail "local script unit tests"
+ok "ollama url/json hardening tests"
+
+# The local probe must degrade to a clean offline JSON object rather than
+# crashing when nothing is listening — that path is what draws the red core.
+offline=$(OLLAMA_HOST=http://127.0.0.1:1 python3 bin/burnbar-local-status --threshold 8)
+echo "$offline" | jq -e '.online == false and .load == 0' >/dev/null \
+  || fail "offline probe did not report a clean offline object"
+ok "local probe degrades to offline JSON"
 
 echo "== collector against a fixture =="
 tmp="$(mktemp -d)"

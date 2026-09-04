@@ -1,0 +1,121 @@
+#!/usr/bin/env python3
+"""Small dependency-free Ollama controller used by the QML panel."""
+
+import argparse
+import json
+import math
+import os
+import urllib.parse
+import urllib.request
+
+
+MAX_HTTP_RESPONSE_BYTES = 1024 * 1024
+MAX_MODELS = 128
+MAX_MODEL_NAME_LENGTH = 256
+MAX_FIELD_LENGTH = 64
+MAX_ERROR_LENGTH = 512
+
+
+def bounded_text(value, limit: int) -> str:
+    text = str(value or "")
+    text = "".join(character if character.isprintable() else " " for character in text)
+    return text[:limit]
+
+
+def normalize_url(url: str) -> str:
+    url = url.strip()
+    parsed = urllib.parse.urlsplit(url)
+    if parsed.scheme.lower() in ("http", "https") and not parsed.netloc:
+        raise ValueError("Ollama URL must use http or https with a host")
+    url = url if "://" in url else "http://" + url
+    parsed = urllib.parse.urlsplit(url)
+    if parsed.scheme.lower() not in ("http", "https") or not parsed.netloc or not parsed.hostname:
+        raise ValueError("Ollama URL must use http or https with a host")
+    try:
+        parsed.port
+    except ValueError as error:
+        raise ValueError("Ollama URL has an invalid port") from error
+    return url.rstrip("/")
+
+
+def reject_nonfinite(value: str):
+    raise ValueError(f"non-finite JSON number: {value}")
+
+
+def parse_finite_float(value: str) -> float:
+    parsed = float(value)
+    if not math.isfinite(parsed):
+        reject_nonfinite(value)
+    return parsed
+
+
+def bounded_models(payload: dict) -> list[dict]:
+    models = payload.get("models", [])
+    return models[:MAX_MODELS] if isinstance(models, list) else []
+
+
+def request(base: str, path: str, payload=None):
+    data = None if payload is None else json.dumps(payload).encode()
+    req = urllib.request.Request(normalize_url(base) + path, data=data,
+                                 headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=120) as response:
+        raw = response.read(MAX_HTTP_RESPONSE_BYTES + 1)
+    if len(raw) > MAX_HTTP_RESPONSE_BYTES:
+        raise ValueError("Ollama response exceeds 1 MiB")
+    result = json.loads(raw.decode("utf-8"), parse_constant=reject_nonfinite,
+                        parse_float=parse_finite_float)
+    if not isinstance(result, dict):
+        raise ValueError("Ollama response must be a JSON object")
+    return result
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("action", choices=["list", "load", "unload"])
+    parser.add_argument("model", nargs="?")
+    parser.add_argument("--url", default=os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434"))
+    args = parser.parse_args()
+    try:
+        if args.action == "list":
+            tags = bounded_models(request(args.url, "/api/tags"))
+            loaded = bounded_models(request(args.url, "/api/ps"))
+            loaded_names = {
+                bounded_text(item.get("name") or item.get("model"), MAX_MODEL_NAME_LENGTH)
+                for item in loaded if isinstance(item, dict)
+            }
+            models = []
+            for item in tags:
+                if not isinstance(item, dict):
+                    continue
+                name = bounded_text(item.get("name") or item.get("model"), MAX_MODEL_NAME_LENGTH)
+                if not name:
+                    continue
+                details = item.get("details")
+                details = details if isinstance(details, dict) else {}
+                size = item.get("size", 0)
+                size = min(max(int(size), 0), 10**16) if isinstance(size, (int, float)) else 0
+                models.append({"name": name, "loaded": name in loaded_names,
+                               "size": size,
+                               "parameters": bounded_text(details.get("parameter_size"), MAX_FIELD_LENGTH),
+                               "quantization": bounded_text(details.get("quantization_level"), MAX_FIELD_LENGTH)})
+            print(json.dumps({"ok": True, "models": models}))
+        elif not args.model:
+            raise ValueError("a model name is required")
+        elif args.action == "load":
+            model = bounded_text(args.model, MAX_MODEL_NAME_LENGTH)
+            request(args.url, "/api/generate", {"model": model, "prompt": "",
+                                                 "stream": False, "keep_alive": -1})
+            print(json.dumps({"ok": True, "message": model + " loaded"}))
+        else:
+            model = bounded_text(args.model, MAX_MODEL_NAME_LENGTH)
+            request(args.url, "/api/generate", {"model": model, "prompt": "",
+                                                 "stream": False, "keep_alive": 0})
+            print(json.dumps({"ok": True, "message": model + " unloaded"}))
+    except Exception as error:
+        print(json.dumps({"ok": False, "error": bounded_text(error, MAX_ERROR_LENGTH)}))
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

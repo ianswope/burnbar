@@ -2,9 +2,10 @@ import QtQuick
 import Quickshell
 import Quickshell.Io
 
-// Burn Bar service. Owns exactly two jobs: run the collector on a cadence, and
-// republish whatever history.json currently says. All extraction logic lives in
-// bin/burnbar-collect.ts — this file never parses a transcript.
+// Burn Bar service. Owns three jobs: run the cloud-agent collector on a cadence,
+// republish whatever history.json currently says, and poll the local Ollama
+// runner for live inference load. All extraction logic lives in bin/ — this file
+// never parses a transcript and never talks HTTP itself.
 Item {
   id: root
 
@@ -43,6 +44,28 @@ Item {
   // the directory name changes if the plugin is cloned or renamed.
   readonly property string collectorPath:
     String(Qt.resolvedUrl("bin/burnbar-collect")).replace("file://", "")
+  readonly property string localStatusPath:
+    String(Qt.resolvedUrl("bin/burnbar-local-status")).replace("file://", "")
+  readonly property string localControlPath:
+    String(Qt.resolvedUrl("bin/burnbar-local-control")).replace("file://", "")
+
+  // ── local intelligence (Ollama) ────────────────────────────────────────────
+  // Cloud burn is history reconstructed from transcripts; local burn is a live
+  // vital sign with no persistent record anywhere. So the service keeps its own
+  // rolling ring of load samples — that ring IS the local half of the strip.
+  property bool localOnline: false
+  property bool localActive: false
+  property real localLoad: 0
+  property real localCpu: 0
+  property real localGpu: 0
+  property int localModelCount: 0
+  property string localModel: ""
+  property string localBackend: "none"
+  property string localError: ""
+  property var localModels: []
+  property var localHistory: []
+  property int localPulse: 0
+  property bool localReady: false
 
   function setting(name, fallback) {
     var value = settings ? settings[name] : undefined
@@ -60,6 +83,12 @@ Item {
   // Must match BarWidget.cellCount exactly — the widget draws one cell per
   // bucket, so a mismatch makes the strip cover less time than it claims.
   readonly property int bucketCount: boundedInt("bars", 12, 6, 32)
+
+  readonly property int localRefreshMs: boundedInt("localRefreshMs", 1500, 500, 10000)
+  readonly property real localThreshold: Math.max(1, Number(setting("localThreshold", 8)) || 8)
+  // Local cells cover far less wall-clock than the cloud cells; that is on
+  // purpose. Local load is a now-signal, not a budget.
+  readonly property int localCells: boundedInt("localCells", 9, 4, 20)
 
   // Latest (right-most in time) bucket per agent — what "now" is burning.
   readonly property real claudeLatest: buckets.length ? Number(buckets[buckets.length - 1].claude || 0) : 0
@@ -184,5 +213,74 @@ Item {
     repeat: true
     triggeredOnStart: true
     onTriggered: root.collect()
+  }
+
+  // ── local runner probe ─────────────────────────────────────────────────────
+  // burnbar-local-status sleeps ~200ms sampling /proc for runner CPU ticks, so
+  // it must never be re-entered; the running guard is load-bearing, not defensive.
+  function pollLocal() {
+    if (!localProbe.running) localProbe.running = true
+  }
+
+  function applyLocal(raw) {
+    var data
+    try {
+      data = JSON.parse(String(raw || ""))
+      if (!data || typeof data !== "object") throw new Error("not an object")
+    } catch (e) {
+      root.localOnline = false
+      root.localActive = false
+      root.localLoad = 0
+      root.localModelCount = 0
+      root.localModel = ""
+      root.localBackend = "none"
+      root.localError = "Unreadable local status"
+      root.pushLocalSample(0)
+      return
+    }
+
+    root.localOnline = data.online === true
+    root.localLoad = Math.max(0, Math.min(100, Number(data.load || 0)))
+    root.localCpu = Math.max(0, Math.min(100, Number(data.cpu || 0)))
+    root.localGpu = Math.max(0, Math.min(100, Number(data.gpu || 0)))
+    root.localActive = root.localOnline
+      && (data.active === true || root.localLoad >= root.localThreshold)
+    root.localModelCount = Number(data.modelCount || 0)
+    root.localModel = String(data.model || "").slice(0, 128)
+    root.localBackend = String(data.backend || "none").slice(0, 32)
+    root.localModels = Array.isArray(data.models) ? data.models : []
+    root.localError = String(data.error || "").slice(0, 240)
+    root.localReady = true
+    root.pushLocalSample(root.localOnline ? root.localLoad : 0)
+  }
+
+  // Newest sample lands at index 0 — the widget draws local time flowing
+  // rightward away from the core, mirroring how Codex reads.
+  function pushLocalSample(value) {
+    var ring = root.localHistory.slice(0, Math.max(0, root.localCells - 1))
+    ring.unshift(Number(value) || 0)
+    var previous = root.localHistory.length ? Number(root.localHistory[0]) : 0
+    root.localHistory = ring
+    // A pulse means the runner just got busier, not merely that it is busy —
+    // otherwise a steady 90% load would strobe the widget forever.
+    if (value > previous + 2 && value >= root.localThreshold) root.localPulse++
+  }
+
+  Process {
+    id: localProbe
+    command: ["python3", root.localStatusPath, "--threshold", String(root.localThreshold)]
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.applyLocal(text)
+    }
+    onExited: function(code) { if (code !== 0) root.applyLocal("") }
+  }
+
+  Timer {
+    interval: root.localRefreshMs
+    running: true
+    repeat: true
+    triggeredOnStart: true
+    onTriggered: root.pollLocal()
   }
 }

@@ -1,5 +1,30 @@
 # Changelog
 
+## 1.2.0 — 2026-09-04
+
+### Added
+- **Local intelligence lane.** The `io.github.nixfred.local-intelligence` plugin
+  is folded in: a reactor core plus a violet strip of live Ollama runner load,
+  right of a hard rule. Widget grew 114 → 158, and local takes a quarter of the
+  strip rather than a third — free local compute must not read at the same
+  weight as metered cloud spend.
+- Local model control in the detail panel: pick any installed model and warm it
+  into memory or evict it, plus a LOCAL tile and live load bar.
+- **Per-section identity and hover.** Each of the three sections carries a
+  tinted plate and a baseline in its own hue (Claude orange, Codex teal, local
+  violet). Hovering names the section and shows a tooltip for that agent alone,
+  instead of one blended tooltip you had to mentally split.
+- Sizzle, all of it data-driven: rising sparks whose speed follows total energy,
+  an impact shockwave riding outward from the now line, a white-hot core
+  filament on genuinely hot cells, an under-glow that brightens with total
+  burn, and filament caps on the now line.
+
+### Changed
+- The three lanes are now one inline `ThermalLane` component instead of two
+  copy-pasted Repeaters, so the visual language cannot drift between agents.
+- Weekly quota gauges moved inside the cloud lanes to bookend them, making room
+  for local on the outer right.
+
 ## 1.1.0 — 2026-09-03
 
 ### Changed
