@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "id": "nixfred.burnbar",
+  "name": "Burn Bar",
+  "version": "1.0.0",
+  "author": "nixfred",
+  "license": "MIT",
+  "description": "Live thermal heat map of Claude and Codex token burn, mirrored around a shared now line, with weekly quota gauges.",
+  "kinds": ["service", "bar-widget"],
+  "entryPoints": {
+    "service": "Service.qml",
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Burn Bar",
+    "description": "Token spend as a heat map — Claude burns left, Codex burns right, newest at the centre.",
+    "category": "System",
+    "allowMultiple": false,
+    "defaultSection": "center",
+    "defaults": {
+      "width": 168,
+      "bars": 16,
+      "windowMinutes": 360,
+      "refreshIntervalSec": 5,
+      "showGauges": true,
+      "emberFlicker": true
+    },
+    "schema": [
+      {"key":"width","type":"integer","label":"Widget width (px)","min":90,"max":320,"defaultValue":168},
+      {"key":"bars","type":"integer","label":"Cells per agent","min":6,"max":32,"defaultValue":16},
+      {"key":"windowMinutes","type":"integer","label":"History window (minutes)","description":"How far back the strip reaches. 360 = six hours.","min":30,"max":1440,"defaultValue":360},
+      {"key":"refreshIntervalSec","type":"integer","label":"Refresh interval (seconds)","min":5,"max":600,"defaultValue":5},
+      {"key":"showGauges","type":"boolean","label":"Show weekly quota gauges","defaultValue":true},
+      {"key":"emberFlicker","type":"boolean","label":"Ember flicker","description":"Live flicker on hot cells. Turn off to save a little GPU.","defaultValue":true}
+    ]
+  }
+}
