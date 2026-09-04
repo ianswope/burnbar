@@ -18,16 +18,16 @@
     "allowMultiple": false,
     "defaultSection": "center",
     "defaults": {
-      "width": 168,
-      "bars": 16,
+      "width": 114,
+      "bars": 12,
       "windowMinutes": 360,
       "refreshIntervalSec": 5,
       "showGauges": true,
       "emberFlicker": true
     },
     "schema": [
-      {"key":"width","type":"integer","label":"Widget width (px)","min":90,"max":320,"defaultValue":168},
-      {"key":"bars","type":"integer","label":"Cells per agent","min":6,"max":32,"defaultValue":16},
+      {"key":"width","type":"integer","label":"Widget width (px)","min":90,"max":320,"defaultValue":114},
+      {"key":"bars","type":"integer","label":"Cells per agent","min":6,"max":32,"defaultValue":12},
       {"key":"windowMinutes","type":"integer","label":"History window (minutes)","description":"How far back the strip reaches. 360 = six hours.","min":30,"max":1440,"defaultValue":360},
       {"key":"refreshIntervalSec","type":"integer","label":"Refresh interval (seconds)","min":5,"max":600,"defaultValue":5},
       {"key":"showGauges","type":"boolean","label":"Show weekly quota gauges","defaultValue":true},

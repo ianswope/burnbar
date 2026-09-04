@@ -45,8 +45,8 @@ which is what makes a 5-second refresh reasonable.
 
 | Key | Default | Meaning |
 |---|---|---|
-| `width` | 168 | Widget width in px |
-| `bars` | 16 | Cells per agent |
+| `width` | 114 | Widget width in px |
+| `bars` | 12 | Cells per agent (the collector makes exactly this many buckets) |
 | `windowMinutes` | 360 | How far back the strip reaches |
 | `refreshIntervalSec` | 5 | Collector cadence |
 | `showGauges` | true | Weekly quota columns on the outer edges |

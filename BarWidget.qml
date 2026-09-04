@@ -29,8 +29,8 @@ BarWidget {
   readonly property bool ready: svc ? svc.ready : false
   readonly property var buckets: svc ? svc.buckets : []
 
-  readonly property int configuredWidth: Math.max(90, Math.min(320, Number(setting("width", 168)) || 168))
-  readonly property int cellCount: Math.max(6, Math.min(32, Number(setting("bars", 16)) || 16))
+  readonly property int configuredWidth: Math.max(90, Math.min(320, Number(setting("width", 114)) || 114))
+  readonly property int cellCount: Math.max(6, Math.min(32, Number(setting("bars", 12)) || 12))
   readonly property bool showGauges: setting("showGauges", true) !== false
   readonly property bool emberFlicker: setting("emberFlicker", true) !== false
 

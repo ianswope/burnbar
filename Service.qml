@@ -51,7 +51,9 @@ Item {
 
   readonly property int intervalSec: boundedInt("refreshIntervalSec", 5, 5, 600)
   readonly property int windowMinutes: boundedInt("windowMinutes", 360, 30, 1440)
-  readonly property int bucketCount: boundedInt("bars", 24, 8, 64)
+  // Must match BarWidget.cellCount exactly — the widget draws one cell per
+  // bucket, so a mismatch makes the strip cover less time than it claims.
+  readonly property int bucketCount: boundedInt("bars", 12, 6, 32)
 
   // Latest (right-most in time) bucket per agent — what "now" is burning.
   readonly property real claudeLatest: buckets.length ? Number(buckets[buckets.length - 1].claude || 0) : 0
