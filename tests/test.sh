@@ -24,9 +24,7 @@ jq -e '
   .entryPoints.service == "Service.qml" and
   .entryPoints.barWidget == "BarWidget.qml" and
   .barWidget.allowMultiple == false and
-  .barWidget.defaultSection == "center" and
-  .barWidget.defaults.showLocal == true and
-  (.barWidget.schema | map(.key) | index("localThreshold")) != null
+  .barWidget.defaultSection == "center"
 ' manifest.json >/dev/null || fail "manifest contract"
 ok "manifest contract"
 
@@ -45,17 +43,6 @@ qml_clamp=$(clamp bars BarWidget.qml); svc_clamp=$(clamp bars Service.qml)
 grep -q 'svc ? svc.bucketCount' BarWidget.qml || fail "widget must take its cell count from the service"
 ok "cell count == bucket count ($man_bars, clamp $man_bars_min..$man_bars_max)"
 
-# Same trap on the local lane: the widget draws localCells cells, the service
-# keeps a ring localCells long. Drift and the oldest sample is drawn as zero.
-man_local=$(jq -r '.barWidget.defaults.localCells' manifest.json)
-man_local_min=$(jq -r '.barWidget.schema[] | select(.key=="localCells") | .min' manifest.json)
-man_local_max=$(jq -r '.barWidget.schema[] | select(.key=="localCells") | .max' manifest.json)
-qml_lclamp=$(clamp localCells BarWidget.qml); svc_lclamp=$(clamp localCells Service.qml)
-[ -n "$qml_lclamp" ] && [ "$qml_lclamp" = "$svc_lclamp" ] || fail "localCells clamp differs: widget '$qml_lclamp' vs service '$svc_lclamp'"
-[ "$svc_lclamp" = "boundedInt(\"localCells\", $man_local, $man_local_min, $man_local_max)" ] || fail "localCells clamp '$svc_lclamp' != manifest"
-grep -q 'svc ? svc.localCells' BarWidget.qml || fail "widget must take its local cell count from the service"
-ok "local cell count == local ring length ($man_local, clamp $man_local_min..$man_local_max)"
-
 echo "== runtime dependency =="
 command -v python3 >/dev/null || fail "python3 missing"
 python3 - <<'PY' || exit 1
@@ -64,23 +51,10 @@ assert sys.version_info >= (3, 8), "python 3.8+ required"
 PY
 ok "python3 present"
 # stdlib only: a marketplace plugin must not need pip
-for script in bin/burnbar-collect bin/burnbar-local-status bin/burnbar-local-control; do
-  ! grep -qE '^\s*import\s+(requests|yaml|numpy)' "$script" || fail "third-party import in $script"
-  python3 -c "import ast,sys; ast.parse(open(sys.argv[1]).read())" "$script" || fail "$script does not parse"
-done
-ok "all three collectors are stdlib-only and parse"
-
-echo "== local intelligence unit tests =="
-python3 -m unittest discover -s tests -p 'test_local_scripts.py' -q >/dev/null \
-  || fail "local script unit tests"
-ok "ollama url/json hardening tests"
-
-# The local probe must degrade to a clean offline JSON object rather than
-# crashing when nothing is listening — that path is what draws the red core.
-offline=$(OLLAMA_HOST=http://127.0.0.1:1 python3 bin/burnbar-local-status --threshold 8)
-echo "$offline" | jq -e '.online == false and .load == 0' >/dev/null \
-  || fail "offline probe did not report a clean offline object"
-ok "local probe degrades to offline JSON"
+! grep -qE '^\s*import\s+(requests|yaml|numpy)' bin/burnbar-collect || fail "third-party import in bin/burnbar-collect"
+python3 -c "import ast,sys; ast.parse(open(sys.argv[1]).read())" bin/burnbar-collect \
+  || fail "bin/burnbar-collect does not parse"
+ok "the collector is stdlib-only and parses"
 
 echo "== collector against a fixture =="
 tmp="$(mktemp -d)"
@@ -94,10 +68,6 @@ export XDG_CACHE_HOME="$tmp/cache"
 real_now=$(date +%s)
 pinned=$(( ( (real_now / 1800) + 1 ) * 1800 + 60 ))
 export BURNBAR_NOW_MS=$(( pinned * 1000 ))
-# Local tokens come from the Ollama journal; the fixture must never read the
-# real one. An empty file means "journal readable, nothing in it".
-: > "$tmp/journal-empty.txt"
-export BURNBAR_OLLAMA_JOURNAL="$tmp/journal-empty.txt"
 fake_home="$tmp/home"
 mkdir -p "$fake_home/.claude/projects/p" "$fake_home/.codex/sessions/2026/09/03"
 
@@ -310,46 +280,6 @@ ok "window totals are exact while the strip's grid stays aligned"
 jq -e '(.codex.peak > 0 and .codex.peakAt > 0) or (.codex.peak == 0 and .codex.peakAt == 0)' "$out" >/dev/null \
   || fail "peakAt disagrees with peak"
 ok "peakAt is 0 when nothing peaked"
-
-# ── local tokens from the Ollama journal ─────────────────────────────────────
-# Real line shapes from journalctl -o short-unix on Ollama 0.32. Two tasks on
-# one model: prompt 120 with 36 cached and 84 evaluated + 8 generated, then a
-# prompt of 20 with nothing cached and 30 generated. Burn = 92 + 50 = 142;
-# cached prefix 36 rides along as the cache read.
-j="$tmp/journal.txt"
-t0=$(( pinned - 600 ))
-cat > "$j" <<EOF
-$t0.000000 vic ollama[785]: print_info: general.name          = Meta Llama 3.1 8B Instruct
-$(( t0 + 1 )).100000 vic ollama[785]: slot   operator(): id  0 | task 5 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 120
-$(( t0 + 1 )).100000 vic ollama[785]: slot   operator(): id  0 | task 5 | cached n_tokens = 36, memory_seq_rm [36, end)
-$(( t0 + 2 )).200000 vic ollama[785]: slot print_timing: id  0 | task 5 | prompt eval time =      90.84 ms /    84 tokens (    1.08 ms per token,   924.74 tokens per second)
-$(( t0 + 2 )).200000 vic ollama[785]: slot print_timing: id  0 | task 5 |        eval time =     218.95 ms /     8 tokens (   31.28 ms per token,    31.97 tokens per second)
-$(( t0 + 2 )).200000 vic ollama[785]: slot      release: id  0 | task 5 | stop processing: n_tokens = 127, truncated = 0
-$(( t0 + 10 )).000000 vic ollama[785]: slot   operator(): id  0 | task 6 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 20
-$(( t0 + 11 )).000000 vic ollama[785]: slot print_timing: id  0 | task 6 | prompt eval time =      20.00 ms /    20 tokens (    1.00 ms per token,  1000.00 tokens per second)
-$(( t0 + 11 )).000000 vic ollama[785]: slot print_timing: id  0 | task 6 |        eval time =     900.00 ms /    30 tokens (   30.00 ms per token,    33.33 tokens per second)
-$(( t0 + 11 )).000000 vic ollama[785]: slot      release: id  0 | task 6 | stop processing: n_tokens = 49, truncated = 0
-$(( t0 + 12 )).000000 vic ollama[785]: slot   operator(): id  0 | task 7 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 999
-EOF
-BURNBAR_OLLAMA_JOURNAL="$j" HOME="$fake_home" python3 bin/burnbar-collect --window 360 --buckets 12
-jq -e '.local.available == true and .local.total == 142 and .local.turns == 2
-  and .local.split.input == 104 and .local.split.output == 38 and .local.split.cacheRead == 36 and .local.split.cacheWrite == 0
-  and .local.byModel["Meta Llama 3.1 8B Instruct"] == 142' "$out" >/dev/null \
-  || fail "local journal parse wrong: $(jq -c '.local | {available, total, turns, split, byModel}' "$out")"
-ct=$(jq -r '.claude.total' "$out"); xt=$(jq -r '.codex.total' "$out")
-want=$(python3 -c "print(round(142 / (142 + $ct + $xt), 6))")
-got=$(jq -r '.offloadShare | . * 1000000 | round / 1000000' "$out")
-[ "$got" = "$want" ] || fail "offload share $got != $want"
-jq -e '[.buckets[].local] | add == 142' "$out" >/dev/null || fail "local tokens missing from the buckets"
-ok "local tokens parsed from the runner journal; offload share = local / all burn"
-
-# An unreadable journal is reported with its reason. The last-known points
-# stay in the cache (the panel hides the numbers while available is false),
-# so the total is not asserted here.
-BURNBAR_OLLAMA_JOURNAL="$tmp/does-not-exist.txt" HOME="$fake_home" python3 bin/burnbar-collect --window 360 --buckets 12
-jq -e '.local.available == false and (.local.reason | length) > 0' "$out" >/dev/null \
-  || fail "unreadable journal not reported: $(jq -c '.local | {available, reason, total}' "$out")"
-ok "an unreadable journal reads as unavailable with a reason"
 
 echo
 echo "ALL TESTS PASSED"

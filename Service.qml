@@ -2,10 +2,9 @@ import QtQuick
 import Quickshell
 import Quickshell.Io
 
-// Burn Bar service. Owns three jobs: run the cloud-agent collector on a cadence,
-// republish whatever history.json currently says, and poll the local Ollama
-// runner for live inference load. All extraction logic lives in bin/ — this file
-// never parses a transcript and never talks HTTP itself.
+// Burn Bar service. Owns two jobs: run the cloud-agent collector on a cadence
+// and republish whatever history.json currently says. All extraction logic
+// lives in bin/ — this file never parses a transcript itself.
 Item {
   id: root
 
@@ -46,22 +45,6 @@ Item {
   property real claudeTrailing60: 0
   property real codexTrailing5: 0
   property real codexTrailing60: 0
-  // Tokens burned on the local Ollama over the same exact window, read from
-  // the runner's journal, and the share of all burn that stayed on this
-  // machine. available=false carries the reason (no journal access, unit
-  // not found) so the panel can say so instead of showing a confident 0.
-  property real localTokensTotal: 0
-  property real localTokensTurns: 0
-  property real localTokensPeak: 0
-  property real localTokensPeakAt: 0
-  property real localTokensLastAt: 0
-  property real localTokensTrailing5: 0
-  property real localTokensTrailing60: 0
-  property var localTokensSplit: ({})
-  property var localTokensByModel: ({})
-  property bool localTokensAvailable: false
-  property string localTokensReason: ""
-  property real offloadShare: 0
   property real generatedAt: 0
   // real, not int: windowMinutes / bars is fractional for most settings
   // (100 / 12 = 8.33), and an int here silently rounded every rate.
@@ -91,50 +74,6 @@ Item {
     return decodeURIComponent(String(Qt.resolvedUrl(relative)).replace(/^file:\/\//, ""))
   }
   readonly property string collectorPath: localPath("bin/burnbar-collect")
-  readonly property string localStatusPath: localPath("bin/burnbar-local-status")
-  readonly property string localControlPath: localPath("bin/burnbar-local-control")
-
-  // ── local intelligence (Ollama) ────────────────────────────────────────────
-  // Cloud burn is history reconstructed from transcripts; local burn is a live
-  // vital sign with no persistent record anywhere. So the service keeps its own
-  // rolling ring of load samples — that ring IS the local half of the strip.
-  property bool localOnline: false
-  property bool localActive: false
-  property real localLoad: 0
-  property real localCpu: 0
-  property real localGpu: 0
-  property int localModelCount: 0
-  property string localModel: ""
-  property string localBackend: "none"
-  property string localError: ""
-  property var localModels: []
-  property var localModelDetails: []
-  property var localHistory: []
-  // Power draw ring, same length and cadence as the load ring, so the panel can
-  // trace watts over the same seconds the lane shows load.
-  property var localPowerHistory: []
-  // When each sample was taken. Polls are skipped while a probe runs and added
-  // early by a manual refresh, so the ring's real span is whatever these say,
-  // not cells × interval.
-  property var localTimeHistory: []
-  readonly property real localSpanMs: localTimeHistory.length > 1
-    ? Number(localTimeHistory[0]) - Number(localTimeHistory[localTimeHistory.length - 1]) : 0
-  property real localPeakLoad: 0
-  property real localPeakPowerW: 0
-  property int localPulse: 0
-  property bool localReady: false
-  property real localSampledAt: 0
-  property string localVersion: ""
-  property string localGpuName: ""
-  property real localPowerW: 0
-  property real localPowerLimitW: 0
-  property real localTempC: 0
-  property real localVramUsedMb: 0
-  property real localVramTotalMb: 0
-  property real localVramModelsMb: 0
-  property real localClockMhz: 0
-  property real localClockMaxMhz: 0
-  property real localFanPct: 0
 
   function setting(name, fallback) {
     var value = settings ? settings[name] : undefined
@@ -159,16 +98,6 @@ Item {
   // Must match BarWidget.cellCount exactly — the widget draws one cell per
   // bucket, so a mismatch makes the strip cover less time than it claims.
   readonly property int bucketCount: boundedInt("bars", 12, 6, 32)
-
-  readonly property int localRefreshMs: boundedInt("localRefreshMs", 1500, 500, 10000)
-  // The systemd unit whose journal carries the runner's token lines.
-  readonly property string ollamaUnit: String(setting("ollamaUnit", "ollama") || "ollama").slice(0, 64)
-  // Same clamp as the manifest schema: load is capped at 100, so a threshold
-  // above it would mean "never inferencing".
-  readonly property int localThreshold: boundedInt("localThreshold", 8, 1, 50)
-  // Local cells cover far less wall-clock than the cloud cells; that is on
-  // purpose. Local load is a now-signal, not a budget.
-  readonly property int localCells: boundedInt("localCells", 9, 4, 20)
 
   // Latest (right-most in time) bucket per agent — what "now" is burning.
   readonly property real claudeLatest: buckets.length ? Number(buckets[buckets.length - 1].claude || 0) : 0
@@ -223,8 +152,7 @@ Item {
     collector.launched = false
     collector.command = ["python3", root.collectorPath,
       "--window", String(root.windowMinutes),
-      "--buckets", String(root.bucketCount),
-      "--ollama-unit", root.ollamaUnit]
+      "--buckets", String(root.bucketCount)]
     collector.running = true
     watchdog.restart()
   }
@@ -358,19 +286,6 @@ Item {
       root.claudeTrailing60 = num(c.trailing ? c.trailing.m60 : 0)
       root.codexTrailing5 = num(x.trailing ? x.trailing.m5 : 0)
       root.codexTrailing60 = num(x.trailing ? x.trailing.m60 : 0)
-      var l = parsed.local && typeof parsed.local === "object" ? parsed.local : null
-      root.localTokensAvailable = !!l && l.available === true
-      root.localTokensReason = l ? String(l.reason || "") : "collector predates local token counting"
-      root.localTokensTotal = l ? num(l.total) : 0
-      root.localTokensTurns = l ? num(l.turns) : 0
-      root.localTokensPeak = l ? num(l.peak) : 0
-      root.localTokensPeakAt = l ? num(l.peakAt) : 0
-      root.localTokensLastAt = l ? num(l.lastAt) : 0
-      root.localTokensTrailing5 = l && l.trailing ? num(l.trailing.m5) : 0
-      root.localTokensTrailing60 = l && l.trailing ? num(l.trailing.m60) : 0
-      root.localTokensSplit = l && l.split && typeof l.split === "object" ? l.split : ({})
-      root.localTokensByModel = l && l.byModel && typeof l.byModel === "object" ? l.byModel : ({})
-      root.offloadShare = Math.max(0, Math.min(1, num(parsed.offloadShare)))
     } catch (e) {
       fault("History file could not be applied")
       return
@@ -475,147 +390,5 @@ Item {
     repeat: true
     triggeredOnStart: true
     onTriggered: root.refreshLimits()
-  }
-
-  // ── local runner probe ─────────────────────────────────────────────────────
-  // burnbar-local-status sleeps ~200ms sampling /proc for runner CPU ticks, so
-  // it must never be re-entered; the running guard is load-bearing, not defensive.
-  function pollLocal() {
-    if (localProbe.running) return
-    localProbe.launched = false
-    localProbe.running = true
-    localWatchdog.restart()
-  }
-
-  // A failed sample invalidates every current reading. Leaving yesterday's
-  // 70% GPU and a resident model on screen under an OFFLINE header is a lie
-  // with a footnote. The traces keep their history; the peaks are peaks.
-  function clearLocalTelemetry(reason) {
-    root.localOnline = false
-    root.localActive = false
-    root.localLoad = 0
-    root.localCpu = 0
-    root.localGpu = 0
-    root.localModelCount = 0
-    root.localModel = ""
-    root.localBackend = "none"
-    root.localModels = []
-    root.localModelDetails = []
-    root.localError = String(reason || "").slice(0, 240)
-    root.localVersion = ""
-    root.localGpuName = ""
-    root.localPowerW = 0
-    root.localPowerLimitW = 0
-    root.localTempC = 0
-    root.localVramUsedMb = 0
-    root.localVramTotalMb = 0
-    root.localVramModelsMb = 0
-    root.localClockMhz = 0
-    root.localClockMaxMhz = 0
-    root.localFanPct = 0
-    root.localSampledAt = Date.now()
-    root.pushLocalSample(0)
-  }
-
-  function applyLocal(raw) {
-    var data
-    try {
-      data = JSON.parse(String(raw || ""))
-      if (!data || typeof data !== "object") throw new Error("not an object")
-    } catch (e) {
-      root.clearLocalTelemetry("Unreadable local status")
-      return
-    }
-
-    root.localOnline = data.online === true
-    root.localLoad = Math.max(0, Math.min(100, Number(data.load || 0)))
-    root.localCpu = Math.max(0, Math.min(100, Number(data.cpu || 0)))
-    root.localGpu = Math.max(0, Math.min(100, Number(data.gpu || 0)))
-    root.localModelCount = Number(data.modelCount || 0)
-    // No resident model, no inference — whatever else is using the GPU.
-    root.localActive = root.localOnline && root.localModelCount > 0
-      && (data.active === true || root.localLoad >= root.localThreshold)
-    root.localModel = String(data.model || "").slice(0, 128)
-    root.localBackend = String(data.backend || "none").slice(0, 32)
-    root.localModels = Array.isArray(data.models) ? data.models : []
-    root.localModelDetails = Array.isArray(data.modelDetails) ? data.modelDetails : []
-    root.localError = String(data.error || "").slice(0, 240)
-    root.localVersion = String(data.version || "").slice(0, 32)
-    root.localGpuName = String(data.gpuName || "").slice(0, 64)
-    root.localPowerW = Math.max(0, Number(data.powerW || 0))
-    root.localPowerLimitW = Math.max(0, Number(data.powerLimitW || 0))
-    root.localTempC = Math.max(0, Number(data.tempC || 0))
-    root.localVramUsedMb = Math.max(0, Number(data.vramUsedMb || 0))
-    root.localVramTotalMb = Math.max(0, Number(data.vramTotalMb || 0))
-    root.localVramModelsMb = Math.max(0, Number(data.vramModelsMb || 0))
-    root.localClockMhz = Math.max(0, Number(data.clockMhz || 0))
-    root.localClockMaxMhz = Math.max(0, Number(data.clockMaxMhz || 0))
-    root.localFanPct = Math.max(0, Number(data.fanPct || 0))
-    root.localReady = true
-    root.localSampledAt = Date.now()
-    root.pushLocalSample(root.localOnline ? root.localLoad : 0)
-  }
-
-  // Newest sample lands at index 0 — the widget draws local time flowing
-  // rightward away from the core, mirroring how Codex reads.
-  function pushLocalSample(value) {
-    var ring = root.localHistory.slice(0, Math.max(0, root.localCells - 1))
-    ring.unshift(Number(value) || 0)
-    var previous = root.localHistory.length ? Number(root.localHistory[0]) : 0
-    root.localHistory = ring
-    var power = root.localPowerHistory.slice(0, Math.max(0, root.localCells - 1))
-    power.unshift(root.localOnline ? root.localPowerW : 0)
-    root.localPowerHistory = power
-    var when = root.localTimeHistory.slice(0, Math.max(0, root.localCells - 1))
-    when.unshift(Date.now())
-    root.localTimeHistory = when
-    root.localPeakLoad = Math.max(root.localPeakLoad, Number(value) || 0)
-    root.localPeakPowerW = Math.max(root.localPeakPowerW, root.localPowerW)
-    // A pulse means the runner just got busier, not merely that it is busy —
-    // otherwise a steady 90% load would strobe the widget forever.
-    if (value > previous + 2 && value >= root.localThreshold) root.localPulse++
-  }
-
-  Process {
-    id: localProbe
-    property bool launched: false
-    command: ["python3", root.localStatusPath, "--threshold", String(root.localThreshold)]
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: root.applyLocal(text)
-    }
-    onStarted: launched = true
-    onRunningChanged: {
-      if (running || launched) return
-      localWatchdog.stop()
-      root.clearLocalTelemetry("python3 not found")
-    }
-    onExited: function(code) {
-      localWatchdog.stop()
-      if (code !== 0) root.clearLocalTelemetry("local probe exited " + code)
-    }
-  }
-
-  // The probe's HTTP timeouts bound each blocking call, not the whole run; a
-  // trickling endpoint could hold it open forever, and pollLocal() refuses to
-  // start a second one. The probe normally takes ~250ms.
-  Timer {
-    id: localWatchdog
-    interval: 15000
-    repeat: false
-    onTriggered: {
-      if (localProbe.running) {
-        localProbe.signal(15)
-        root.clearLocalTelemetry("local probe timed out")
-      }
-    }
-  }
-
-  Timer {
-    interval: root.localRefreshMs
-    running: true
-    repeat: true
-    triggeredOnStart: true
-    onTriggered: root.pollLocal()
   }
 }

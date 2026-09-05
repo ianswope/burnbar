@@ -2,10 +2,10 @@
   "schemaVersion": 1,
   "id": "nixfred.burnbar",
   "name": "Burn Bar",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "author": "nixfred",
   "license": "MIT",
-  "description": "Live thermal heat map of Claude, Codex and local Ollama burn in one bar slot, with weekly quota gauges, local model control, and the share of tokens kept off frontier models.",
+  "description": "Live thermal heat map of Claude and Codex token burn in one bar slot, with weekly quota gauges and a click-to-open cockpit.",
   "kinds": ["service", "bar-widget"],
   "entryPoints": {
     "service": "Service.qml",
@@ -13,9 +13,9 @@
   },
   "barWidget": {
     "displayName": "Burn Bar",
-    "description": "Token spend as a heat map — Claude burns left, Codex right, newest at the centre, and a live local-inference lane on the far right.",
+    "description": "Token spend as a heat map — Claude burns left, Codex right, newest against the centre line.",
     "category": "AI",
-    "aliases": ["tokens", "claude", "codex", "ollama", "llm", "ai", "usage", "quota"],
+    "aliases": ["tokens", "claude", "codex", "llm", "ai", "usage", "quota"],
     "allowMultiple": false,
     "defaultSection": "center",
     "defaults": {
@@ -25,26 +25,16 @@
       "refreshIntervalSec": 5,
       "limitsRefreshSec": 300,
       "showGauges": true,
-      "showLocal": true,
-      "localCells": 9,
-      "localRefreshMs": 1500,
-      "localThreshold": 8,
-      "ollamaUnit": "ollama",
       "emberFlicker": true,
       "sparks": true
     },
     "schema": [
       {"key":"width","type":"integer","label":"Widget width (px)","min":110,"max":400,"defaultValue":158},
-      {"key":"bars","type":"integer","label":"Cells per cloud agent","min":6,"max":32,"defaultValue":12},
-      {"key":"windowMinutes","type":"integer","label":"History window (minutes)","description":"How far back the cloud lanes reach. 360 = six hours.","min":30,"max":1440,"defaultValue":360},
+      {"key":"bars","type":"integer","label":"Cells per agent","min":6,"max":32,"defaultValue":12},
+      {"key":"windowMinutes","type":"integer","label":"History window (minutes)","description":"How far back the lanes reach. 360 = six hours.","min":30,"max":1440,"defaultValue":360},
       {"key":"refreshIntervalSec","type":"integer","label":"Refresh interval (seconds)","min":5,"max":600,"defaultValue":5},
       {"key":"limitsRefreshSec","type":"integer","label":"Plan-limit refresh (seconds)","description":"How often Burn Bar asks Omarchy's own usage collectors for fresh Claude and Codex plan limits.","min":60,"max":3600,"defaultValue":300},
       {"key":"showGauges","type":"boolean","label":"Show weekly quota gauges","defaultValue":true},
-      {"key":"showLocal","type":"boolean","label":"Show local intelligence lane","description":"Live Ollama runner load on the right of the strip.","defaultValue":true},
-      {"key":"localCells","type":"integer","label":"Local lane cells","min":4,"max":20,"defaultValue":9},
-      {"key":"localRefreshMs","type":"integer","label":"Local poll interval (ms)","min":500,"max":10000,"defaultValue":1500},
-      {"key":"localThreshold","type":"integer","label":"Local inference threshold (%)","description":"Runner load above this counts as actively inferencing.","min":1,"max":50,"defaultValue":8},
-      {"key":"ollamaUnit","type":"string","label":"Ollama systemd unit","description":"Whose journal carries the runner's token lines. Local token counts and the offload share come from there.","defaultValue":"ollama"},
       {"key":"emberFlicker","type":"boolean","label":"Ember flicker","description":"Live flicker on hot cells. Turn off to save a little GPU.","defaultValue":true},
       {"key":"sparks","type":"boolean","label":"Rising sparks","description":"Embers lifting off the strip while anything is burning.","defaultValue":true}
     ]

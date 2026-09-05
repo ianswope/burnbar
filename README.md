@@ -1,15 +1,14 @@
 # Burn Bar
 
-An Omarchy bar widget that renders every model you run — Claude, Codex and
-local Ollama — as one live thermal instrument in a single bar slot, with a
-click-to-open cockpit that shows what, how much, how fast, how close to the
-plan limit, and what the GPU is doing about it.
+An Omarchy bar widget that renders the agents you run — Claude and Codex — as
+one live thermal instrument in a single bar slot, with a click-to-open cockpit
+that shows what, how much, how fast, and how close to the plan limit.
 
-![Burn Bar cockpit: cloud spend on the left, local GPU on the right](docs/cockpit.png)
+![Burn Bar cockpit](docs/cockpit.png)
 
-Everything in that screenshot is real and local: 10.5M tokens burned in six
-hours across 113 sessions, a cache that served 192.8M reads, and an RTX 4050
-holding one warm model at 38 W. Nothing was drawn by hand.
+Everything in that screenshot is real: 10.5M tokens burned in six hours across
+113 sessions, and a cache that served 192.8M reads. Nothing was drawn by
+hand.
 
 ## Install
 
@@ -24,11 +23,9 @@ omarchy plugin update nixfred.burnbar     # pull the latest
 omarchy plugin remove nixfred.burnbar     # take it out again
 ```
 
-Requirements: a stock Omarchy install. `python3` is already there. Optional:
-Ollama for the local lane (it reads OFFLINE without it), `nvidia-smi` for full
-GPU telemetry or `rocm-smi` for utilisation only. No Codex? That lane simply
-stays cold. Horizontal bars only: the strip lays its three lanes across the
-bar's length and does not rotate for a left or right bar.
+Requirements: a stock Omarchy install. `python3` is already there. No Codex?
+That lane simply stays cold. Horizontal bars only: the strip lays its lanes
+across the bar's length and does not rotate for a left or right bar.
 
 Read [SECURITY.md](SECURITY.md) before installing. Burn Bar opens your Claude
 and Codex transcripts to count tokens. It keeps numbers, model names and
@@ -40,7 +37,7 @@ collectors, which contact your providers with the sign-ins you already have.
 ![Burn Bar in the Omarchy bar, right of the clock](docs/bar.png)
 
 ```
-CLAUDE ◄── time ──┤ now ├── time ──► CODEX  ║  LOCAL ──► seconds
+CLAUDE ◄── time ──┤ now ├── time ──► CODEX
 ```
 
 Claude burns on the left, Codex on the right, and the newest bucket for **both**
@@ -54,28 +51,21 @@ maxed-out burst should look equally alarming whoever caused it. Height is only a
 secondary swell (72%→100%) so the strip has a profile without stealing the story
 from colour.
 
-The two thin columns bookending the cloud lanes measure something different
+The two thin columns bookending the lanes measure something different
 entirely — percent of the weekly plan limit — and are drawn in a deliberately
 different visual language so the two scales are never confused. They pulse
 above 90%.
 
-Right of a hard rule sits the **local intelligence** lane: a reactor core plus a
-violet strip of live Ollama runner load. It is deliberately narrower than a
-third of the widget, because free local compute must never read at the same
-weight as metered cloud spend — and it is on a different clock entirely
-(percent per second, not tokens per half hour).
-
 Each section carries a tinted plate and a baseline in its own identity hue —
-Claude orange, Codex teal, local violet. Hovering a section brightens it and
-shows a tooltip for **that agent only**: totals, the current bucket, session
-count and weekly quota for the cloud lanes; state, load, backend, resident
-model and warm-model count for local.
+Claude orange, Codex teal. Hovering a section brightens it and shows a tooltip
+for **that agent only**: totals, the current bucket, session count and weekly
+quota.
 
 | Input | Does |
 |---|---|
 | Hover a section | Tooltip for that agent alone |
 | Left click | Opens the cockpit |
-| Middle click | Forces a fresh collector run and a local poll |
+| Middle click | Forces a fresh collector run and a plan-limit refresh |
 
 Motion is data, never decoration:
 
@@ -83,31 +73,24 @@ Motion is data, never decoration:
 |---|---|
 | Ember flicker | scales with each cell's own heat — cold coals sit still |
 | Impact shockwave | a band riding outward from the now line: new burn just landed |
-| Rising sparks | density and speed follow total energy across all three agents |
+| Rising sparks | density and speed follow total energy across both agents |
 | White-hot filament | a cell that is genuinely at the top of the ramp |
-| Reactor pulse | a local model is inferencing; the halo inflates with load |
 | Idle drift | a slow travelling swell, so calm never looks broken |
 | Solid red | fault. No idle animation, so an outage cannot hide |
 
 ## The cockpit
 
-Left click the strip. The panel is two columns at a fixed width, fitted to its
-content, and it never scrolls — the whole instrument is one glance. Left is
-metered cloud spend in tokens; right is the local runner in watts, degrees and
-megabytes. Different money, different units, so they never share a column.
-Everything grows into place on open, then moves only when the data does.
+Left click the strip. The panel is one column at a fixed width, fitted to its
+content, and it never scrolls — the whole instrument is one glance. Everything
+grows into place on open, then moves only when the data does.
 
 **Header** — tokens burned in the exact trailing window (fresh input, cache
 writes and output; cache reads are left out, and they are billed too, at a
-lower rate), turns and sessions across both cloud agents, and a refresh
-button.
+lower rate), turns and sessions across both agents, and a refresh button.
 
-**Three tiles** — Claude, Codex and Local, each with its own hue: turns,
-sessions, tokens per minute, when the peak bucket happened, and how long ago
-the agent was last active. The local tile shows state, warm-model count and
-watts, plus the session's peak load and power.
-
-**Cloud column**
+**Two tiles** — Claude and Codex, each with its own hue: turns, sessions,
+tokens per minute, when the peak bucket happened, and how long ago the agent
+was last active.
 
 - *Burn over time* — Claude grows upward, Codex downward, one bar per bucket,
   coloured on the same heat ramp as the strip. Hour labels underneath, the
@@ -129,35 +112,7 @@ watts, plus the session's peak load and power.
 - *Claude by model* — spend split by model with share bars, so you can see
   which model actually ate the window.
 
-**Local column**
-
-- GPU name, backend (`nvidia` / `rocm`) and Ollama version.
-- *Local tokens* — how many tokens burned on the local Ollama over the same
-  window, with a gauge for the **offload share**: local tokens as a fraction
-  of everything that burned (local + Claude + Codex). Below it, prompt /
-  generated / cached counts and the model that did most of the work. The
-  header, the LOCAL tile, the RATE and TOKEN MIX rows, and the strip's local
-  tooltip all carry the same numbers.
-- Six tiles: GPU load with the runner's CPU share, power draw with the
-  session peak, temperature with a plain-language state, VRAM used of total
-  with the models' share and what is free, SM clock against the board's boost
-  ceiling, and warm-model count with sample age and poll interval.
-- Load and power traces, one cell per sample: height is intensity, brightness
-  is recency. The caption states the span the ring actually covers.
-- *Resident models* — everything Ollama currently holds in memory: parameter
-  count, quantisation, family, the VRAM each one actually occupies, context
-  length, and "evicts in", read from Ollama's own `expires_at`. Long lists
-  cap at six rows with a "+ N more" line; so does Claude-by-model.
-- *Model control* — pick any installed model and **Load & keep warm**
-  (`keep_alive: -1`) or **Unload** (`keep_alive: 0`) without leaving the bar.
-  Embedding-only models are warmed through `/api/embed`, since generate
-  refuses them.
-
-Inside the panel `R` forces a refresh and `Esc` closes it. Telemetry fields
-the board does not expose (nvidia-smi prints `[N/A]`) read as zero: their
-bars hide and their values show as `--`; the tiles themselves stay, so the
-column keeps its shape on an AMD card or a headless box. If `OLLAMA_HOST`
-points at another machine, no local GPU or CPU figure is attributed to it.
+Inside the panel `R` forces a refresh and `Esc` closes it.
 
 ## Where the numbers come from
 
@@ -215,31 +170,6 @@ supported window are pruned, cache entries are validated before they are
 believed, and one collector at a time holds a lock on the state directory.
 Cold run ~2s, warm ~150ms, which is what makes a 5-second refresh reasonable.
 
-**Local** — `bin/burnbar-local-status` asks Ollama's `/api/ps` what is resident
-and `/api/version` which build is running, samples runner CPU ticks from
-`/proc`, and reads utilisation, power, temperature, VRAM and clocks from
-`nvidia-smi` (or utilisation alone from `rocm-smi`). Nothing about local load
-is persisted anywhere, so the service keeps its own rolling ring of samples —
-that ring *is* the local lane and the cockpit's traces.
-`bin/burnbar-local-control` lists installed models via `/api/tags` and
-`/api/ps` (on panel open, on refresh, and after every action) and warms or
-evicts one through `/api/generate` with `keep_alive` — or through `/api/embed`
-for a model whose `/api/show` capabilities say it can only embed.
-
-**Local tokens** — Ollama persists no per-request token counts anywhere and
-exposes no metrics endpoint, but its runner writes every task to the journal:
-prompt size, cached prefix, evaluated prompt tokens, generated tokens, and a
-release line, timestamped, whatever client asked — the only client-agnostic
-record of local inference on the machine. The collector reads the `ollama`
-unit's journal (setting `ollamaUnit`) incrementally by cursor with a
-server-side filter: about 600 ms once per window, about 10 ms per run after.
-The model is the `general.name` each load prints. Burn is evaluated prompt +
-generated; the cached prefix rides along as the cache read, exactly as cloud
-cache reads do. The offload share is local burn divided by all burn over the
-window. Your account must be able to read the system journal (`wheel`,
-`adm` or `systemd-journal`); if it cannot, or the unit does not exist, the
-panel says so in red rather than showing a confident 0.
-
 Python 3 with no third-party imports is deliberate. Omarchy depends on `uwsm`
 and `kitty`, both of which depend on `python`, so `python3` is present on every
 Omarchy install; `bun` is not an Omarchy dependency and cannot be assumed.
@@ -254,13 +184,9 @@ A wedged run is killed by a 30-second watchdog. It never fails silently.
 Burn Bar reads your Claude and Codex transcripts to count tokens. From them it
 keeps timestamps, token counts, model names and Claude's opaque message ids,
 plus the transcript paths it uses as cache keys — never prompt or reply text.
-It also reads the Ollama unit's system journal for the runner's token lines,
-and keeps counts and model names from those, never the requests themselves
-(the runner does not log them).
-Its own network traffic is to your Ollama endpoint (`OLLAMA_HOST`, default
-`http://127.0.0.1:11434`) to read and control models.
+It has no network endpoint of its own.
 
-It also runs Omarchy's own usage collectors every few minutes to keep the plan
+It does run Omarchy's own usage collectors every few minutes to keep the plan
 limits fresh. Those are Omarchy's, not Burn Bar's, and the Claude one contacts
 Anthropic's usage endpoint with the sign-in Claude Code already saved; Burn
 Bar never touches that credential itself. So "nothing leaves the machine" is
@@ -274,16 +200,11 @@ Set from the Omarchy plugin settings UI, or in `shell.json`.
 | Key | Default | Meaning |
 |---|---|---|
 | `width` | 158 | Widget width in px (raised automatically if too narrow for the configured cells) |
-| `bars` | 12 | Cells per cloud agent (the collector makes exactly this many buckets) |
-| `windowMinutes` | 360 | How far back the cloud lanes and the cockpit chart reach |
+| `bars` | 12 | Cells per agent (the collector makes exactly this many buckets) |
+| `windowMinutes` | 360 | How far back the lanes and the cockpit chart reach |
 | `refreshIntervalSec` | 5 | Collector cadence |
 | `limitsRefreshSec` | 300 | How often Omarchy's usage collectors are asked for fresh plan limits (60–3600) |
-| `showGauges` | true | Weekly quota columns bookending the cloud lanes |
-| `showLocal` | true | Show the local intelligence lane |
-| `localCells` | 9 | Cells in the local lane (= length of the sample ring) |
-| `localRefreshMs` | 1500 | Local runner poll interval |
-| `localThreshold` | 8 | Runner load above this counts as actively inferencing |
-| `ollamaUnit` | `ollama` | The systemd unit whose journal carries the runner's token lines |
+| `showGauges` | true | Weekly quota columns bookending the lanes |
 | `emberFlicker` | true | Live flicker on hot cells |
 | `sparks` | true | Rising embers while anything is burning |
 
@@ -296,9 +217,7 @@ buckets on the strip and the same twelve in the cockpit chart.
 ./tests/test.sh
 ```
 
-Validates the manifest, asserts cell count equals bucket count and local cell
-count equals ring length, runs the Ollama URL/JSON/GPU hardening unit tests,
-checks that the local probe degrades to a clean offline object, and runs the
+Validates the manifest, asserts cell count equals bucket count, and runs the
 collector against a synthetic fixture under a pinned clock: `message.id`
 dedupe keeping the final revision, cache-read exclusion, Codex cumulative
 deltas and repeated snapshots, the incremental tail read and its fingerprint,
@@ -308,12 +227,10 @@ grid.
 
 ## Changes
 
-See [CHANGELOG.md](CHANGELOG.md). Current version: 1.4.0.
+See [CHANGELOG.md](CHANGELOG.md). Current version: 1.5.0.
 
 ## Credits
 
 Omarchy is [DHH](https://github.com/dhh)'s and Basecamp's desktop; Burn Bar is
-a plugin on top of it and claims none of the underlying shell. The local lane
-grew out of the earlier `local-intelligence` plugin and absorbed it in 1.2.0.
-Written by Larry, an AI that lives on the laptop in the screenshot, with Fred
-Nix. MIT.
+a plugin on top of it and claims none of the underlying shell. Written by
+Larry, an AI that lives on the laptop in the screenshot, with Fred Nix. MIT.

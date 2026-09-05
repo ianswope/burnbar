@@ -17,13 +17,6 @@ files you worked on. There is no way to count per-turn tokens without reading
 them, because the token counts are interleaved with the conversation. If you
 are not comfortable with a bar widget opening those files, do not install this.
 
-**Burn Bar also reads the system journal** for the Ollama unit (`journalctl
--u ollama`, unit name configurable) to count local tokens. The runner logs
-token counts, model names and timings there, not requests; Burn Bar keeps
-counts and model names from it. Reading it needs journal access for your
-account (`wheel`, `adm` or `systemd-journal`); without it the local token
-line says so and nothing else changes.
-
 ## What it does with them
 
 1. `bin/burnbar-collect` (Python 3, standard library only) reads each line and
@@ -41,44 +34,27 @@ line says so and nothing else changes.
 ## What leaves your machine
 
 Burn Bar has no telemetry, no update check, and no remote endpoint of its
-own. Three things do generate network traffic, and you should know all three:
+own. One thing generates network traffic, and you should know about it:
 
-1. **Omarchy's usage collectors, which Burn Bar triggers.** Every
-   `limitsRefreshSec` seconds (default 300), on panel open and on refresh,
-   Burn Bar runs `omarchy-agent-usage-update --limits-only claude codex`.
-   That is Omarchy's own command, the same one the stock agents panel runs.
-   Its Claude collector contacts **Anthropic's OAuth usage endpoint** with the
-   sign-in Claude Code already saved on this machine; its Codex collector asks
-   the Codex app-server over a local pipe (which may itself talk to OpenAI).
-   Burn Bar never reads, holds or sends either credential. If you do not want
-   this traffic, do not install Burn Bar — there is no setting that disables
-   it, because without it the plan limits it shows would be hours stale.
-2. **Your Ollama endpoint** (`OLLAMA_HOST`, default `http://127.0.0.1:11434`),
-   for the local lane and the model-control buttons. If you point that at
-   another machine, that traffic leaves this one. The calls are:
+**Omarchy's usage collectors, which Burn Bar triggers.** Every
+`limitsRefreshSec` seconds (default 300), on panel open and on refresh,
+Burn Bar runs `omarchy-agent-usage-update --limits-only claude codex`.
+That is Omarchy's own command, the same one the stock agents panel runs.
+Its Claude collector contacts **Anthropic's OAuth usage endpoint** with the
+sign-in Claude Code already saved on this machine; its Codex collector asks
+the Codex app-server over a local pipe (which may itself talk to OpenAI).
+Burn Bar never reads, holds or sends either credential. If you do not want
+this traffic, do not install Burn Bar — there is no setting that disables
+it, because without it the plan limits it shows would be hours stale.
 
-   | Script | Endpoint | Purpose |
-   |---|---|---|
-   | `bin/burnbar-local-status` | `GET /api/ps` | Which models are resident, their size and `expires_at` |
-   | `bin/burnbar-local-status` | `GET /api/version` | Ollama version for the cockpit header |
-   | `bin/burnbar-local-control list` | `GET /api/tags`, `GET /api/ps` | Installed and resident model lists — on panel open, refresh, and after each action |
-   | `bin/burnbar-local-control load` | `POST /api/show`, then `POST /api/generate` or `POST /api/embed` | Capabilities, then warm the model you picked (`keep_alive: -1`); no prompt is sent |
-   | `bin/burnbar-local-control unload` | `POST /api/generate` | Evict the model you picked (`keep_alive: 0`) |
-
-3. Nothing else.
-
-The Ollama URL is validated (http/https with a host, no query or fragment)
-before use, responses are capped at 1 MiB, model counts and string fields are
-bounded, a model name that would need truncating is refused, and non-finite
-JSON numbers are rejected. If Ollama is unreachable the lane reads OFFLINE and
-the next poll simply runs on the next timer tick.
+Nothing else.
 
 ## Files it writes
 
 | Path | Contents |
 |---|---|
 | `~/.local/state/omarchy/burnbar/history.json` | Bucketed token totals, per-agent splits, model names, and plan-limit percentages |
-| `~/.local/state/omarchy/burnbar/scan-cache.json` | Per transcript file: size, mtime, byte offset, a 48-byte fingerprint of the bytes before that offset, the extracted numeric points (timestamp, counts, model name, Claude `message.id`), and for Codex the last cumulative counter. For the Ollama journal: the last cursor, the points, and any task still in flight |
+| `~/.local/state/omarchy/burnbar/scan-cache.json` | Per transcript file: size, mtime, byte offset, a 48-byte fingerprint of the bytes before that offset, the extracted numeric points (timestamp, counts, model name, Claude `message.id`), and for Codex the last cumulative counter |
 | `~/.local/state/omarchy/burnbar/collect.lock` | Empty; held while a collector runs so two never race |
 
 `scan-cache.json` keys on absolute transcript paths, which include your project
@@ -90,8 +66,8 @@ Omarchy, Hyprland, or application configuration.
 
 ## Processes it runs
 
-Three scripts of its own, all `python3`, all as your user, all from the
-plugin's own `bin/` directory — plus one Omarchy command:
+One script of its own, `python3`, as your user, from the plugin's own `bin/`
+directory — plus one Omarchy command:
 
 - `omarchy-agent-usage-update --limits-only claude codex`, every
   `limitsRefreshSec` seconds (default 300), on panel open, and on refresh.
@@ -107,23 +83,12 @@ plugin's own `bin/` directory — plus one Omarchy command:
   at `~/.cache/omarchy/agent-usage/claude-limits.json` for the time of the
   last successful measurement.
 
-Burn Bar's own scripts:
+Burn Bar's own script:
 
 - `burnbar-collect` on the refresh timer. It takes no input from the network
-  and no input from the widget beyond two integers (window length and bucket
-  count) clamped to fixed ranges and the Ollama unit name (64 characters,
-  passed to `journalctl -u` as an argument, never through a shell). It runs
-  `journalctl` and, on a cold read that finds nothing, `systemctl show` to
-  tell an idle unit from a missing one. A run that exceeds 30 seconds is
-  killed by a watchdog.
-- `burnbar-local-status` on the local poll timer. When the endpoint is on this
-  machine it also invokes `nvidia-smi` or `rocm-smi` with fixed query
-  arguments, if present, and reads `/proc` for the runner's CPU ticks. For a
-  remote endpoint it does neither. A run over 15 seconds is killed.
-- `burnbar-local-control list` when the cockpit opens, on refresh, and after
-  each action; `load` or `unload` only when you press **Load & keep warm** or
-  **Unload**, with the model name you chose from the list it returned. A list
-  over 15 seconds or an action over 3 minutes is killed.
+  and no input from the widget beyond two integers — window length and bucket
+  count — clamped to fixed ranges. It starts no other process. A run that
+  exceeds 30 seconds is killed by a watchdog.
 
 ## Reporting
 

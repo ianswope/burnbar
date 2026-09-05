@@ -1,5 +1,46 @@
 # Changelog
 
+## 1.5.0 — 2026-09-05
+
+Burn Bar drops local inference. Every trace of the Ollama lane, the GPU
+telemetry column and the offload share is gone; what is left is the two cloud
+agents it started as, and nothing on screen that a machine without a GPU
+cannot answer.
+
+### Removed
+- **The local intelligence lane.** The reactor core, the violet load strip
+  and the hard rule that separated them from the cloud lanes. The strip is
+  now `CLAUDE ◄── time ──┤ now ├── time ──► CODEX` and nothing else; the
+  cloud lanes take the width the local lane was holding.
+- **The cockpit's local column.** GPU load, power draw, temperature, VRAM, SM
+  clock, warm-model count, the load and power traces, the resident-model
+  list, and the model-control dropdown with its Load / Unload buttons. The
+  panel is one column now, 560 wide instead of 880.
+- **Local tokens and the offload share.** The journal reader, the `local`
+  bucket series, the LOCAL tile, and the Local rows in RATE and TOKEN MIX.
+  `history.json` no longer carries `local` or `offloadShare`, and buckets
+  carry `claude` and `codex` only.
+- `bin/burnbar-local-status` and `bin/burnbar-local-control`, and with them
+  every HTTP call Burn Bar used to make. It now has no network endpoint of
+  its own at all — the only traffic left is Omarchy's own usage collectors,
+  which it still triggers for plan limits.
+- Settings `showLocal`, `localCells`, `localRefreshMs`, `localThreshold` and
+  `ollamaUnit`, and the `BURNBAR_OLLAMA_JOURNAL` test hook. A `shell.json`
+  that still sets them is not an error; they are simply ignored.
+- The `ollama` alias on the bar widget.
+
+### Changed
+- Middle click forces a collector run and a plan-limit refresh; there is no
+  local poll left to force.
+- Energy — what drives the under-glow, the sparks and the frame rate — is now
+  the maximum of the two live cloud cells alone.
+- Tooltip and panel wording drops the cloud/local distinction: there is only
+  one kind of burn on screen now, so it is no longer qualified as "cloud".
+
+### Notes
+- `docs/cockpit.png`, `docs/bar.png` and `preview.png` still show the
+  three-lane build and need retaking.
+
 ## 1.4.0 — 2026-09-05
 
 ### Added

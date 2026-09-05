@@ -22,13 +22,6 @@ Codex:   ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl   event_msg lines with
          with an unchanged total (13 times across 130 rollouts on the machine
          this was built on), and counting last_token_usage would count it twice.
 
-Local:   the Ollama unit's journal. Ollama persists no per-request token
-         counts anywhere, but its runner logs every task — prompt size,
-         cached prefix, evaluated prompt tokens, generated tokens, release —
-         timestamped, whatever client asked. That is the only client-agnostic
-         record of local inference on the machine. Read by journal cursor:
-         the first read of a window costs ~600 ms, every one after ~10 ms.
-
 Two clocks. The strip and chart use grid-aligned buckets so cells march instead
 of jittering; every headline number (totals, rates, turns, activity, split,
 by-model) is computed over the exact trailing window from the timestamped
@@ -39,8 +32,6 @@ import datetime
 import fcntl
 import json
 import os
-import re
-import subprocess
 import sys
 import tempfile
 import time
@@ -86,19 +77,9 @@ def int_arg(flag, fallback, low, high):
     return fallback
 
 
-def str_arg(flag, fallback, limit=64):
-    argv = sys.argv
-    if flag in argv:
-        i = argv.index(flag)
-        if i + 1 < len(argv) and argv[i + 1].strip():
-            return argv[i + 1].strip()[:limit]
-    return fallback
-
-
 WINDOW_MIN = int_arg("--window", 360, 30, 1440)
 BUCKETS = int_arg("--buckets", 12, 6, 32)
 BUCKET_MS = round(WINDOW_MIN * 60_000 / BUCKETS)
-OLLAMA_UNIT = str_arg("--ollama-unit", os.environ.get("BURNBAR_OLLAMA_UNIT") or "ollama")
 
 # Tests pin the clock so two runs can be compared byte for byte across a bucket
 # boundary; nothing else sets it.
@@ -119,7 +100,7 @@ latest_ok = now_ms + FUTURE_SLACK_MS
 t5 = now_ms - 5 * 60_000
 t60 = now_ms - 60 * 60_000
 
-buckets = [{"t": grid_start + i * BUCKET_MS, "claude": 0, "codex": 0, "local": 0}
+buckets = [{"t": grid_start + i * BUCKET_MS, "claude": 0, "codex": 0}
            for i in range(BUCKETS)]
 
 
@@ -498,175 +479,6 @@ for f in walk(CODEX_ROOT, lambda n: n.startswith("rollout-") and n.endswith(".js
 codex.files = len(touched)
 
 
-# ── local (Ollama) tokens, from the runner's own journal lines ───────────────
-# One task in the runner's log looks like this (journalctl -o short-unix):
-#   … slot operator():   id 0 | task 80 | new prompt, …, task.n_tokens = 120
-#   … slot operator():   id 0 | task 80 | cached n_tokens = 36, …
-#   … slot print_timing: id 0 | task 80 | prompt eval time = … /  84 tokens …
-#   … slot print_timing: id 0 | task 80 |        eval time = … /   8 tokens …
-#   … slot release:      id 0 | task 80 | stop processing: n_tokens = 127, …
-# and every model load prints "general.name = Meta Llama 3.1 8B Instruct"
-# once, which is how a task gets its model. Evaluated prompt + generated is
-# the burn; the cached prefix rides along the way cloud cache reads do.
-JOURNAL_KEY = "journal:" + OLLAMA_UNIT
-JOURNAL_MATCH = r"print_timing|new prompt|cached n_tokens|general\.name +(?:str +)?=|stop processing"
-RE_LINE = re.compile(r"^(\d+)\.(\d+)\s+\S+\s+\S+:\s?(.*)$")
-RE_NAME = re.compile(r"general\.name\s+(?:str\s+)?=\s+(.+?)\s*$")
-RE_TASK = re.compile(r"\bid\s+(\d+)\s+\|\s+task\s+(\d+)\s+\|\s+(.*)$")
-RE_PROMPT = re.compile(r"new prompt,.*task\.n_tokens\s*=\s*(\d+)")
-RE_CACHED = re.compile(r"cached n_tokens\s*=\s*(\d+)")
-RE_PEVAL = re.compile(r"prompt eval time\s*=.*?/\s*(\d+)\s+tokens")
-RE_GEVAL = re.compile(r"^\s*eval time\s*=.*?/\s*(\d+)\s+tokens")
-RE_STOP = re.compile(r"stop processing: n_tokens\s*=\s*(\d+)")
-
-
-def journal_lines(cursor):
-    """(lines, new_cursor, error). The unit's journal after the saved cursor,
-    or since the window opened when there is none. Tests point
-    BURNBAR_OLLAMA_JOURNAL at a file in the same short-unix shape."""
-    override = os.environ.get("BURNBAR_OLLAMA_JOURNAL")
-    if override is not None:
-        try:
-            return Path(override).read_text(errors="replace").splitlines(), "", ""
-        except OSError as e:
-            return [], "", ("journal unreadable: %s" % e)[:160]
-    # No -q: it also silences journalctl's own error text, and a bare "exited 1"
-    # helps nobody. The "-- No entries --" line it lets through matches nothing.
-    base = ["journalctl", "-u", OLLAMA_UNIT, "-o", "short-unix", "--no-pager", "--show-cursor"]
-    base += ["--after-cursor", cursor] if cursor else ["--since", "@%d" % (scan_floor // 1000)]
-    for cmd in (base + ["-g", JOURNAL_MATCH], base):
-        try:
-            run = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
-        except FileNotFoundError:
-            return [], "", "journalctl not found"
-        except subprocess.SubprocessError as e:
-            return [], "", ("journalctl failed: %s" % e)[:160]
-        # journalctl exits 1, with nothing on stderr, when -g matched no entry
-        # — which on the cursor path is the normal case between two runs.
-        # Only an exit with an actual message is a failure.
-        stderr = run.stderr.strip()
-        if run.returncode == 0 or (run.returncode == 1 and not stderr):
-            lines = run.stdout.splitlines()
-            new_cursor = ""
-            if lines and lines[-1].startswith("-- cursor: "):
-                new_cursor = lines.pop().split(": ", 1)[1].strip()
-            return lines, new_cursor, ""
-        err = (stderr.splitlines() or ["journalctl exited %d" % run.returncode])[0]
-        # A systemd built without pattern matching: read unfiltered instead.
-        if "-g" in cmd and "pattern" in err.lower():
-            continue
-        return [], "", err[:160]
-    return [], "", "journalctl failed"
-
-
-def parse_journal(lines, state):
-    """Feed lines through the pending-task state (kept across incremental
-    reads) and return the points of every task that released."""
-    pending = state.setdefault("pending", {})
-    model = str(state.get("model") or "local")
-    points = []
-    for line in lines:
-        m = RE_LINE.match(line)
-        if not m:
-            continue
-        ts = int(m.group(1)) * 1000 + int((m.group(2) + "000")[:3])
-        msg = m.group(3)
-        nm = RE_NAME.search(msg)
-        if nm:
-            model = nm.group(1)[:64]
-            state["model"] = model
-            continue
-        t = RE_TASK.search(msg)
-        if not t:
-            continue
-        key = t.group(1) + ":" + t.group(2)
-        rest = t.group(3)
-        mp = RE_PROMPT.search(rest)
-        if mp:
-            pending[key] = {"p": int(mp.group(1)), "c": 0, "e": -1, "g": 0, "m": model}
-            continue
-        task = pending.get(key)
-        if not isinstance(task, dict):
-            continue
-        mc = RE_CACHED.search(rest)
-        if mc:
-            task["c"] = int(mc.group(1))
-            continue
-        me = RE_PEVAL.search(rest)
-        if me:
-            task["e"] = int(me.group(1))
-            continue
-        mg = RE_GEVAL.search(rest)
-        if mg:
-            task["g"] = int(mg.group(1))
-            continue
-        if RE_STOP.search(rest):
-            pending.pop(key, None)
-            evaluated = task["e"] if task["e"] >= 0 else max(0, task["p"] - task["c"])
-            generated = task["g"]
-            cached = task["c"]
-            if evaluated + generated + cached <= 0:
-                continue
-            points.append([ts, evaluated + generated, "", str(task["m"])[:64],
-                           [evaluated, 0, generated, cached]])
-    # A runner that died mid-task leaves an orphan; never let them pile up.
-    if len(pending) > 64:
-        for k in list(pending)[:-64]:
-            pending.pop(k, None)
-    return points
-
-
-def valid_journal_entry(hit):
-    if not isinstance(hit, dict) or hit.get("journal") is not True:
-        return None
-    if not isinstance(hit.get("cursor", ""), str) or not isinstance(hit.get("state", {}), dict):
-        return None
-    points = hit.get("points")
-    if not isinstance(points, list) or not all(valid_point(p) for p in points):
-        return None
-    return hit
-
-
-local = Agent("local")
-local_available = True
-local_reason = ""
-jhit = valid_journal_entry(cache.get(JOURNAL_KEY))
-cursor = jhit["cursor"] if jhit else ""
-state = dict(jhit["state"]) if jhit else {}
-kept = list(jhit["points"]) if jhit else []
-lines, new_cursor, err = journal_lines(cursor)
-# A cursor the journal can no longer seek to (a vacuumed file, or one it
-# simply refuses) fails the read. Re-read the window from scratch: that
-# returns the complete set for the window and replaces what was kept.
-if err and cursor:
-    cursor, state, kept = "", {}, []
-    lines, new_cursor, err = journal_lines("")
-if err:
-    local_available = False
-    local_reason = err
-local_points = prune(kept + parse_journal(lines, state)) if not err else prune(kept)
-if not err and not cursor and not local_points and os.environ.get("BURNBAR_OLLAMA_JOURNAL") is None:
-    # A cold read that found nothing: is the unit even there, or is it just quiet?
-    try:
-        probe = subprocess.run(["systemctl", "show", "-p", "LoadState", "--value", OLLAMA_UNIT],
-                               capture_output=True, text=True, timeout=5)
-        if probe.returncode == 0 and probe.stdout.strip() == "not-found":
-            local_available = False
-            local_reason = "systemd unit '%s' not found — set ollamaUnit" % OLLAMA_UNIT
-    except (OSError, subprocess.SubprocessError):
-        pass
-for pt in local_points:
-    try:
-        local.add(pt)
-    except Exception:
-        continue
-if not err:
-    next_cache[JOURNAL_KEY] = {"journal": True, "cursor": new_cursor or cursor,
-                               "state": state, "points": local_points}
-elif jhit:
-    next_cache[JOURNAL_KEY] = jhit
-
-
 # ── limits, straight off the records omarchy-agent-usage-update maintains ────
 # The record is copied, not trusted. Three things travel with the numbers so
 # the widget can tell a live figure from a leftover:
@@ -745,7 +557,6 @@ def with_limits(agent_payload, agent_name):
     return agent_payload
 
 
-all_burn = claude.total + codex.total + local.total
 payload = {
     "generatedAt": now_ms,
     "windowMinutes": WINDOW_MIN,
@@ -754,10 +565,6 @@ payload = {
     "buckets": buckets,
     "claude": with_limits(claude.payload(), "claude"),
     "codex": with_limits(codex.payload(), "codex"),
-    # Local tokens over the same exact window, and the share of everything
-    # that burned on this machine which never went to a frontier model.
-    "local": dict(local.payload(), available=local_available, reason=local_reason, unit=OLLAMA_UNIT),
-    "offloadShare": (local.total / all_burn) if all_burn > 0 else 0,
 }
 
 
