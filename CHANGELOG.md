@@ -1,5 +1,40 @@
 # Changelog
 
+## 1.4.0 — 2026-09-05
+
+### Added
+- **Local tokens and the offload share.** The cockpit now shows how many
+  tokens burned on the local Ollama over the same exact window as the cloud
+  figures, and what share of everything that burned stayed on this machine
+  instead of going to a frontier model. Header: "… · 27% kept local". The
+  LOCAL tile leads with local tokens (same unit as its neighbours), the
+  offload share, turns and rate. The local column opens with a LOCAL TOKENS
+  section: an offload gauge and a line with prompt / generated / cached
+  counts and the model that did most of it. RATE and TOKEN MIX gain a Local
+  row. The strip's local tooltip carries the total and the share.
+- **Source: the Ollama unit's journal.** Ollama persists no per-request
+  token counts anywhere and exposes no metrics endpoint (verified on
+  0.32.15), but its runner logs every task — prompt size, cached prefix,
+  evaluated prompt tokens, generated tokens, release — timestamped, whatever
+  client asked. The collector reads that journal incrementally by cursor
+  (`journalctl -u <unit> -o short-unix --after-cursor …`, server-side
+  filtered): ~600 ms once per window, ~10 ms per run after. Model comes from
+  the `general.name` line each load prints. Burn is evaluated prompt +
+  generated; the cached prefix rides along as the cache read, the way cloud
+  cache reads do. A cursor the journal can no longer seek to is detected and
+  the window re-read.
+- `ollamaUnit` setting (default `ollama`) for installs whose Ollama runs
+  under another unit. If the journal is not readable from your account, or
+  the unit does not exist, the panel says so in red instead of showing a
+  confident 0; the last-known points are kept in the cache meanwhile.
+- `BURNBAR_OLLAMA_JOURNAL` points the collector at a file for tests; the
+  fixture uses real line shapes from Ollama 0.32.
+
+### Changed
+- Header reads "frontier tokens burned" to make clear the big number is
+  cloud spend; local tokens live beside it, not inside it.
+- Buckets carry a `local` series alongside `claude` and `codex`.
+
 ## 1.3.3 — 2026-09-05
 
 Full-scope adversarial audit (Codex, gpt-6-astra, read-only, 24 minutes) over

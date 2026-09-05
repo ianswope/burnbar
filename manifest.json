@@ -2,10 +2,10 @@
   "schemaVersion": 1,
   "id": "nixfred.burnbar",
   "name": "Burn Bar",
-  "version": "1.3.3",
+  "version": "1.4.0",
   "author": "nixfred",
   "license": "MIT",
-  "description": "Live thermal heat map of Claude, Codex and local Ollama burn in one bar slot, with weekly quota gauges and local model control.",
+  "description": "Live thermal heat map of Claude, Codex and local Ollama burn in one bar slot, with weekly quota gauges, local model control, and the share of tokens kept off frontier models.",
   "kinds": ["service", "bar-widget"],
   "entryPoints": {
     "service": "Service.qml",
@@ -29,6 +29,7 @@
       "localCells": 9,
       "localRefreshMs": 1500,
       "localThreshold": 8,
+      "ollamaUnit": "ollama",
       "emberFlicker": true,
       "sparks": true
     },
@@ -43,6 +44,7 @@
       {"key":"localCells","type":"integer","label":"Local lane cells","min":4,"max":20,"defaultValue":9},
       {"key":"localRefreshMs","type":"integer","label":"Local poll interval (ms)","min":500,"max":10000,"defaultValue":1500},
       {"key":"localThreshold","type":"integer","label":"Local inference threshold (%)","description":"Runner load above this counts as actively inferencing.","min":1,"max":50,"defaultValue":8},
+      {"key":"ollamaUnit","type":"string","label":"Ollama systemd unit","description":"Whose journal carries the runner's token lines. Local token counts and the offload share come from there.","defaultValue":"ollama"},
       {"key":"emberFlicker","type":"boolean","label":"Ember flicker","description":"Live flicker on hot cells. Turn off to save a little GPU.","defaultValue":true},
       {"key":"sparks","type":"boolean","label":"Rising sparks","description":"Embers lifting off the strip while anything is burning.","defaultValue":true}
     ]

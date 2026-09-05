@@ -123,6 +123,10 @@ BarWidget {
             + "  ·  " + String(svc.localBackend).toUpperCase()
             + "\n" + (svc.localModel !== "" ? svc.localModel : "no model resident")
             + "\n" + svc.localModelCount + " model(s) warm")
+        + (svc.localTokensAvailable
+            ? "\n" + compact(svc.localTokensTotal) + " tokens / last " + span
+              + "  ·  " + Math.round(svc.offloadShare * 100) + "% offloaded from frontier"
+            : "")
     return ""
   }
 

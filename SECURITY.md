@@ -17,6 +17,13 @@ files you worked on. There is no way to count per-turn tokens without reading
 them, because the token counts are interleaved with the conversation. If you
 are not comfortable with a bar widget opening those files, do not install this.
 
+**Burn Bar also reads the system journal** for the Ollama unit (`journalctl
+-u ollama`, unit name configurable) to count local tokens. The runner logs
+token counts, model names and timings there, not requests; Burn Bar keeps
+counts and model names from it. Reading it needs journal access for your
+account (`wheel`, `adm` or `systemd-journal`); without it the local token
+line says so and nothing else changes.
+
 ## What it does with them
 
 1. `bin/burnbar-collect` (Python 3, standard library only) reads each line and
@@ -71,7 +78,7 @@ the next poll simply runs on the next timer tick.
 | Path | Contents |
 |---|---|
 | `~/.local/state/omarchy/burnbar/history.json` | Bucketed token totals, per-agent splits, model names, and plan-limit percentages |
-| `~/.local/state/omarchy/burnbar/scan-cache.json` | Per transcript file: size, mtime, byte offset, a 48-byte fingerprint of the bytes before that offset, the extracted numeric points (timestamp, counts, model name, Claude `message.id`), and for Codex the last cumulative counter |
+| `~/.local/state/omarchy/burnbar/scan-cache.json` | Per transcript file: size, mtime, byte offset, a 48-byte fingerprint of the bytes before that offset, the extracted numeric points (timestamp, counts, model name, Claude `message.id`), and for Codex the last cumulative counter. For the Ollama journal: the last cursor, the points, and any task still in flight |
 | `~/.local/state/omarchy/burnbar/collect.lock` | Empty; held while a collector runs so two never race |
 
 `scan-cache.json` keys on absolute transcript paths, which include your project
@@ -104,8 +111,11 @@ Burn Bar's own scripts:
 
 - `burnbar-collect` on the refresh timer. It takes no input from the network
   and no input from the widget beyond two integers (window length and bucket
-  count) that are clamped to fixed ranges before use. A run that exceeds 30
-  seconds is killed by a watchdog.
+  count) clamped to fixed ranges and the Ollama unit name (64 characters,
+  passed to `journalctl -u` as an argument, never through a shell). It runs
+  `journalctl` and, on a cold read that finds nothing, `systemctl show` to
+  tell an idle unit from a missing one. A run that exceeds 30 seconds is
+  killed by a watchdog.
 - `burnbar-local-status` on the local poll timer. When the endpoint is on this
   machine it also invokes `nvidia-smi` or `rocm-smi` with fixed query
   arguments, if present, and reads `/proc` for the runner's CPU ticks. For a

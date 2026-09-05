@@ -46,6 +46,22 @@ Item {
   property real claudeTrailing60: 0
   property real codexTrailing5: 0
   property real codexTrailing60: 0
+  // Tokens burned on the local Ollama over the same exact window, read from
+  // the runner's journal, and the share of all burn that stayed on this
+  // machine. available=false carries the reason (no journal access, unit
+  // not found) so the panel can say so instead of showing a confident 0.
+  property real localTokensTotal: 0
+  property real localTokensTurns: 0
+  property real localTokensPeak: 0
+  property real localTokensPeakAt: 0
+  property real localTokensLastAt: 0
+  property real localTokensTrailing5: 0
+  property real localTokensTrailing60: 0
+  property var localTokensSplit: ({})
+  property var localTokensByModel: ({})
+  property bool localTokensAvailable: false
+  property string localTokensReason: ""
+  property real offloadShare: 0
   property real generatedAt: 0
   // real, not int: windowMinutes / bars is fractional for most settings
   // (100 / 12 = 8.33), and an int here silently rounded every rate.
@@ -145,6 +161,8 @@ Item {
   readonly property int bucketCount: boundedInt("bars", 12, 6, 32)
 
   readonly property int localRefreshMs: boundedInt("localRefreshMs", 1500, 500, 10000)
+  // The systemd unit whose journal carries the runner's token lines.
+  readonly property string ollamaUnit: String(setting("ollamaUnit", "ollama") || "ollama").slice(0, 64)
   // Same clamp as the manifest schema: load is capped at 100, so a threshold
   // above it would mean "never inferencing".
   readonly property int localThreshold: boundedInt("localThreshold", 8, 1, 50)
@@ -205,7 +223,8 @@ Item {
     collector.launched = false
     collector.command = ["python3", root.collectorPath,
       "--window", String(root.windowMinutes),
-      "--buckets", String(root.bucketCount)]
+      "--buckets", String(root.bucketCount),
+      "--ollama-unit", root.ollamaUnit]
     collector.running = true
     watchdog.restart()
   }
@@ -339,6 +358,19 @@ Item {
       root.claudeTrailing60 = num(c.trailing ? c.trailing.m60 : 0)
       root.codexTrailing5 = num(x.trailing ? x.trailing.m5 : 0)
       root.codexTrailing60 = num(x.trailing ? x.trailing.m60 : 0)
+      var l = parsed.local && typeof parsed.local === "object" ? parsed.local : null
+      root.localTokensAvailable = !!l && l.available === true
+      root.localTokensReason = l ? String(l.reason || "") : "collector predates local token counting"
+      root.localTokensTotal = l ? num(l.total) : 0
+      root.localTokensTurns = l ? num(l.turns) : 0
+      root.localTokensPeak = l ? num(l.peak) : 0
+      root.localTokensPeakAt = l ? num(l.peakAt) : 0
+      root.localTokensLastAt = l ? num(l.lastAt) : 0
+      root.localTokensTrailing5 = l && l.trailing ? num(l.trailing.m5) : 0
+      root.localTokensTrailing60 = l && l.trailing ? num(l.trailing.m60) : 0
+      root.localTokensSplit = l && l.split && typeof l.split === "object" ? l.split : ({})
+      root.localTokensByModel = l && l.byModel && typeof l.byModel === "object" ? l.byModel : ({})
+      root.offloadShare = Math.max(0, Math.min(1, num(parsed.offloadShare)))
     } catch (e) {
       fault("History file could not be applied")
       return

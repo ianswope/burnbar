@@ -145,14 +145,26 @@ Panel {
   // No bucket arithmetic: two 30-minute buckets called "1 HOUR" covered 31 to
   // 61 minutes depending on the clock, and a one-minute denominator floor
   // read 90 tokens in a 30-second bucket as 90/min.
-  function rateNow(agent) {
-    return (agent === "claude" ? (svc ? svc.claudeTrailing5 : 0) : (svc ? svc.codexTrailing5 : 0)) / 5
+  function trailing5(agent) {
+    if (!svc) return 0
+    return agent === "claude" ? svc.claudeTrailing5 : agent === "codex" ? svc.codexTrailing5 : svc.localTokensTrailing5
   }
-  function rateHour(agent) {
-    return (agent === "claude" ? (svc ? svc.claudeTrailing60 : 0) : (svc ? svc.codexTrailing60 : 0)) / 60
+  function trailing60(agent) {
+    if (!svc) return 0
+    return agent === "claude" ? svc.claudeTrailing60 : agent === "codex" ? svc.codexTrailing60 : svc.localTokensTrailing60
   }
-  function rateWindow(agent) {
-    return (agent === "claude" ? (svc ? svc.claudeTotal : 0) : (svc ? svc.codexTotal : 0)) / Math.max(1, windowMinutes)
+  function windowTotal(agent) {
+    if (!svc) return 0
+    return agent === "claude" ? svc.claudeTotal : agent === "codex" ? svc.codexTotal : svc.localTokensTotal
+  }
+  function rateNow(agent) { return trailing5(agent) / 5 }
+  function rateHour(agent) { return trailing60(agent) / 60 }
+  function rateWindow(agent) { return windowTotal(agent) / Math.max(1, windowMinutes) }
+  readonly property bool localTokens: svc ? svc.localTokensAvailable : false
+  readonly property real offload: svc ? svc.offloadShare : 0
+  function topModel(byModel) {
+    var rows = sortedModels(byModel)
+    return rows.length ? rows[0].id : ""
   }
   // "30" for whole minutes, "8.3" for fractional buckets.
   function bucketLabel(minutes) {
@@ -499,9 +511,10 @@ Panel {
           title: ""
           // "burned", not "billed": this figure deliberately leaves cache
           // reads out, and those are billed too, at a lower rate.
-          meta: "tokens burned · last " + panel.widget.windowLabel(panel.windowMinutes) + "  ·  "
+          meta: "frontier tokens burned · last " + panel.widget.windowLabel(panel.windowMinutes) + "  ·  "
             + ((panel.svc ? panel.svc.claudeTurns + panel.svc.codexTurns : 0)) + " turns  ·  "
             + ((panel.svc ? panel.svc.claudeSessions + panel.svc.codexSessions : 0)) + " sessions"
+            + (panel.localTokens ? "  ·  " + Math.round(panel.offload * 100) + "% kept local" : "")
           detail: panel.svc
             ? panel.widget.compact(panel.rateNow("claude") + panel.rateNow("codex")) + "/min last 5m  ·  "
               + panel.widget.compact(panel.rateHour("claude") + panel.rateHour("codex")) + "/min last hour  ·  "
@@ -567,9 +580,13 @@ Panel {
               readonly property var s: panel.svc
               readonly property color accent: isClaude ? panel.widget.claudeHot
                 : isCodex ? panel.widget.codexHot : panel.localState
+              // The local tile leads with tokens burned locally, the same
+              // unit as its two neighbours, when the journal gives them;
+              // otherwise it falls back to live load.
               readonly property real value: !s ? 0 : isClaude ? s.claudeTotal
-                : isCodex ? s.codexTotal : (panel.localOnline ? s.localLoad : 0)
-              readonly property var format: (isClaude || isCodex) ? panel.widget.compact
+                : isCodex ? s.codexTotal
+                : panel.localTokens ? s.localTokensTotal : (panel.localOnline ? s.localLoad : 0)
+              readonly property var format: (isClaude || isCodex || panel.localTokens) ? panel.widget.compact
                 : function(v) { return panel.localOnline ? Math.round(v) + "%" : "off" }
               readonly property string sub: {
                 void panel.tick
@@ -578,6 +595,8 @@ Panel {
                   + panel.widget.compact(panel.rateNow("claude")) + "/min"
                 if (isCodex) return s.codexTurns + " turns · " + s.codexSessions + " sessions · "
                   + panel.widget.compact(panel.rateNow("codex")) + "/min"
+                if (panel.localTokens) return Math.round(panel.offload * 100) + "% offloaded · "
+                  + s.localTokensTurns + " turns · " + panel.widget.compact(panel.rateNow("local")) + "/min"
                 if (!panel.localOnline) return "ollama not answering"
                 return (s.localActive ? "inferencing" : "idle") + " · " + s.localModelCount + " warm"
                   + (s.localPowerW > 0 ? " · " + s.localPowerW.toFixed(1) + " W" : "")
@@ -590,7 +609,9 @@ Panel {
                 if (isCodex) return "peak " + panel.widget.compact(s.codexPeak) + " at " + panel.clockText(s.codexPeakAt)
                   + " · active " + panel.agoText(s.codexLastAt)
                 if (!panel.localOnline) return s.localError
-                return "peak " + Math.round(s.localPeakLoad) + "% · " + s.localPeakPowerW.toFixed(0) + " W this session"
+                var live = (s.localActive ? "inferencing " : "idle ") + Math.round(s.localLoad) + "% · " + s.localModelCount + " warm"
+                if (panel.localTokens) return live + " · active " + panel.agoText(s.localTokensLastAt)
+                return live + " · peak " + Math.round(s.localPeakLoad) + "% · " + s.localPeakPowerW.toFixed(0) + " W"
               }
 
               Layout.fillWidth: true
@@ -776,6 +797,11 @@ Panel {
               Counter { target: panel.rateNow("codex"); format: panel.widget.compact; color: panel.foreground; font.bold: true; font.pixelSize: Style.font.bodySmall; Layout.preferredWidth: Style.space(58); horizontalAlignment: Text.AlignRight }
               Counter { target: panel.rateHour("codex"); format: panel.widget.compact; color: panel.foreground; font.pixelSize: Style.font.bodySmall; Layout.preferredWidth: Style.space(58); horizontalAlignment: Text.AlignRight }
               Counter { target: panel.rateWindow("codex"); format: panel.widget.compact; color: panel.foreground; font.pixelSize: Style.font.bodySmall; Layout.preferredWidth: Style.space(58); horizontalAlignment: Text.AlignRight }
+
+              Body { visible: panel.localTokens; text: "Local"; color: panel.widget.localHot; Layout.fillWidth: true }
+              Counter { visible: panel.localTokens; target: panel.rateNow("local"); format: panel.widget.compact; color: panel.foreground; font.bold: true; font.pixelSize: Style.font.bodySmall; Layout.preferredWidth: Style.space(58); horizontalAlignment: Text.AlignRight }
+              Counter { visible: panel.localTokens; target: panel.rateHour("local"); format: panel.widget.compact; color: panel.foreground; font.pixelSize: Style.font.bodySmall; Layout.preferredWidth: Style.space(58); horizontalAlignment: Text.AlignRight }
+              Counter { visible: panel.localTokens; target: panel.rateWindow("local"); format: panel.widget.compact; color: panel.foreground; font.pixelSize: Style.font.bodySmall; Layout.preferredWidth: Style.space(58); horizontalAlignment: Text.AlignRight }
             }
 
             PanelSectionHeader {
@@ -791,10 +817,17 @@ Panel {
             // one people never think to look at and always want once they
             // have seen it. It is a token share; cache hits still cost money.
             Repeater {
-              model: [
-                { name: "Claude", accent: panel.widget.claudeHot, split: panel.svc ? panel.svc.claudeSplit : ({}) },
-                { name: "Codex", accent: panel.widget.codexHot, split: panel.svc ? panel.svc.codexSplit : ({}) }
-              ]
+              model: {
+                var rows = [
+                  { name: "Claude", accent: panel.widget.claudeHot, split: panel.svc ? panel.svc.claudeSplit : ({}) },
+                  { name: "Codex", accent: panel.widget.codexHot, split: panel.svc ? panel.svc.codexSplit : ({}) }
+                ]
+                // Local: evaluated prompt as "in", generated as "out", the
+                // reused prefix as the cache read. There is no cache write.
+                if (panel.localTokens)
+                  rows.push({ name: "Local", accent: panel.widget.localHot, split: panel.svc.localTokensSplit })
+                return rows
+              }
               delegate: ColumnLayout {
                 required property var modelData
                 readonly property real total: Math.max(1, panel.splitTotal(modelData.split))
@@ -1052,6 +1085,46 @@ Panel {
                         + "  ·  " + String(panel.svc.localBackend).toUpperCase()
                         + (panel.svc.localVersion !== "" ? "  ·  ollama " + panel.svc.localVersion : "")
                 }
+              }
+            }
+
+            // ── local tokens and the offload share ─────────────────────────
+            // The headline of this column: how much burned here instead of at
+            // a frontier model, in the same unit as the cloud tiles, and what
+            // share of everything that burned that was.
+            PanelSectionHeader {
+              Layout.fillWidth: true
+              text: panel.localTokens
+                ? "LOCAL TOKENS  ·  " + Math.round(panel.offload * 100) + "% OFFLOADED FROM FRONTIER"
+                : "LOCAL TOKENS  ·  NO RECORD"
+              foreground: panel.foreground
+              fontFamily: panel.fontFamily
+              elide: Text.ElideRight
+            }
+            Gauge {
+              visible: panel.localTokens
+              fraction: panel.offload
+              accent: panel.widget.localHot
+            }
+            Caption {
+              Layout.fillWidth: true
+              wrapMode: Text.WordWrap
+              elide: Text.ElideNone
+              color: panel.localTokens ? panel.dim : Color.urgent
+              text: {
+                void panel.tick
+                var s = panel.svc
+                if (!s) return ""
+                if (!panel.localTokens) return s.localTokensReason !== ""
+                  ? s.localTokensReason
+                  : "the Ollama journal is not readable from this account"
+                var sp = s.localTokensSplit || {}
+                var top = panel.topModel(s.localTokensByModel)
+                return panel.widget.compact(s.localTokensTotal) + " tokens burned locally · "
+                  + s.localTokensTurns + " turns · prompt " + panel.widget.compact(sp.input || 0)
+                  + " · generated " + panel.widget.compact(sp.output || 0)
+                  + " · cached " + panel.widget.compact(sp.cacheRead || 0)
+                  + (top !== "" ? " · mostly " + panel.plainText(top, 48) : "")
               }
             }
 

@@ -132,6 +132,12 @@ watts, plus the session's peak load and power.
 **Local column**
 
 - GPU name, backend (`nvidia` / `rocm`) and Ollama version.
+- *Local tokens* — how many tokens burned on the local Ollama over the same
+  window, with a gauge for the **offload share**: local tokens as a fraction
+  of everything that burned (local + Claude + Codex). Below it, prompt /
+  generated / cached counts and the model that did most of the work. The
+  header, the LOCAL tile, the RATE and TOKEN MIX rows, and the strip's local
+  tooltip all carry the same numbers.
 - Six tiles: GPU load with the runner's CPU share, power draw with the
   session peak, temperature with a plain-language state, VRAM used of total
   with the models' share and what is free, SM clock against the board's boost
@@ -220,6 +226,20 @@ that ring *is* the local lane and the cockpit's traces.
 evicts one through `/api/generate` with `keep_alive` — or through `/api/embed`
 for a model whose `/api/show` capabilities say it can only embed.
 
+**Local tokens** — Ollama persists no per-request token counts anywhere and
+exposes no metrics endpoint, but its runner writes every task to the journal:
+prompt size, cached prefix, evaluated prompt tokens, generated tokens, and a
+release line, timestamped, whatever client asked — the only client-agnostic
+record of local inference on the machine. The collector reads the `ollama`
+unit's journal (setting `ollamaUnit`) incrementally by cursor with a
+server-side filter: about 600 ms once per window, about 10 ms per run after.
+The model is the `general.name` each load prints. Burn is evaluated prompt +
+generated; the cached prefix rides along as the cache read, exactly as cloud
+cache reads do. The offload share is local burn divided by all burn over the
+window. Your account must be able to read the system journal (`wheel`,
+`adm` or `systemd-journal`); if it cannot, or the unit does not exist, the
+panel says so in red rather than showing a confident 0.
+
 Python 3 with no third-party imports is deliberate. Omarchy depends on `uwsm`
 and `kitty`, both of which depend on `python`, so `python3` is present on every
 Omarchy install; `bun` is not an Omarchy dependency and cannot be assumed.
@@ -234,6 +254,9 @@ A wedged run is killed by a 30-second watchdog. It never fails silently.
 Burn Bar reads your Claude and Codex transcripts to count tokens. From them it
 keeps timestamps, token counts, model names and Claude's opaque message ids,
 plus the transcript paths it uses as cache keys — never prompt or reply text.
+It also reads the Ollama unit's system journal for the runner's token lines,
+and keeps counts and model names from those, never the requests themselves
+(the runner does not log them).
 Its own network traffic is to your Ollama endpoint (`OLLAMA_HOST`, default
 `http://127.0.0.1:11434`) to read and control models.
 
@@ -260,6 +283,7 @@ Set from the Omarchy plugin settings UI, or in `shell.json`.
 | `localCells` | 9 | Cells in the local lane (= length of the sample ring) |
 | `localRefreshMs` | 1500 | Local runner poll interval |
 | `localThreshold` | 8 | Runner load above this counts as actively inferencing |
+| `ollamaUnit` | `ollama` | The systemd unit whose journal carries the runner's token lines |
 | `emberFlicker` | true | Live flicker on hot cells |
 | `sparks` | true | Rising embers while anything is burning |
 
@@ -284,7 +308,7 @@ grid.
 
 ## Changes
 
-See [CHANGELOG.md](CHANGELOG.md). Current version: 1.3.3.
+See [CHANGELOG.md](CHANGELOG.md). Current version: 1.4.0.
 
 ## Credits
 
