@@ -169,12 +169,17 @@ def claude_extract(line):
     # Billable work: fresh input + what we paid to write cache + output.
     # Cache reads are excluded on purpose — they are the cheap path and would
     # swamp the scale (939M read vs 24M written on the machine this was built on).
-    tokens = (int(usage.get("input_tokens") or 0)
-              + int(usage.get("cache_creation_input_tokens") or 0)
-              + int(usage.get("output_tokens") or 0))
+    inp = int(usage.get("input_tokens") or 0)
+    cache_w = int(usage.get("cache_creation_input_tokens") or 0)
+    out = int(usage.get("output_tokens") or 0)
+    tokens = inp + cache_w + out
     if tokens <= 0:
         return None
-    return [ts, tokens, str(msg.get("id") or ""), str(msg.get("model") or "unknown")]
+    # Cache reads ride along as a fifth field for the panel's "what did the
+    # cache save you" row — they still never touch the heat map.
+    cache_r = int(usage.get("cache_read_input_tokens") or 0)
+    return [ts, tokens, str(msg.get("id") or ""), str(msg.get("model") or "unknown"),
+            [inp, cache_w, out, cache_r]]
 
 
 def codex_extract(line):
@@ -193,13 +198,14 @@ def codex_extract(line):
     ts = parse_ts(d.get("timestamp"))
     if ts is None:
         return None
-    tokens = (int(last.get("input_tokens") or 0)
-              - int(last.get("cached_input_tokens") or 0)
-              + int(last.get("cache_write_input_tokens") or 0)
-              + int(last.get("output_tokens") or 0))
+    inp = int(last.get("input_tokens") or 0)
+    cache_r = int(last.get("cached_input_tokens") or 0)
+    cache_w = int(last.get("cache_write_input_tokens") or 0)
+    out = int(last.get("output_tokens") or 0)
+    tokens = inp - cache_r + cache_w + out
     if tokens <= 0:
         return None
-    return [ts, tokens, "", "codex"]
+    return [ts, tokens, "", "codex", [max(0, inp - cache_r), cache_w, out, cache_r]]
 
 
 def walk(root, match):
@@ -215,11 +221,30 @@ def walk(root, match):
 claude_by_model = {}
 claude_seen = set()
 claude_files = 0
+# Split + activity, so the panel can answer "was that input or output" and
+# "when did I last touch it" without a second pass over the transcripts.
+claude_split = {"input": 0, "cacheWrite": 0, "output": 0, "cacheRead": 0}
+claude_turns = 0
+claude_first = 0
+claude_last = 0
+
+
+def add_split(target, part):
+    # Points cached by an older collector carry no split; they still count
+    # toward the heat map, they just cannot be attributed.
+    if not isinstance(part, list) or len(part) != 4:
+        return
+    target["input"] += int(part[0] or 0)
+    target["cacheWrite"] += int(part[1] or 0)
+    target["output"] += int(part[2] or 0)
+    target["cacheRead"] += int(part[3] or 0)
+
 
 for f in walk(CLAUDE_ROOT, lambda n: n.endswith(".jsonl")):
     pts = scan(f, claude_extract)
     touched = False
-    for ts, tokens, mid, model in pts:
+    for pt in pts:
+        ts, tokens, mid, model = pt[0], pt[1], pt[2], pt[3]
         if mid:
             if mid in claude_seen:
                 continue
@@ -229,6 +254,10 @@ for f in walk(CLAUDE_ROOT, lambda n: n.endswith(".jsonl")):
             continue
         b["claude"] += tokens
         claude_by_model[model] = claude_by_model.get(model, 0) + tokens
+        add_split(claude_split, pt[4] if len(pt) > 4 else None)
+        claude_turns += 1
+        claude_first = ts if not claude_first or ts < claude_first else claude_first
+        claude_last = max(claude_last, ts)
         touched = True
     if touched:
         claude_files += 1
@@ -236,16 +265,25 @@ for f in walk(CLAUDE_ROOT, lambda n: n.endswith(".jsonl")):
 # ── Codex ────────────────────────────────────────────────────────────────────
 codex_by_model = {}
 codex_files = 0
+codex_split = {"input": 0, "cacheWrite": 0, "output": 0, "cacheRead": 0}
+codex_turns = 0
+codex_first = 0
+codex_last = 0
 
 for f in walk(CODEX_ROOT, lambda n: n.startswith("rollout-") and n.endswith(".jsonl")):
     pts = scan(f, codex_extract)
     touched = False
-    for ts, tokens, _mid, _model in pts:
+    for pt in pts:
+        ts, tokens = pt[0], pt[1]
         b = bucket_for(ts)
         if b is None:
             continue
         b["codex"] += tokens
         codex_by_model["codex"] = codex_by_model.get("codex", 0) + tokens
+        add_split(codex_split, pt[4] if len(pt) > 4 else None)
+        codex_turns += 1
+        codex_first = ts if not codex_first or ts < codex_first else codex_first
+        codex_last = max(codex_last, ts)
         touched = True
     if touched:
         codex_files += 1
@@ -275,14 +313,24 @@ payload = {
     "claude": {
         "total": sum(b["claude"] for b in buckets),
         "peak": max((b["claude"] for b in buckets), default=0),
+        "peakAt": max(buckets, key=lambda b: b["claude"])["t"] if buckets else 0,
         "sessions": claude_files,
+        "turns": claude_turns,
+        "firstAt": claude_first,
+        "lastAt": claude_last,
+        "split": claude_split,
         "byModel": claude_by_model,
         "limits": limits_for("claude"),
     },
     "codex": {
         "total": sum(b["codex"] for b in buckets),
         "peak": max((b["codex"] for b in buckets), default=0),
+        "peakAt": max(buckets, key=lambda b: b["codex"])["t"] if buckets else 0,
         "sessions": codex_files,
+        "turns": codex_turns,
+        "firstAt": codex_first,
+        "lastAt": codex_last,
+        "split": codex_split,
         "byModel": codex_by_model,
         "limits": limits_for("codex"),
     },

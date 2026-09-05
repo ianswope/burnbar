@@ -63,7 +63,16 @@ def read_json_response(response) -> dict:
     return payload
 
 
+def bounded_int(value, limit: int = 10**16) -> int:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        return 0
+    return int(min(max(value, 0), limit))
+
+
 def ollama_models(url: str) -> list[dict]:
+    """Resident models with everything /api/ps knows about them: VRAM footprint,
+    context length, quantisation and the keep-alive deadline. All bounded — this
+    is the one place untrusted JSON turns into panel text."""
     with urllib.request.urlopen(normalize_url(url) + "/api/ps", timeout=0.8) as response:
         payload = read_json_response(response)
     models = payload.get("models", [])
@@ -74,9 +83,30 @@ def ollama_models(url: str) -> list[dict]:
         if not isinstance(model, dict):
             continue
         name = bounded_text(model.get("name") or model.get("model"))
-        if name:
-            safe_models.append({"name": name})
+        if not name:
+            continue
+        details = model.get("details")
+        details = details if isinstance(details, dict) else {}
+        safe_models.append({
+            "name": name,
+            "size": bounded_int(model.get("size")),
+            "sizeVram": bounded_int(model.get("size_vram")),
+            "contextLength": bounded_int(model.get("context_length"), 10**9),
+            "expiresAt": bounded_text(model.get("expires_at"), 64),
+            "parameters": bounded_text(details.get("parameter_size"), 32),
+            "quantization": bounded_text(details.get("quantization_level"), 32),
+            "family": bounded_text(details.get("family"), 32),
+        })
     return safe_models
+
+
+def ollama_version(url: str) -> str:
+    try:
+        with urllib.request.urlopen(normalize_url(url) + "/api/version", timeout=0.5) as response:
+            payload = read_json_response(response)
+        return bounded_text(payload.get("version"), 32)
+    except (OSError, urllib.error.URLError, json.JSONDecodeError, UnicodeDecodeError, ValueError):
+        return ""
 
 
 def runner_ticks() -> tuple[int, int]:
@@ -134,6 +164,47 @@ def gpu_load() -> tuple[float, str]:
     return 0.0, "cpu"
 
 
+def parse_smi_number(text: str) -> float:
+    """nvidia-smi prints [N/A] for anything the board does not expose — a
+    laptop 4050 has no power limit or fan readout. Absent reads as 0, and the
+    panel hides a zero-valued gauge rather than drawing a lie."""
+    try:
+        value = float(str(text).strip())
+    except ValueError:
+        return 0.0
+    return value if math.isfinite(value) and value >= 0 else 0.0
+
+
+def gpu_stats() -> dict:
+    """Power, thermals, memory and clocks off nvidia-smi in one call. Empty on
+    any failure: a machine without an NVIDIA GPU simply gets no GPU block."""
+    fields = ["name", "power.draw", "power.limit", "temperature.gpu",
+              "memory.used", "memory.total", "clocks.sm", "clocks.max.sm", "fan.speed"]
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=" + ",".join(fields), "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=0.7, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    if result.returncode != 0:
+        return {}
+    line = next((l for l in result.stdout.splitlines() if l.strip()), "")
+    parts = [p.strip() for p in line.split(",")]
+    if len(parts) != len(fields):
+        return {}
+    return {
+        "gpuName": bounded_text(parts[0], 64),
+        "powerW": round(parse_smi_number(parts[1]), 1),
+        "powerLimitW": round(parse_smi_number(parts[2]), 1),
+        "tempC": round(parse_smi_number(parts[3])),
+        "vramUsedMb": round(parse_smi_number(parts[4])),
+        "vramTotalMb": round(parse_smi_number(parts[5])),
+        "clockMhz": round(parse_smi_number(parts[6])),
+        "clockMaxMhz": round(parse_smi_number(parts[7])),
+        "fanPct": round(parse_smi_number(parts[8])),
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--threshold", type=float, default=8.0)
@@ -151,9 +222,14 @@ def main() -> int:
     cpu = cpu_load()
     load = round(max(cpu, gpu), 1)
     names = [model["name"] for model in models]
-    print(json.dumps({"online": True, "active": load >= args.threshold, "load": load,
-                      "modelCount": len(models), "model": names[0] if names else "",
-                      "models": names, "backend": backend, "cpu": round(cpu, 1), "gpu": round(gpu, 1)}))
+    payload = {"online": True, "active": load >= args.threshold, "load": load,
+               "modelCount": len(models), "model": names[0] if names else "",
+               "models": names, "modelDetails": models, "backend": backend,
+               "cpu": round(cpu, 1), "gpu": round(gpu, 1),
+               "version": ollama_version(args.url),
+               "vramModelsMb": round(sum(m["sizeVram"] for m in models) / 1048576)}
+    payload.update(gpu_stats())
+    print(json.dumps(payload))
     return 0
 
 

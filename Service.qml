@@ -21,6 +21,16 @@ Item {
   property var claudeLimits: []
   property var codexLimits: []
   property var claudeByModel: ({})
+  property var claudeSplit: ({})
+  property var codexSplit: ({})
+  property int claudeTurns: 0
+  property int codexTurns: 0
+  property real claudeFirstAt: 0
+  property real claudeLastAt: 0
+  property real codexFirstAt: 0
+  property real codexLastAt: 0
+  property real claudePeakAt: 0
+  property real codexPeakAt: 0
   property real generatedAt: 0
   property int bucketMinutes: 15
   property bool ready: false
@@ -63,9 +73,27 @@ Item {
   property string localBackend: "none"
   property string localError: ""
   property var localModels: []
+  property var localModelDetails: []
   property var localHistory: []
+  // Power draw ring, same length and cadence as the load ring, so the panel can
+  // trace watts over the same seconds the lane shows load.
+  property var localPowerHistory: []
+  property real localPeakLoad: 0
+  property real localPeakPowerW: 0
   property int localPulse: 0
   property bool localReady: false
+  property real localSampledAt: 0
+  property string localVersion: ""
+  property string localGpuName: ""
+  property real localPowerW: 0
+  property real localPowerLimitW: 0
+  property real localTempC: 0
+  property real localVramUsedMb: 0
+  property real localVramTotalMb: 0
+  property real localVramModelsMb: 0
+  property real localClockMhz: 0
+  property real localClockMaxMhz: 0
+  property real localFanPct: 0
 
   function setting(name, fallback) {
     var value = settings ? settings[name] : undefined
@@ -187,6 +215,16 @@ Item {
     root.claudeLimits = Array.isArray(c.limits) ? c.limits : []
     root.codexLimits = Array.isArray(x.limits) ? x.limits : []
     root.claudeByModel = c.byModel || ({})
+    root.claudeSplit = c.split || ({})
+    root.codexSplit = x.split || ({})
+    root.claudeTurns = Number(c.turns || 0)
+    root.codexTurns = Number(x.turns || 0)
+    root.claudeFirstAt = Number(c.firstAt || 0)
+    root.claudeLastAt = Number(c.lastAt || 0)
+    root.codexFirstAt = Number(x.firstAt || 0)
+    root.codexLastAt = Number(x.lastAt || 0)
+    root.claudePeakAt = Number(c.peakAt || 0)
+    root.codexPeakAt = Number(x.peakAt || 0)
     root.ready = true
 
     // Fire an impact pulse only when the live bucket actually grew, so a
@@ -235,6 +273,8 @@ Item {
       root.localModel = ""
       root.localBackend = "none"
       root.localError = "Unreadable local status"
+      root.localPowerW = 0
+      root.localSampledAt = Date.now()
       root.pushLocalSample(0)
       return
     }
@@ -249,8 +289,21 @@ Item {
     root.localModel = String(data.model || "").slice(0, 128)
     root.localBackend = String(data.backend || "none").slice(0, 32)
     root.localModels = Array.isArray(data.models) ? data.models : []
+    root.localModelDetails = Array.isArray(data.modelDetails) ? data.modelDetails : []
     root.localError = String(data.error || "").slice(0, 240)
+    root.localVersion = String(data.version || "").slice(0, 32)
+    root.localGpuName = String(data.gpuName || "").slice(0, 64)
+    root.localPowerW = Math.max(0, Number(data.powerW || 0))
+    root.localPowerLimitW = Math.max(0, Number(data.powerLimitW || 0))
+    root.localTempC = Math.max(0, Number(data.tempC || 0))
+    root.localVramUsedMb = Math.max(0, Number(data.vramUsedMb || 0))
+    root.localVramTotalMb = Math.max(0, Number(data.vramTotalMb || 0))
+    root.localVramModelsMb = Math.max(0, Number(data.vramModelsMb || 0))
+    root.localClockMhz = Math.max(0, Number(data.clockMhz || 0))
+    root.localClockMaxMhz = Math.max(0, Number(data.clockMaxMhz || 0))
+    root.localFanPct = Math.max(0, Number(data.fanPct || 0))
     root.localReady = true
+    root.localSampledAt = Date.now()
     root.pushLocalSample(root.localOnline ? root.localLoad : 0)
   }
 
@@ -261,6 +314,11 @@ Item {
     ring.unshift(Number(value) || 0)
     var previous = root.localHistory.length ? Number(root.localHistory[0]) : 0
     root.localHistory = ring
+    var power = root.localPowerHistory.slice(0, Math.max(0, root.localCells - 1))
+    power.unshift(root.localOnline ? root.localPowerW : 0)
+    root.localPowerHistory = power
+    root.localPeakLoad = Math.max(root.localPeakLoad, Number(value) || 0)
+    root.localPeakPowerW = Math.max(root.localPeakPowerW, root.localPowerW)
     // A pulse means the runner just got busier, not merely that it is busy —
     // otherwise a steady 90% load would strobe the widget forever.
     if (value > previous + 2 && value >= root.localThreshold) root.localPulse++
