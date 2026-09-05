@@ -42,7 +42,7 @@ collectors, which contact your providers with the sign-ins you already have.
 ![Burn Bar in the Omarchy bar, right of the clock](docs/bar.png)
 
 ```
-CLAUDE ◄── time ──┤ now ├── time ──► CODEX  ║  LOCAL ──► seconds
+CLAUDE ◄── time ──┤ now ├── time ──► CODEX  ║  NANO ──► seconds
 ```
 
 Claude burns on the left, Codex on the right, and the newest bucket for **both**
@@ -104,9 +104,9 @@ writes and output; cache reads are left out, and they are billed too, at a
 lower rate), turns and sessions across both cloud agents, and a refresh
 button.
 
-**Three tiles** — Claude, Codex and Local, each with its own hue: turns,
+**Three tiles** — Claude, Codex and nano, each with its own hue: turns,
 sessions, tokens per minute, when the peak bucket happened, and how long ago
-the agent was last active. The local tile shows state, warm-model count and
+the agent was last active. The nano tile shows state, warm-model count and
 watts, plus the session's peak load and power.
 
 **Cloud column**

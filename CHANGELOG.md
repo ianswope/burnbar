@@ -25,6 +25,10 @@ the numbers are the same instrument pointed at a different box.
   header.
 - Settings `ollamaUrl` (default `http://nano:11434`), `localHost` (the ssh
   alias, default `nano`) and `meterUnit` (default `ollama-meter`).
+- **The lane is called by the box's name.** Wherever the strip and cockpit
+  said LOCAL — the tile, the tooltip, the RATE and TOKEN MIX rows, the
+  tokens header, the footer — they now say NANO (the `localHost` setting,
+  upper-cased), so the instrument names the machine it is reading.
 - The cockpit's local header names the box and, when residency answered but
   ssh did not, says "no hardware telemetry" with the reason in red — never a
   board full of zeros. POWER DRAW carries the CPU/GPU/CV rail under the

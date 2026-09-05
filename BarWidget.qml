@@ -5,7 +5,7 @@ import qs.Ui
 
 // Burn Bar — one live thermal instrument for every model you run.
 //
-//   CLAUDE ◄── time ──┤ now ├── time ──► CODEX  ║  LOCAL ──► seconds
+//   CLAUDE ◄── time ──┤ now ├── time ──► CODEX  ║  NANO ──► seconds
 //
 // Claude burns on the left and Codex on the right, both with their newest
 // bucket against the shared centre line, so the divider is always "now" and the
@@ -118,7 +118,7 @@ BarWidget {
         + "\nnow " + compact(svc.codexLatest) + " this bucket  ·  " + svc.codexSessions + " sessions"
         + "\nweekly quota " + quotaText(svc.codexWeekly, svc.codexLimitsMeasuredAt)
     if (zone === zoneLocal)
-      return (svc.localHostName !== "" ? svc.localHostName.toUpperCase() : "LOCAL") + "  ·  " + (!svc.localOnline
+      return svc.localHost.toUpperCase() + "  ·  " + (!svc.localOnline
           ? "Ollama offline" + (svc.localError !== "" ? "\n" + svc.localError : "")
           : (svc.localActive ? "inferencing " : "idle ") + Math.round(svc.localLoad) + "%"
             + "  ·  " + String(svc.localBackend).toUpperCase()

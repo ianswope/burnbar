@@ -161,6 +161,10 @@ Panel {
   function rateHour(agent) { return trailing60(agent) / 60 }
   function rateWindow(agent) { return windowTotal(agent) / Math.max(1, windowMinutes) }
   readonly property bool localTokens: svc ? svc.localTokensAvailable : false
+  // The box's name, as the user configured it: what the panel calls the
+  // lane wherever it used to say "local". Always known, even offline.
+  readonly property string boxName: svc ? svc.localHost : "nano"
+  readonly property string boxLabel: boxName.toUpperCase()
   readonly property real offload: svc ? svc.offloadShare : 0
   function topModel(byModel) {
     var rows = sortedModels(byModel)
@@ -514,7 +518,7 @@ Panel {
           meta: "frontier tokens burned · last " + panel.widget.windowLabel(panel.windowMinutes) + "  ·  "
             + ((panel.svc ? panel.svc.claudeTurns + panel.svc.codexTurns : 0)) + " turns  ·  "
             + ((panel.svc ? panel.svc.claudeSessions + panel.svc.codexSessions : 0)) + " sessions"
-            + (panel.localTokens ? "  ·  " + Math.round(panel.offload * 100) + "% kept local" : "")
+            + (panel.localTokens ? "  ·  " + Math.round(panel.offload * 100) + "% kept on " + panel.boxName : "")
           detail: panel.svc
             ? panel.widget.compact(panel.rateNow("claude") + panel.rateNow("codex")) + "/min last 5m  ·  "
               + panel.widget.compact(panel.rateHour("claude") + panel.rateHour("codex")) + "/min last hour  ·  "
@@ -635,7 +639,7 @@ Panel {
                     font.pixelSize: Style.font.display
                   }
                   Item { Layout.fillWidth: true }
-                  Caption { text: tile.modelData.toUpperCase(); color: panel.foreground; font.bold: true }
+                  Caption { text: tile.isClaude || tile.isCodex ? tile.modelData.toUpperCase() : panel.boxLabel; color: panel.foreground; font.bold: true }
                 }
                 Caption { text: tile.sub; Layout.fillWidth: true }
                 Caption { text: tile.sub2; Layout.fillWidth: true }
@@ -798,7 +802,7 @@ Panel {
               Counter { target: panel.rateHour("codex"); format: panel.widget.compact; color: panel.foreground; font.pixelSize: Style.font.bodySmall; Layout.preferredWidth: Style.space(58); horizontalAlignment: Text.AlignRight }
               Counter { target: panel.rateWindow("codex"); format: panel.widget.compact; color: panel.foreground; font.pixelSize: Style.font.bodySmall; Layout.preferredWidth: Style.space(58); horizontalAlignment: Text.AlignRight }
 
-              Body { visible: panel.localTokens; text: "Local"; color: panel.widget.localHot; Layout.fillWidth: true }
+              Body { visible: panel.localTokens; text: panel.boxName; color: panel.widget.localHot; Layout.fillWidth: true }
               Counter { visible: panel.localTokens; target: panel.rateNow("local"); format: panel.widget.compact; color: panel.foreground; font.bold: true; font.pixelSize: Style.font.bodySmall; Layout.preferredWidth: Style.space(58); horizontalAlignment: Text.AlignRight }
               Counter { visible: panel.localTokens; target: panel.rateHour("local"); format: panel.widget.compact; color: panel.foreground; font.pixelSize: Style.font.bodySmall; Layout.preferredWidth: Style.space(58); horizontalAlignment: Text.AlignRight }
               Counter { visible: panel.localTokens; target: panel.rateWindow("local"); format: panel.widget.compact; color: panel.foreground; font.pixelSize: Style.font.bodySmall; Layout.preferredWidth: Style.space(58); horizontalAlignment: Text.AlignRight }
@@ -825,7 +829,7 @@ Panel {
                 // Local: evaluated prompt as "in", generated as "out", the
                 // reused prefix as the cache read. There is no cache write.
                 if (panel.localTokens)
-                  rows.push({ name: "Local", accent: panel.widget.localHot, split: panel.svc.localTokensSplit })
+                  rows.push({ name: panel.boxName, accent: panel.widget.localHot, split: panel.svc.localTokensSplit })
                 return rows
               }
               delegate: ColumnLayout {
@@ -1070,8 +1074,7 @@ Panel {
                 spacing: 0
                 Caption {
                   Layout.fillWidth: true
-                  text: (panel.svc && panel.svc.localHost !== "" ? panel.svc.localHost.toUpperCase() : "LOCAL")
-                    + "  ·  " + (!panel.localOnline ? "OFFLINE" : panel.localActive ? "INFERENCING" : "IDLE")
+                  text: panel.boxLabel + "  ·  " + (!panel.localOnline ? "OFFLINE" : panel.localActive ? "INFERENCING" : "IDLE")
                   color: panel.localState
                   font.bold: true
                 }
@@ -1099,8 +1102,8 @@ Panel {
             PanelSectionHeader {
               Layout.fillWidth: true
               text: panel.localTokens
-                ? "LOCAL TOKENS  ·  " + Math.round(panel.offload * 100) + "% OFFLOADED FROM FRONTIER"
-                : "LOCAL TOKENS  ·  NO RECORD"
+                ? panel.boxLabel + " TOKENS  ·  " + Math.round(panel.offload * 100) + "% OFFLOADED FROM FRONTIER"
+                : panel.boxLabel + " TOKENS  ·  NO RECORD"
               foreground: panel.foreground
               fontFamily: panel.fontFamily
               elide: Text.ElideRight
@@ -1124,7 +1127,7 @@ Panel {
                   : "the Ollama journal is not readable from this account"
                 var sp = s.localTokensSplit || {}
                 var top = panel.topModel(s.localTokensByModel)
-                return panel.widget.compact(s.localTokensTotal) + " tokens burned locally · "
+                return panel.widget.compact(s.localTokensTotal) + " tokens burned on " + panel.boxName + " · "
                   + s.localTokensTurns + " turns · prompt " + panel.widget.compact(sp.input || 0)
                   + " · generated " + panel.widget.compact(sp.output || 0)
                   + " · cached " + panel.widget.compact(sp.cacheRead || 0)
@@ -1336,7 +1339,7 @@ Panel {
           Caption {
             Layout.fillWidth: true
             text: panel.svc && panel.svc.lastError !== "" ? panel.svc.lastError
-              : "Claude ◄ now ► Codex  ║  Local  ·  colour is heat  ·  cloud is tokens per bucket, local is the Ollama box's load per second"
+              : "Claude ◄ now ► Codex  ║  " + panel.boxName + "  ·  colour is heat  ·  cloud is tokens per bucket, " + panel.boxName + " is load per second"
             color: panel.svc && panel.svc.lastError !== "" ? Color.urgent : panel.dim
           }
           Caption {
