@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "nixfred.burnbar",
   "name": "Burn Bar",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "author": "nixfred",
   "license": "MIT",
   "description": "Live thermal heat map of Claude, Codex and local Ollama burn in one bar slot, with weekly quota gauges and local model control.",

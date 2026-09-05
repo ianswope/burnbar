@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.3.0 — 2026-09-04
+
+### Added
+- **Cockpit panel.** Two columns at 860px, fitted height, no scrolling — the
+  whole instrument in one glance.
+- Cloud: burn-over-time chart (Claude up, Codex down, heat-ramp coloured, hour
+  labels, breathing live column), tokens-per-minute at three horizons, token
+  mix (input / cache-write / output) with cache-read volume and the % the
+  cache absorbed, plan limits with both countdown and wall-clock reset time,
+  Claude spend by model with share bars, peak-at and last-activity per agent.
+- Local: GPU name, backend and Ollama version; GPU load, power draw, temp,
+  VRAM used/total with the models' share, SM clock, sample age; load and power
+  traces; resident models with params, quant, family, VRAM, context and
+  "evicts in" from `expires_at`.
+- `burnbar-local-status` returns per-model detail, Ollama version and
+  nvidia-smi telemetry (fields the board does not expose read as 0 and hide).
+- `burnbar-collect` carries an input / cache-write / output / cache-read split
+  per point, plus turns, first/last activity and peak time per agent.
+
 ## 1.2.0 — 2026-09-04
 
 ### Added
