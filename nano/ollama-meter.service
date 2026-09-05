@@ -1,0 +1,21 @@
+[Unit]
+Description=ollama-meter: token-counting reverse proxy in front of Ollama
+Documentation=https://github.com/nixfred/burnbar
+After=network-online.target ollama.service
+Wants=ollama.service
+
+[Service]
+ExecStart=/usr/bin/python3 /usr/local/lib/burnbar/ollama-meter.py
+Environment=METER_LISTEN=0.0.0.0:11434
+Environment=METER_UPSTREAM=127.0.0.1:11435
+Environment=PYTHONUNBUFFERED=1
+Restart=always
+RestartSec=1
+DynamicUser=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target

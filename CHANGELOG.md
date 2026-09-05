@@ -2,44 +2,72 @@
 
 ## 1.5.0 — 2026-09-05
 
-Burn Bar drops local inference. Every trace of the Ollama lane, the GPU
-telemetry column and the offload share is gone; what is left is the two cloud
-agents it started as, and nothing on screen that a machine without a GPU
-cannot answer.
+The local lane moves off this machine. dex has no GPU and no Ollama; nano —
+a Jetson Orin Nano Super on the tailnet — has both. Every call that used to
+go to the local GPU now goes to nano: residency and model control over HTTP,
+hardware telemetry and the token journal over ssh. The strip, the cockpit and
+the numbers are the same instrument pointed at a different box.
 
-### Removed
-- **The local intelligence lane.** The reactor core, the violet load strip
-  and the hard rule that separated them from the cloud lanes. The strip is
-  now `CLAUDE ◄── time ──┤ now ├── time ──► CODEX` and nothing else; the
-  cloud lanes take the width the local lane was holding.
-- **The cockpit's local column.** GPU load, power draw, temperature, VRAM, SM
-  clock, warm-model count, the load and power traces, the resident-model
-  list, and the model-control dropdown with its Load / Unload buttons. The
-  panel is one column now, 560 wide instead of 880.
-- **Local tokens and the offload share.** The journal reader, the `local`
-  bucket series, the LOCAL tile, and the Local rows in RATE and TOKEN MIX.
-  `history.json` no longer carries `local` or `offloadShare`, and buckets
-  carry `claude` and `codex` only.
-- `bin/burnbar-local-status` and `bin/burnbar-local-control`, and with them
-  every HTTP call Burn Bar used to make. It now has no network endpoint of
-  its own at all — the only traffic left is Omarchy's own usage collectors,
-  which it still triggers for plan limits.
-- Settings `showLocal`, `localCells`, `localRefreshMs`, `localThreshold` and
-  `ollamaUnit`, and the `BURNBAR_OLLAMA_JOURNAL` test hook. A `shell.json`
-  that still sets them is not an error; they are simply ignored.
-- The `ollama` alias on the bar widget.
+### Added
+- **`nano/ollama-meter.py`, a metering reverse proxy for the Ollama box.**
+  Ollama 0.15 persists no per-request token counts anywhere: nothing in its
+  journal (`OLLAMA_DEBUG=1` only adds the prompt-cache slot line), no metrics
+  endpoint. Every response *does* carry `prompt_eval_count` and
+  `eval_count`, so the meter sits on Ollama's public port, forwards
+  everything byte for byte — streams relayed chunk by chunk, first token in
+  0.37 s — and writes one journal line per request with the counts off the
+  way out. `/api/generate`, `/api/chat`, `/api/embed`, `/api/embeddings` and
+  the OpenAI-compatible `/v1/*` (from `usage`) are all read. Whatever asks
+  is counted the same.
+- **`nano/install.sh`** puts it there: the meter unit, a drop-in that moves
+  Ollama to loopback `:11435` and sets `OLLAMA_NUM_PARALLEL=1`, and a sysctl
+  reserving 1 GiB (`vm.min_free_kbytes`). Rollback is three commands in the
+  header.
+- Settings `ollamaUrl` (default `http://nano:11434`), `localHost` (the ssh
+  alias, default `nano`) and `meterUnit` (default `ollama-meter`).
+- The cockpit's local header names the box and, when residency answered but
+  ssh did not, says "no hardware telemetry" with the reason in red — never a
+  board full of zeros. POWER DRAW carries the CPU/GPU/CV rail under the
+  whole-board figure.
 
 ### Changed
-- Middle click forces a collector run and a plan-limit refresh; there is no
-  local poll left to force.
-- Energy — what drives the under-glow, the sparks and the frame rate — is now
-  the maximum of the two live cloud cells alone.
-- Tooltip and panel wording drops the cloud/local distinction: there is only
-  one kind of burn on screen now, so it is no longer qualified as "cloud".
+- **Telemetry comes from the Jetson's sysfs over ssh**, not `nvidia-smi`:
+  on a Jetson `nvidia-smi` exists and answers `[N/A]` to every query, and
+  `tegrastats` needs a second per sample. One shell snippet reads the nvgpu
+  devfreq node (load, clock), the gpu thermal zone, the INA3221 rails
+  (VDD_IN for the board, VDD_CPU_GPU_CV for inference), the fan PWM,
+  `/proc/meminfo` for the unified memory, and the ollama processes' CPU
+  ticks 200 ms apart. Backend reads `TEGRA`; VRAM is now MEMORY · UNIFIED;
+  SM CLOCK is GPU CLOCK.
+- **Local tokens come from the meter journal on nano**, read over ssh by
+  cursor, one round trip per collector run. The runner-log state machine is
+  gone; each meter line is self-contained. Cache reads are 0: Ollama does
+  not report prompt-cache hits in its responses.
+- **Load & keep warm drops nano's page cache first** (`ollama-prepare.sh`
+  over ssh, passwordless sudo). The Jetson's GPU and its page cache share
+  one pool; a load that needed a contiguous 1–2 GiB failed with cudaMalloc
+  out-of-memory every time the cache had grown since boot. The sysctl
+  reserve above is the standing fix; the drop is belt and braces for the
+  button.
+- `localRefreshMs` default 1500 → 2500, floor 500 → 1000: a poll is one HTTP
+  call and one ssh round trip (~1.3 s), not a /proc read.
+- Both scripts default to `http://nano:11434`; `OLLAMA_HOST` still
+  overrides. `ollamaUnit` and `BURNBAR_OLLAMA_JOURNAL` are gone;
+  `BURNBAR_METER_JOURNAL` is the test hook.
 
-### Notes
-- `docs/cockpit.png`, `docs/bar.png` and `preview.png` still show the
-  three-lane build and need retaking.
+### Fixed
+- ssh joined the remote argv with spaces and handed it to a shell, so
+  `-g 'meter ts='` arrived as two arguments and journalctl refused the
+  match. Every remote word is shell-quoted now.
+
+### On nano itself
+- Ollama listens on `127.0.0.1:11435`; `ollama-meter` on `0.0.0.0:11434`.
+- `OLLAMA_NUM_PARALLEL` 5 → 1 in `ollama.service.d/zz-burnbar.conf`
+  ("zz-" because an older `override.conf` there sets the same variables and
+  drop-ins apply in name order).
+- `vm.min_free_kbytes` 45056 → 1048576 in `/etc/sysctl.d/90-burnbar-ollama.conf`.
+  Three model swaps in a row loaded without a cache drop afterwards; loads
+  read a little more from disk in exchange (55–60 s cold vs 35 s).
 
 ## 1.4.0 — 2026-09-05
 

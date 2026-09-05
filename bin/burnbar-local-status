@@ -1,0 +1,278 @@
+#!/usr/bin/env python3
+"""Report the remote Ollama box — residency over HTTP, hardware over ssh — as
+one JSON object.
+
+Two channels, because the runner is on another machine:
+
+  HTTP   /api/ps and /api/version at --url. What is resident, how much
+         memory it holds, when it evicts, which Ollama this is.
+  ssh    one shell snippet on --host that reads the Jetson's sysfs: GPU load
+         and clock from the nvgpu devfreq node, temperatures from the thermal
+         zones, power from the INA3221 rails, fan PWM, unified memory from
+         /proc/meminfo, and the ollama processes' CPU ticks sampled 200 ms
+         apart. nvidia-smi exists on a Jetson and answers [N/A] to every
+         query; tegrastats needs a second per sample. sysfs is instant and
+         needs no privilege.
+
+Either channel can fail on its own. No HTTP means OFFLINE. No ssh means the
+model list is still right but every hardware figure is withheld, with the
+reason in telemetryError — not zeros that look like an idle board.
+"""
+
+import argparse
+import json
+import math
+import os
+import subprocess
+import urllib.error
+import urllib.parse
+import urllib.request
+
+
+MAX_HTTP_RESPONSE_BYTES = 1024 * 1024
+MAX_MODELS = 128
+MAX_TEXT_LENGTH = 256
+MAX_ERROR_LENGTH = 512
+HTTP_TIMEOUT = 2.0
+SSH_TIMEOUT = 8
+
+# Runs on the Ollama box. Prints "key value…" lines; every read is a sysfs
+# or /proc file, so a missing one costs a blank line, never a hang. The
+# 200 ms sleep is the CPU sample window.
+TELEMETRY_SNIPPET = r'''
+G=/sys/devices/platform/bus@0/17000000.gpu
+ticks() { t=0; for p in /proc/[0-9]*; do [ "$(cat $p/comm 2>/dev/null)" = ollama ] || continue; set -- $(cat $p/stat 2>/dev/null); t=$((t + ${14:-0} + ${15:-0})); done; echo $t; }
+total() { set -- $(grep "^cpu " /proc/stat); echo $(($2+$3+$4+$5+$6+$7+$8)); }
+t1=$(ticks); c1=$(total); sleep 0.2; t2=$(ticks); c2=$(total)
+echo "cpu_ticks $((t2-t1)) $((c2-c1))"
+echo "gpu_load $(cat $G/load 2>/dev/null)"
+echo "gpu_hz $(cat $G/devfreq/17000000.gpu/cur_freq 2>/dev/null) $(cat $G/devfreq/17000000.gpu/max_freq 2>/dev/null)"
+for z in /sys/class/thermal/thermal_zone*; do case "$(cat $z/type 2>/dev/null)" in gpu-thermal) echo "temp_gpu $(cat $z/temp 2>/dev/null)";; esac; done
+for h in /sys/class/hwmon/hwmon*; do case "$(cat $h/name 2>/dev/null)" in
+  ina3221) for i in 1 2 3; do echo "rail_$(cat $h/in${i}_label 2>/dev/null) $(cat $h/in${i}_input 2>/dev/null) $(cat $h/curr${i}_input 2>/dev/null)"; done;;
+  pwmfan) echo "fan_pwm $(cat $h/pwm1 2>/dev/null)";;
+esac; done
+echo "mem $(awk '/^MemTotal/{t=$2} /^MemAvailable/{a=$2} END{print t, a}' /proc/meminfo)"
+echo "model $(tr -d '\0' < /proc/device-tree/model 2>/dev/null)"
+'''
+
+
+def bounded_text(value, limit: int = MAX_TEXT_LENGTH) -> str:
+    text = str(value or "")
+    text = "".join(character if character.isprintable() else " " for character in text)
+    return text[:limit]
+
+
+def normalize_url(url: str) -> str:
+    url = url.strip()
+    parsed = urllib.parse.urlsplit(url)
+    if parsed.scheme.lower() in ("http", "https") and not parsed.netloc:
+        raise ValueError("Ollama URL must use http or https with a host")
+    url = url if "://" in url else "http://" + url
+    parsed = urllib.parse.urlsplit(url)
+    if parsed.scheme.lower() not in ("http", "https") or not parsed.netloc or not parsed.hostname:
+        raise ValueError("Ollama URL must use http or https with a host")
+    try:
+        parsed.port
+    except ValueError as error:
+        raise ValueError("Ollama URL has an invalid port") from error
+    # Endpoint paths are appended to this string; a query or fragment would
+    # swallow them ("?key=a/api/ps" is a query, "#x/api/ps" is never sent).
+    if parsed.query or parsed.fragment:
+        raise ValueError("Ollama URL must not carry a query or fragment")
+    return url.rstrip("/")
+
+
+def ssh_host(value: str) -> str:
+    """An ssh destination as the user configured it. Only the shape that can
+    turn into an option is refused: a leading '-' is how a host name becomes
+    a flag, and '--' stops that."""
+    text = str(value or "").strip()
+    if not text or len(text) > 128 or not text.isprintable() or any(c.isspace() for c in text) or text.startswith("-"):
+        raise ValueError("ssh host must be one printable word not starting with '-'")
+    return text
+
+
+def reject_nonfinite(value: str):
+    raise ValueError(f"non-finite JSON number: {value}")
+
+
+def parse_finite_float(value: str) -> float:
+    parsed = float(value)
+    if not math.isfinite(parsed):
+        reject_nonfinite(value)
+    return parsed
+
+
+def read_json_response(response) -> dict:
+    raw = response.read(MAX_HTTP_RESPONSE_BYTES + 1)
+    if len(raw) > MAX_HTTP_RESPONSE_BYTES:
+        raise ValueError("Ollama response exceeds 1 MiB")
+    payload = json.loads(raw.decode("utf-8"), parse_constant=reject_nonfinite,
+                         parse_float=parse_finite_float)
+    if not isinstance(payload, dict):
+        raise ValueError("Ollama response must be a JSON object")
+    return payload
+
+
+def bounded_int(value, limit: int = 10**16) -> int:
+    # Integers are clamped as integers: math.isfinite() converts to float
+    # first, and a 400-digit JSON integer raised OverflowError there.
+    if isinstance(value, bool):
+        return 0
+    if isinstance(value, int):
+        return int(min(max(value, 0), limit))
+    if isinstance(value, float) and math.isfinite(value):
+        return int(min(max(value, 0), limit))
+    return 0
+
+
+def ollama_models(url: str) -> list[dict]:
+    """Resident models with everything /api/ps knows about them: memory
+    footprint, context length, quantisation and the keep-alive deadline. All
+    bounded — this is the one place untrusted JSON turns into panel text."""
+    with urllib.request.urlopen(normalize_url(url) + "/api/ps", timeout=HTTP_TIMEOUT) as response:
+        payload = read_json_response(response)
+    models = payload.get("models", [])
+    if not isinstance(models, list):
+        return []
+    safe_models = []
+    for model in models[:MAX_MODELS]:
+        if not isinstance(model, dict):
+            continue
+        name = bounded_text(model.get("name") or model.get("model"))
+        if not name:
+            continue
+        details = model.get("details")
+        details = details if isinstance(details, dict) else {}
+        safe_models.append({
+            "name": name,
+            "size": bounded_int(model.get("size")),
+            "sizeVram": bounded_int(model.get("size_vram")),
+            "contextLength": bounded_int(model.get("context_length"), 10**9),
+            "expiresAt": bounded_text(model.get("expires_at"), 64),
+            "parameters": bounded_text(details.get("parameter_size"), 32),
+            "quantization": bounded_text(details.get("quantization_level"), 32),
+            "family": bounded_text(details.get("family"), 32),
+        })
+    return safe_models
+
+
+def ollama_version(url: str) -> str:
+    try:
+        with urllib.request.urlopen(normalize_url(url) + "/api/version", timeout=HTTP_TIMEOUT) as response:
+            payload = read_json_response(response)
+        return bounded_text(payload.get("version"), 32)
+    except (OSError, urllib.error.URLError, json.JSONDecodeError, UnicodeDecodeError, ValueError):
+        return ""
+
+
+def num(text, scale=1.0, limit=10**12) -> float:
+    try:
+        value = float(str(text).strip()) * scale
+    except (TypeError, ValueError):
+        return 0.0
+    return value if math.isfinite(value) and 0 <= value <= limit else 0.0
+
+
+def parse_telemetry(text: str) -> dict:
+    """The snippet's lines into panel fields. Anything missing reads as 0,
+    which the panel shows as "--" with the bar hidden."""
+    fields = {}
+    rails = {}
+    for line in text.splitlines():
+        parts = line.split()
+        if not parts:
+            continue
+        key, values = parts[0], parts[1:]
+        if key == "cpu_ticks" and len(values) == 2:
+            mine, everyone = num(values[0]), num(values[1])
+            fields["cpu"] = round(min(100.0, mine / everyone * 100.0), 1) if everyone > 0 else 0.0
+        elif key == "gpu_load" and values:
+            fields["gpu"] = round(min(100.0, num(values[0]) / 10.0), 1)
+        elif key == "gpu_hz" and len(values) == 2:
+            fields["clockMhz"] = round(num(values[0], 1e-6))
+            fields["clockMaxMhz"] = round(num(values[1], 1e-6))
+        elif key == "temp_gpu" and values:
+            fields["tempC"] = round(num(values[0], 1e-3))
+        elif key.startswith("rail_") and len(values) == 2:
+            rails[key[5:]] = num(values[0]) * num(values[1]) / 1e6   # mV × mA → W
+        elif key == "fan_pwm" and values:
+            fields["fanPct"] = round(min(100.0, num(values[0]) / 255.0 * 100.0))
+        elif key == "mem" and len(values) == 2:
+            total, available = num(values[0]), num(values[1])
+            fields["vramTotalMb"] = round(total / 1024)
+            fields["vramUsedMb"] = round(max(0.0, total - available) / 1024)
+        elif key == "model":
+            name = " ".join(values)
+            for noise in ("NVIDIA ", " Engineering Reference Developer Kit"):
+                name = name.replace(noise, "")
+            fields["gpuName"] = bounded_text(name, 64)
+    # VDD_IN is the whole board at the barrel jack: what the power tile has
+    # always meant. The CPU/GPU/CV rail is the part inference moves.
+    if "VDD_IN" in rails:
+        fields["powerW"] = round(rails["VDD_IN"], 1)
+    if "VDD_CPU_GPU_CV" in rails:
+        fields["gpuRailW"] = round(rails["VDD_CPU_GPU_CV"], 1)
+    return fields
+
+
+def telemetry(host: str) -> tuple[dict, str]:
+    """(fields, error). BatchMode so a missing key fails now rather than
+    prompting a process nobody can see; the ConnectTimeout bounds a box that
+    is off, and the subprocess timeout bounds one that answers and stalls."""
+    command = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=3", "-o", "ServerAliveInterval=3",
+               "-o", "LogLevel=ERROR", "--", host, "sh", "-c", TELEMETRY_SNIPPET]
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, timeout=SSH_TIMEOUT, check=False)
+    except FileNotFoundError:
+        return {}, "ssh not found"
+    except subprocess.SubprocessError as error:
+        return {}, bounded_text("ssh %s: %s" % (host, error), MAX_ERROR_LENGTH)
+    if result.returncode != 0:
+        reason = (result.stderr.strip().splitlines() or ["ssh exited %d" % result.returncode])[-1]
+        return {}, bounded_text("ssh %s: %s" % (host, reason), MAX_ERROR_LENGTH)
+    fields = parse_telemetry(result.stdout)
+    if "gpu" not in fields:
+        return fields, "no GPU load reading from %s" % host
+    return fields, ""
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--threshold", type=float, default=8.0)
+    parser.add_argument("--url", default=os.environ.get("OLLAMA_HOST", "http://nano:11434"))
+    parser.add_argument("--host", default=os.environ.get("BURNBAR_LOCAL_HOST", "nano"))
+    args = parser.parse_args()
+    try:
+        host = ssh_host(args.host)
+        models = ollama_models(args.url)
+    except (OSError, urllib.error.URLError, json.JSONDecodeError, UnicodeDecodeError, ValueError) as error:
+        print(json.dumps({"online": False, "active": False, "load": 0, "modelCount": 0,
+                          "model": "", "backend": "none",
+                          "error": bounded_text(error, MAX_ERROR_LENGTH)}))
+        return 0
+
+    names = [model["name"] for model in models]
+    fields, telemetry_error = telemetry(host)
+    gpu = fields.get("gpu", 0.0)
+    cpu = fields.get("cpu", 0.0)
+    # Device-wide GPU utilisation belongs to whatever is using the GPU. With
+    # no model resident none of it is inference: the lane then reads the
+    # runner's own CPU only, and "active" needs a resident model.
+    load = round(max(cpu, gpu) if models else cpu, 1)
+    payload = {"online": True, "active": bool(models) and load >= args.threshold,
+               "load": load, "remote": True, "host": host,
+               "modelCount": len(models), "model": names[0] if names else "",
+               "models": names, "modelDetails": models, "backend": "tegra",
+               "cpu": round(cpu, 1), "gpu": round(gpu, 1),
+               "version": ollama_version(args.url),
+               "vramModelsMb": round(sum(m["sizeVram"] for m in models) / 1048576),
+               "telemetryError": telemetry_error}
+    payload.update({k: v for k, v in fields.items() if k not in ("gpu", "cpu")})
+    print(json.dumps(payload))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

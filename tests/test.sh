@@ -24,7 +24,13 @@ jq -e '
   .entryPoints.service == "Service.qml" and
   .entryPoints.barWidget == "BarWidget.qml" and
   .barWidget.allowMultiple == false and
-  .barWidget.defaultSection == "center"
+  .barWidget.defaultSection == "center" and
+  .barWidget.defaults.showLocal == true and
+  (.barWidget.schema | map(.key) | index("localThreshold")) != null and
+  (.barWidget.schema | map(.key) | index("ollamaUrl")) != null and
+  (.barWidget.schema | map(.key) | index("localHost")) != null and
+  (.barWidget.schema | map(.key) | index("meterUnit")) != null and
+  (.barWidget.schema | map(.key) | index("ollamaUnit")) == null
 ' manifest.json >/dev/null || fail "manifest contract"
 ok "manifest contract"
 
@@ -43,6 +49,17 @@ qml_clamp=$(clamp bars BarWidget.qml); svc_clamp=$(clamp bars Service.qml)
 grep -q 'svc ? svc.bucketCount' BarWidget.qml || fail "widget must take its cell count from the service"
 ok "cell count == bucket count ($man_bars, clamp $man_bars_min..$man_bars_max)"
 
+# Same trap on the local lane: the widget draws localCells cells, the service
+# keeps a ring localCells long. Drift and the oldest sample is drawn as zero.
+man_local=$(jq -r '.barWidget.defaults.localCells' manifest.json)
+man_local_min=$(jq -r '.barWidget.schema[] | select(.key=="localCells") | .min' manifest.json)
+man_local_max=$(jq -r '.barWidget.schema[] | select(.key=="localCells") | .max' manifest.json)
+qml_lclamp=$(clamp localCells BarWidget.qml); svc_lclamp=$(clamp localCells Service.qml)
+[ -n "$qml_lclamp" ] && [ "$qml_lclamp" = "$svc_lclamp" ] || fail "localCells clamp differs: widget '$qml_lclamp' vs service '$svc_lclamp'"
+[ "$svc_lclamp" = "boundedInt(\"localCells\", $man_local, $man_local_min, $man_local_max)" ] || fail "localCells clamp '$svc_lclamp' != manifest"
+grep -q 'svc ? svc.localCells' BarWidget.qml || fail "widget must take its local cell count from the service"
+ok "local cell count == local ring length ($man_local, clamp $man_local_min..$man_local_max)"
+
 echo "== runtime dependency =="
 command -v python3 >/dev/null || fail "python3 missing"
 python3 - <<'PY' || exit 1
@@ -51,10 +68,25 @@ assert sys.version_info >= (3, 8), "python 3.8+ required"
 PY
 ok "python3 present"
 # stdlib only: a marketplace plugin must not need pip
-! grep -qE '^\s*import\s+(requests|yaml|numpy)' bin/burnbar-collect || fail "third-party import in bin/burnbar-collect"
-python3 -c "import ast,sys; ast.parse(open(sys.argv[1]).read())" bin/burnbar-collect \
-  || fail "bin/burnbar-collect does not parse"
-ok "the collector is stdlib-only and parses"
+for script in bin/burnbar-collect bin/burnbar-local-status bin/burnbar-local-control nano/ollama-meter.py; do
+  ! grep -qE '^\s*import\s+(requests|yaml|numpy)' "$script" || fail "third-party import in $script"
+  python3 -c "import ast,sys; ast.parse(open(sys.argv[1]).read())" "$script" || fail "$script does not parse"
+done
+ok "all four scripts are stdlib-only and parse"
+
+echo "== local intelligence unit tests =="
+python3 -m unittest discover -s tests -p 'test_local_scripts.py' -q >/dev/null \
+  || fail "local script unit tests"
+ok "ollama url/json/ssh/tegra/meter hardening tests"
+
+# The local probe must degrade to a clean offline JSON object rather than
+# crashing when nothing is listening — that path is what draws the red core.
+# It must also never reach for ssh on that path: --host is a name that no
+# ssh config resolves, and the probe still returns at once.
+offline=$(python3 bin/burnbar-local-status --threshold 8 --url http://127.0.0.1:1 --host burnbar-no-such-host)
+echo "$offline" | jq -e '.online == false and .load == 0' >/dev/null \
+  || fail "offline probe did not report a clean offline object"
+ok "local probe degrades to offline JSON"
 
 echo "== collector against a fixture =="
 tmp="$(mktemp -d)"
@@ -68,6 +100,11 @@ export XDG_CACHE_HOME="$tmp/cache"
 real_now=$(date +%s)
 pinned=$(( ( (real_now / 1800) + 1 ) * 1800 + 60 ))
 export BURNBAR_NOW_MS=$(( pinned * 1000 ))
+# Local tokens come from the ollama-meter journal on the Ollama box, over
+# ssh; the fixture must never reach for it. An empty file means "journal
+# readable, nothing in it".
+: > "$tmp/journal-empty.txt"
+export BURNBAR_METER_JOURNAL="$tmp/journal-empty.txt"
 fake_home="$tmp/home"
 mkdir -p "$fake_home/.claude/projects/p" "$fake_home/.codex/sessions/2026/09/03"
 
@@ -280,6 +317,42 @@ ok "window totals are exact while the strip's grid stays aligned"
 jq -e '(.codex.peak > 0 and .codex.peakAt > 0) or (.codex.peak == 0 and .codex.peakAt == 0)' "$out" >/dev/null \
   || fail "peakAt disagrees with peak"
 ok "peakAt is 0 when nothing peaked"
+
+# ── local tokens from the ollama-meter journal ───────────────────────────────
+# Real line shapes from journalctl -o short-unix on nano. Three requests on
+# one model, one on another: 33+53, 31+3 and an embed with prompt only, then
+# a failed load (status 500, no counts) that must not count, and a line with
+# -1 for a count the response never carried.
+j="$tmp/journal.txt"
+t0=$(( pinned - 600 ))
+cat > "$j" <<EOF
+$t0.000000 nano python3[9143]: ollama-meter listening on 0.0.0.0:11434, upstream 127.0.0.1:11435
+$(( t0 + 1 )).804220 nano python3[9143]: meter ts=$(( t0 + 1 ))803 path=/api/generate model=llama3.2:3b status=200 prompt=33 eval=53 ms=2744 client=100.101.176.48
+$(( t0 + 2 )).175497 nano python3[9143]: meter ts=$(( t0 + 2 ))175 path=/api/chat model=llama3.2:3b status=200 prompt=31 eval=3 ms=352 client=10.0.0.147
+$(( t0 + 8 )).080384 nano python3[9143]: meter ts=$(( t0 + 8 ))080 path=/api/embed model=nomic-embed-text status=200 prompt=4 eval=-1 ms=5028 client=10.0.0.147
+$(( t0 + 40 )).358225 nano python3[9143]: meter ts=$(( t0 + 40 ))358 path=/api/generate model=qwen2.5:3b status=500 prompt=-1 eval=-1 ms=30259 client=100.101.176.48
+$(( t0 + 41 )).000000 nano python3[9143]: meter ts=$(( t0 + 41 ))000 path=/api/generate model=qwen2.5:3b status=200 prompt=-1 eval=-1 ms=10 client=100.101.176.48
+EOF
+BURNBAR_METER_JOURNAL="$j" HOME="$fake_home" python3 bin/burnbar-collect --window 360 --buckets 12
+jq -e '.local.available == true and .local.total == 124 and .local.turns == 3
+  and .local.split.input == 68 and .local.split.output == 56 and .local.split.cacheRead == 0 and .local.split.cacheWrite == 0
+  and .local.byModel["llama3.2:3b"] == 120 and .local.byModel["nomic-embed-text"] == 4
+  and .local.host == "nano" and .local.unit == "ollama-meter"' "$out" >/dev/null \
+  || fail "meter journal parse wrong: $(jq -c '.local | {available, total, turns, split, byModel}' "$out")"
+ct=$(jq -r '.claude.total' "$out"); xt=$(jq -r '.codex.total' "$out")
+want=$(python3 -c "print(round(124 / (124 + $ct + $xt), 6))")
+got=$(jq -r '.offloadShare | . * 1000000 | round / 1000000' "$out")
+[ "$got" = "$want" ] || fail "offload share $got != $want"
+jq -e '[.buckets[].local] | add == 124' "$out" >/dev/null || fail "local tokens missing from the buckets"
+ok "local tokens parsed from the meter journal; failed requests skipped; offload share = local / all burn"
+
+# An unreadable journal is reported with its reason. The last-known points
+# stay in the cache (the panel hides the numbers while available is false),
+# so the total is not asserted here.
+BURNBAR_METER_JOURNAL="$tmp/does-not-exist.txt" HOME="$fake_home" python3 bin/burnbar-collect --window 360 --buckets 12
+jq -e '.local.available == false and (.local.reason | length) > 0' "$out" >/dev/null \
+  || fail "unreadable journal not reported: $(jq -c '.local | {available, reason, total}' "$out")"
+ok "an unreadable journal reads as unavailable with a reason"
 
 echo
 echo "ALL TESTS PASSED"
