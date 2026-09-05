@@ -28,6 +28,9 @@ from pathlib import Path
 
 HOME = Path.home()
 STATE = Path(os.environ.get("XDG_STATE_HOME") or HOME / ".local" / "state")
+CACHE = Path(os.environ.get("XDG_CACHE_HOME") or HOME / ".cache")
+# Omarchy's Claude collector keeps its last *successful* limits probe here.
+PROBE_CACHE_DIR = CACHE / "omarchy" / "agent-usage"
 OUT_DIR = STATE / "omarchy" / "burnbar"
 OUT_FILE = OUT_DIR / "history.json"
 CACHE_FILE = OUT_DIR / "scan-cache.json"
@@ -116,11 +119,13 @@ def scan(path, extract):
         next_cache[key] = hit
         return hit["points"]
 
-    # Resume only when the file strictly grew; a shrink means it was rewritten
-    # and the cached offset is meaningless.
+    # Resume only when the file strictly grew. A shrink means it was rewritten
+    # and the cached offset is meaningless — and so does an equal size with a
+    # new mtime, which is a rewrite that happens to be the same length.
     start = 0
     points = []
-    if hit and isinstance(hit.get("offset"), int) and st.st_size >= hit["offset"]:
+    if hit and isinstance(hit.get("offset"), int) \
+            and st.st_size > (hit.get("size") or 0) and hit["offset"] <= st.st_size:
         start = hit["offset"]
         points = list(hit.get("points") or [])
 
@@ -153,34 +158,42 @@ def scan(path, extract):
     return points
 
 
+# Both extractors treat a record as untrusted end to end: valid JSON with the
+# wrong shape ("input_tokens": "unknown", "info": "bad") used to raise past
+# the JSON guard and abort the whole collection for both agents — and the same
+# record would do it again on every run.
+MALFORMED = (TypeError, ValueError, AttributeError, KeyError)
+
+
 def claude_extract(line):
     if "usage" not in line:
         return None
     try:
         d = json.loads(line)
-    except Exception:
+        msg = d.get("message") or {}
+        usage = msg.get("usage")
+        if not isinstance(usage, dict):
+            return None
+        ts = parse_ts(d.get("timestamp"))
+        if ts is None:
+            return None
+        # Billable work: fresh input + what we paid to write cache + output.
+        # Cache reads are excluded on purpose — they are the cheap path and
+        # would swamp the scale (939M read vs 24M written on the machine this
+        # was built on).
+        inp = int(usage.get("input_tokens") or 0)
+        cache_w = int(usage.get("cache_creation_input_tokens") or 0)
+        out = int(usage.get("output_tokens") or 0)
+        tokens = inp + cache_w + out
+        if tokens <= 0:
+            return None
+        # Cache reads ride along as a fifth field for the panel's "what did the
+        # cache save you" row — they still never touch the heat map.
+        cache_r = int(usage.get("cache_read_input_tokens") or 0)
+        return [ts, tokens, str(msg.get("id") or ""), str(msg.get("model") or "unknown"),
+                [inp, cache_w, out, cache_r]]
+    except MALFORMED:
         return None
-    msg = d.get("message") or {}
-    usage = msg.get("usage")
-    if not isinstance(usage, dict):
-        return None
-    ts = parse_ts(d.get("timestamp"))
-    if ts is None:
-        return None
-    # Billable work: fresh input + what we paid to write cache + output.
-    # Cache reads are excluded on purpose — they are the cheap path and would
-    # swamp the scale (939M read vs 24M written on the machine this was built on).
-    inp = int(usage.get("input_tokens") or 0)
-    cache_w = int(usage.get("cache_creation_input_tokens") or 0)
-    out = int(usage.get("output_tokens") or 0)
-    tokens = inp + cache_w + out
-    if tokens <= 0:
-        return None
-    # Cache reads ride along as a fifth field for the panel's "what did the
-    # cache save you" row — they still never touch the heat map.
-    cache_r = int(usage.get("cache_read_input_tokens") or 0)
-    return [ts, tokens, str(msg.get("id") or ""), str(msg.get("model") or "unknown"),
-            [inp, cache_w, out, cache_r]]
 
 
 def codex_extract(line):
@@ -188,25 +201,25 @@ def codex_extract(line):
         return None
     try:
         d = json.loads(line)
-    except Exception:
+        payload = d.get("payload") or {}
+        if payload.get("type") != "token_count":
+            return None
+        last = (payload.get("info") or {}).get("last_token_usage")
+        if not isinstance(last, dict):
+            return None
+        ts = parse_ts(d.get("timestamp"))
+        if ts is None:
+            return None
+        inp = int(last.get("input_tokens") or 0)
+        cache_r = int(last.get("cached_input_tokens") or 0)
+        cache_w = int(last.get("cache_write_input_tokens") or 0)
+        out = int(last.get("output_tokens") or 0)
+        tokens = inp - cache_r + cache_w + out
+        if tokens <= 0:
+            return None
+        return [ts, tokens, "", "codex", [max(0, inp - cache_r), cache_w, out, cache_r]]
+    except MALFORMED:
         return None
-    payload = d.get("payload") or {}
-    if payload.get("type") != "token_count":
-        return None
-    last = (payload.get("info") or {}).get("last_token_usage")
-    if not isinstance(last, dict):
-        return None
-    ts = parse_ts(d.get("timestamp"))
-    if ts is None:
-        return None
-    inp = int(last.get("input_tokens") or 0)
-    cache_r = int(last.get("cached_input_tokens") or 0)
-    cache_w = int(last.get("cache_write_input_tokens") or 0)
-    out = int(last.get("output_tokens") or 0)
-    tokens = inp - cache_r + cache_w + out
-    if tokens <= 0:
-        return None
-    return [ts, tokens, "", "codex", [max(0, inp - cache_r), cache_w, out, cache_r]]
 
 
 def walk(root, match):
@@ -291,10 +304,20 @@ for f in walk(CODEX_ROOT, lambda n: n.startswith("rollout-") and n.endswith(".js
 
 
 # ── limits, straight off the records omarchy-agent-usage-update maintains ────
-# The record is copied, not trusted: its own updatedAt travels with the limits
-# so the widget can tell a live 0% from one written hours ago, and its status
-# text ("Sign-in expired", "Waiting for auth") travels too. Whether a window
-# has since rolled over is judged live in QML from resetsAt, not frozen here.
+# The record is copied, not trusted. Three things travel with the numbers so
+# the widget can tell a live figure from a leftover:
+#   measuredAt — when the figure was actually measured. The record's own
+#     updatedAt is stamped every time it is rewritten, and Omarchy's Claude
+#     collector rewrites it with its *cached* limits when the probe fails or
+#     the sign-in has lapsed, so updatedAt alone lets an old 0% wear a fresh
+#     timestamp. The probe cache beside it (claude-limits.json) carries
+#     fetchedAtMs, written only by a successful probe; that is the truth when
+#     it exists. Codex keeps no fallback cache, so its updatedAt is honest.
+#   status — the record's own words ("Sign-in expired", "Waiting for auth"),
+#     or a note that the last probe failed and these are the last known.
+#   percent — normalised per entry: anything that is not a finite 0..1
+#     fraction becomes -1, an explicit "unknown", never 0 and never a crash.
+# Whether a window has since rolled over is judged live in QML from resetsAt.
 def parse_iso_ms(raw):
     raw = str(raw or "").strip()
     if not raw:
@@ -305,20 +328,46 @@ def parse_iso_ms(raw):
         return 0
 
 
+def norm_percent(value):
+    try:
+        n = float(value)
+    except (TypeError, ValueError):
+        return -1.0
+    if n != n or n in (float("inf"), float("-inf")) or n < 0 or n > 1:
+        return -1.0
+    return n
+
+
+def probe_measured_at(agent):
+    try:
+        cache = json.loads((PROBE_CACHE_DIR / f"{agent}-limits.json").read_text())
+        return int(cache.get("fetchedAtMs") or 0) if isinstance(cache, dict) else 0
+    except (OSError, ValueError, TypeError):
+        return 0
+
+
 def limits_for(agent):
-    """Return (limits, updated_at_ms, status_text) for one agent record."""
+    """Return (limits, measured_at_ms, status_text) for one agent record."""
     try:
         raw = json.loads((USAGE_DIR / f"{agent}.json").read_text())
-    except Exception:
+    except (OSError, ValueError):
         return [], 0, ""
     if not isinstance(raw, dict):
         return [], 0, ""
     out = raw.get("limits")
-    limits = [{"label": str(l.get("label") or ""),
-               "percent": float(l.get("percent") or 0),
-               "resetsAt": str(l.get("resetsAt") or "")}
+    limits = [{"label": str(l.get("label") or "")[:64],
+               "percent": norm_percent(l.get("percent")),
+               "resetsAt": str(l.get("resetsAt") or "")[:40]}
               for l in out if isinstance(l, dict)] if isinstance(out, list) else []
-    return limits, parse_iso_ms(raw.get("updatedAt")), str(raw.get("usageStatusText") or "")[:120]
+    updated = parse_iso_ms(raw.get("updatedAt"))
+    measured = probe_measured_at(agent) or updated
+    # A probe cache newer than the record cannot be what produced the record.
+    if updated and measured > updated:
+        measured = updated
+    status = str(raw.get("usageStatusText") or "")[:120]
+    if not status and raw.get("retryAdvised") is True and limits:
+        status = "last probe failed, showing last known"
+    return limits, measured, status
 
 
 claude_limits, claude_limits_at, claude_limits_status = limits_for("claude")
@@ -342,7 +391,7 @@ payload = {
         "split": claude_split,
         "byModel": claude_by_model,
         "limits": claude_limits,
-        "limitsUpdatedAt": claude_limits_at,
+        "limitsMeasuredAt": claude_limits_at,
         "limitsStatus": claude_limits_status,
     },
     "codex": {
@@ -356,7 +405,7 @@ payload = {
         "split": codex_split,
         "byModel": codex_by_model,
         "limits": codex_limits,
-        "limitsUpdatedAt": codex_limits_at,
+        "limitsMeasuredAt": codex_limits_at,
         "limitsStatus": codex_limits_status,
     },
 }
@@ -364,7 +413,9 @@ payload = {
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 # Write-then-rename so the watching FileView never observes a half file.
 tmp = OUT_FILE.with_suffix(".json.tmp")
-tmp.write_text(json.dumps(payload))
+# allow_nan=False: a NaN would serialise as a bare NaN token, which is not JSON
+# and would leave the widget holding whatever it parsed last.
+tmp.write_text(json.dumps(payload, allow_nan=False))
 tmp.replace(OUT_FILE)
 
 try:

@@ -75,9 +75,13 @@ plugin's own `bin/` directory — plus one Omarchy command:
   panel runs, and it is the only thing that produces the plan-limit records
   Burn Bar reads. Its Claude collector contacts Anthropic's OAuth usage
   endpoint with the sign-in Claude Code already saved, and its Codex collector
-  reads Codex's local rate-limit records. Burn Bar never reads, holds or sends
-  either credential itself; if the command is not present the limits simply
-  show their age. A run over 60 seconds is killed.
+  asks the Codex app-server over a local pipe. Burn Bar never reads, holds or
+  sends either credential itself; if the command is not present the limits
+  simply show their age. It is launched through `bash -c` under `setsid` so
+  that the 60-second watchdog can terminate the whole process group, not just
+  the wrapper. Burn Bar also reads (never writes) the collector's probe cache
+  at `~/.cache/omarchy/agent-usage/claude-limits.json` for the time of the
+  last successful measurement.
 
 Burn Bar's own scripts:
 

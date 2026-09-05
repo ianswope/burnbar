@@ -137,9 +137,21 @@ Panel {
 
   // ── derived cloud metrics ─────────────────────────────────────────────────
   readonly property var buckets: svc ? svc.buckets : []
-  readonly property real bucketMinutes: svc ? Math.max(1, svc.bucketMinutes) : 30
+  readonly property real bucketMinutes: svc ? Math.max(0.25, svc.bucketMinutes) : 30
   readonly property real windowMinutes: svc ? svc.windowMinutes : 360
-  readonly property int hourBuckets: Math.max(1, Math.round(60 / bucketMinutes))
+  // Chart hour marks: one label per whole hour of buckets, fixed.
+  readonly property int labelEvery: Math.max(1, Math.round(60 / bucketMinutes))
+  // Rate horizon: enough buckets to cover the trailing 60 minutes including
+  // the partial newest one — never fewer. round(60 / width) used to give two
+  // 30-minute buckets, which at one minute past the hour covered 31 minutes
+  // and called it "1 HOUR". Re-evaluates on the tick as the newest fills.
+  readonly property int hourBuckets: {
+    void panel.tick
+    var b = panel.buckets
+    var newestT = b && b.length ? Number(b[b.length - 1].t || 0) : 0
+    var elapsed = newestT > 0 ? Math.max(0, Math.min(bucketMinutes, (Date.now() - newestT) / 60000)) : 0
+    return 1 + Math.max(0, Math.ceil((60 - elapsed) / bucketMinutes))
+  }
 
   // Tokens per minute over the last N buckets. The newest bucket is partial,
   // so "now" divides by the minutes actually elapsed inside it rather than the
@@ -187,7 +199,9 @@ Panel {
   function refreshLocalModels() {
     if (listProc.running || !svc) return
     listProc.command = ["python3", svc.localControlPath, "list"]
+    listProc.launched = false
     listProc.running = true
+    listWatchdog.restart()
   }
 
   function refreshAll() {
@@ -200,7 +214,9 @@ Panel {
     localBusy = true
     localNote = (action === "load" ? "Warming " : "Unloading ") + selectedModel + "…"
     actionProc.command = ["python3", svc.localControlPath, action, selectedModel]
+    actionProc.launched = false
     actionProc.running = true
+    actionWatchdog.restart()
   }
 
   function parseLocalModels(raw) {
@@ -227,13 +243,27 @@ Panel {
     }
   }
 
+  // Quickshell emits no exited() for a command that could not start (no
+  // python3): running just flips back to false. Each process tracks whether
+  // it ever started so a failed launch still clears busy state and says why.
   Process {
     id: listProc
+    property bool launched: false
     stdout: StdioCollector { waitForEnd: true; onStreamFinished: panel.parseLocalModels(text) }
+    onStarted: launched = true
+    onRunningChanged: if (!running && !launched) { listWatchdog.stop(); panel.localNote = "python3 not found" }
+    onExited: listWatchdog.stop()
+  }
+  Timer {
+    id: listWatchdog
+    interval: 15000
+    repeat: false
+    onTriggered: if (listProc.running) { listProc.signal(15); panel.localNote = "Model list timed out" }
   }
 
   Process {
     id: actionProc
+    property bool launched: false
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
@@ -243,11 +273,22 @@ Panel {
         } catch (e) { panel.localNote = "Ollama action failed" }
       }
     }
+    onStarted: launched = true
+    onRunningChanged: if (!running && !launched) { actionWatchdog.stop(); panel.localBusy = false; panel.localNote = "python3 not found" }
     onExited: {
+      actionWatchdog.stop()
       panel.localBusy = false
       // Ollama reports a model as resident a beat after the call returns.
       settleTimer.restart()
     }
+  }
+  // Warming a large model into VRAM legitimately takes a while; three minutes
+  // is the budget before the buttons are handed back.
+  Timer {
+    id: actionWatchdog
+    interval: 180000
+    repeat: false
+    onTriggered: if (actionProc.running) { actionProc.signal(15); panel.localNote = "Ollama action timed out after 3 minutes" }
   }
 
   Timer {
@@ -701,7 +742,7 @@ Panel {
                   Caption {
                     // Hour marks, with the last one or two suppressed so they
                     // never crowd the "now" label.
-                    visible: col.live || (col.index % panel.hourBuckets === 0 && col.index <= chart.n - 3)
+                    visible: col.live || (col.index % panel.labelEvery === 0 && col.index <= chart.n - 3)
                     anchors.bottom: parent.bottom
                     anchors.horizontalCenter: parent.horizontalCenter
                     text: col.live ? "now" : Qt.formatTime(new Date(Number(col.b ? col.b.t : 0)), "h AP")
@@ -823,9 +864,9 @@ Panel {
                 if (!panel.svc) return out
                 var rows = [
                   { agent: "Claude", accent: panel.widget.claudeHot, limits: panel.svc.claudeLimits,
-                    updatedAt: panel.svc.claudeLimitsUpdatedAt, status: panel.svc.claudeLimitsStatus },
+                    updatedAt: panel.svc.claudeLimitsMeasuredAt, status: panel.svc.claudeLimitsStatus },
                   { agent: "Codex", accent: panel.widget.codexHot, limits: panel.svc.codexLimits,
-                    updatedAt: panel.svc.codexLimitsUpdatedAt, status: panel.svc.codexLimitsStatus }
+                    updatedAt: panel.svc.codexLimitsMeasuredAt, status: panel.svc.codexLimitsStatus }
                 ]
                 for (var i = 0; i < rows.length; i++) {
                   var r = rows[i]
@@ -836,8 +877,8 @@ Panel {
                   var parts = []
                   if (r.status !== "") parts.push(r.status)
                   var t = Number(r.updatedAt) || 0
-                  if (t > 0) parts.push("record from " + Qt.formatDateTime(new Date(t), "ddd h:mm AP") + (stale ? "  ·  stale" : ""))
-                  else parts.push("record carries no timestamp")
+                  if (t > 0) parts.push("measured " + Qt.formatDateTime(new Date(t), "ddd h:mm AP") + (stale ? "  ·  stale" : ""))
+                  else parts.push("no measurement time")
                   if (panel.svc.limitsRefreshUnavailable) parts.push("omarchy-agent-usage-update not found, cannot refresh")
                   if (!stale && r.status === "" && !panel.svc.limitsRefreshUnavailable) continue
                   r.text = parts.join("  ·  ")
@@ -859,8 +900,8 @@ Panel {
                 var out = []
                 var c = panel.svc ? panel.svc.claudeLimits : []
                 var x = panel.svc ? panel.svc.codexLimits : []
-                var cAt = panel.svc ? panel.svc.claudeLimitsUpdatedAt : 0
-                var xAt = panel.svc ? panel.svc.codexLimitsUpdatedAt : 0
+                var cAt = panel.svc ? panel.svc.claudeLimitsMeasuredAt : 0
+                var xAt = panel.svc ? panel.svc.codexLimitsMeasuredAt : 0
                 for (var i = 0; i < c.length; i++)
                   out.push({ agent: "Claude", accent: panel.widget.claudeHot, limit: c[i], updatedAt: cAt })
                 for (var j = 0; j < x.length; j++)
@@ -885,7 +926,9 @@ Panel {
                   void panel.tick
                   return panel.svc ? panel.svc.limitsStale(modelData.updatedAt) : true
                 }
-                readonly property bool unknown: expired || stale
+                // The collector marks a figure it could not read as -1; that
+                // is unknown too, not -100%.
+                readonly property bool unknown: expired || stale || !(Number(modelData.limit.percent) >= 0)
                 readonly property real fraction: unknown ? 0 : Number(modelData.limit.percent)
 
                 RowLayout {
@@ -1038,8 +1081,9 @@ Panel {
                 format: function(v) { return v > 0 ? String(Math.round(v)) : "--" }
                 unit: "°C"
                 sub: panel.svc && panel.svc.localFanPct > 0 ? "fan " + Math.round(panel.svc.localFanPct) + "%"
-                  : (panel.svc && panel.svc.localTempC >= 85 ? "throttle territory"
-                    : panel.svc && panel.svc.localTempC >= 70 ? "warm" : "cool")
+                  : (!panel.svc || panel.svc.localTempC <= 0 ? "no sensor reading"
+                    : panel.svc.localTempC >= 85 ? "throttle territory"
+                    : panel.svc.localTempC >= 70 ? "warm" : "cool")
                 fraction: panel.svc && panel.svc.localTempC > 0 ? panel.svc.localTempC / 95 : -1
                 accent: panel.svc && panel.svc.localTempC >= 85 ? Color.urgent
                   : panel.svc && panel.svc.localTempC >= 70 ? "#facc15" : panel.widget.localHot

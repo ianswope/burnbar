@@ -220,9 +220,15 @@ def main() -> int:
 
     gpu, backend = gpu_load()
     cpu = cpu_load()
-    load = round(max(cpu, gpu), 1)
     names = [model["name"] for model in models]
-    payload = {"online": True, "active": load >= args.threshold, "load": load,
+    # Device-wide GPU utilisation belongs to whatever is using the GPU. With
+    # no model resident none of it is inference: the lane then reads the
+    # runner's own CPU only, and "active" needs a resident model. A game
+    # running while a model sits idle in VRAM still reads as load — only the
+    # runner could say more, and it does not. The raw gpu figure is still
+    # reported separately for the GPU LOAD tile.
+    load = round(max(cpu, gpu) if models else cpu, 1)
+    payload = {"online": True, "active": bool(models) and load >= args.threshold, "load": load,
                "modelCount": len(models), "model": names[0] if names else "",
                "models": names, "modelDetails": models, "backend": backend,
                "cpu": round(cpu, 1), "gpu": round(gpu, 1),

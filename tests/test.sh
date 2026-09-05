@@ -139,12 +139,68 @@ printf '{"limits":[{"label":"Weekly (7-day)","percent":0.42,"resetsAt":"%s"}],"u
 HOME="$fake_home" python3 bin/burnbar-collect --window 360 --buckets 12
 jq -e '.claude.limits[0].percent == 0.42 and .claude.limits[0].resetsAt != "" and .claude.limitsStatus == "Sign-in expired"' "$out" >/dev/null \
   || fail "limits or status not carried from the usage record"
-at=$(jq -r '.claude.limitsUpdatedAt' "$out")
+at=$(jq -r '.claude.limitsMeasuredAt' "$out")
 age_h=$(( ( $(date +%s) * 1000 - at ) / 3600000 ))
-{ [ "$age_h" -ge 7 ] && [ "$age_h" -le 9 ]; } || fail "limitsUpdatedAt is not the record's own timestamp (age ${age_h}h)"
-jq -e '.codex.limits == [] and .codex.limitsUpdatedAt == 0 and .codex.limitsStatus == ""' "$out" >/dev/null \
+{ [ "$age_h" -ge 7 ] && [ "$age_h" -le 9 ]; } || fail "limitsMeasuredAt is not the record's own timestamp (age ${age_h}h)"
+jq -e '.codex.limits == [] and .codex.limitsMeasuredAt == 0 and .codex.limitsStatus == ""' "$out" >/dev/null \
   || fail "a missing usage record should read as no limits, never updated"
 ok "plan limits carry the record's own timestamp and status"
+
+# Omarchy's Claude collector re-stamps its record with *cached* limits when
+# the probe fails, so updatedAt can be fresh while the figure is hours old.
+# The probe cache next to it carries fetchedAtMs from the last successful
+# probe; that is the measurement time. Here the record says "now", the probe
+# cache says eight hours ago, and the record is a silent-fallback one.
+export XDG_CACHE_HOME="$tmp/cache"
+mkdir -p "$tmp/cache/omarchy/agent-usage"
+now_plain=$(date -u +%Y-%m-%dT%H:%M:%S+00:00)
+old_ms=$(( ( $(date +%s) - 8 * 3600 ) * 1000 ))
+printf '{"fetchedAtMs":%s,"limits":[]}\n' "$old_ms" > "$tmp/cache/omarchy/agent-usage/claude-limits.json"
+printf '{"limits":[{"label":"Weekly (7-day)","percent":0.0,"resetsAt":"%s"}],"updatedAt":"%s","usageStatusText":"","retryAdvised":true}\n' \
+  "$future_iso" "$now_plain" > "$tmp/state/omarchy/agents/usage/claude.json"
+HOME="$fake_home" python3 bin/burnbar-collect --window 360 --buckets 12
+[ "$(jq -r '.claude.limitsMeasuredAt' "$out")" = "$old_ms" ] \
+  || fail "a re-stamped fallback record must carry the probe's own fetchedAtMs"
+[ "$(jq -r '.claude.limitsStatus' "$out")" = "last probe failed, showing last known" ] \
+  || fail "retryAdvised on a silent fallback should surface as status"
+ok "measurement time comes from the probe cache, not the record stamp"
+
+# Every percentage is normalised on its own: null, junk, NaN, negative and
+# percent-scaled values become -1 (unknown) and the run still succeeds and
+# still writes valid JSON. Before, "bad" aborted both agents' collection and
+# "NaN" wrote a file the widget could not parse.
+rm -f "$tmp/cache/omarchy/agent-usage/claude-limits.json"
+printf '{"limits":[{"label":"a","percent":null,"resetsAt":"%s"},{"label":"b","percent":"bad","resetsAt":"%s"},{"label":"c","percent":"NaN","resetsAt":"%s"},{"label":"d","percent":-1,"resetsAt":"%s"},{"label":"e","percent":66,"resetsAt":"%s"},{"label":"Weekly (7-day)","percent":0.42,"resetsAt":"%s"}],"updatedAt":"%s"}\n' \
+  "$future_iso" "$future_iso" "$future_iso" "$future_iso" "$future_iso" "$future_iso" "$now_plain" \
+  > "$tmp/state/omarchy/agents/usage/claude.json"
+HOME="$fake_home" python3 bin/burnbar-collect --window 360 --buckets 12 || fail "junk percentages aborted the collector"
+jq -e '[.claude.limits[].percent] == [-1, -1, -1, -1, -1, 0.42]' "$out" >/dev/null \
+  || fail "percent normalisation wrong: $(jq -c '[.claude.limits[].percent]' "$out")"
+ok "junk percentages become -1, never 0, never a crash, never NaN on disk"
+
+# A syntactically valid record with the wrong shape must be skipped, not
+# abort the run — and the totals must be exactly what the good records say.
+printf '{"timestamp":"%s","message":{"id":"msg_junk","model":"claude-test","usage":{"input_tokens":"unknown","output_tokens":[]}}}\n' \
+  "$now_iso" >> "$fake_home/.claude/projects/p/s.jsonl"
+printf '{"timestamp":"%s","payload":{"type":"token_count","info":"bad"}}\n' \
+  "$now_iso" >> "$fake_home/.codex/sessions/2026/09/03/rollout-x.jsonl"
+HOME="$fake_home" python3 bin/burnbar-collect --window 360 --buckets 12 || fail "a malformed record aborted the collector"
+[ "$(jq -r '.claude.total' "$out")" = "1250" ] || fail "malformed Claude record changed the total"
+[ "$(jq -r '.codex.total' "$out")" = "300" ] || fail "malformed Codex record changed the total"
+ok "malformed records are skipped, not fatal"
+
+# A transcript rewritten to different content of the same length, with a
+# newer mtime, must be rescanned — the old cache resumed at EOF and kept the
+# stale points forever.
+same="$fake_home/.claude/projects/p/same.jsonl"
+printf '{"timestamp":"%s","message":{"id":"msg_same1","model":"claude-test","usage":{"input_tokens":0,"cache_creation_input_tokens":0,"output_tokens":100}}}\n' "$now_iso" > "$same"
+HOME="$fake_home" python3 bin/burnbar-collect --window 360 --buckets 12
+[ "$(jq -r '.claude.total' "$out")" = "1350" ] || fail "same-length fixture setup: $(jq -r '.claude.total' "$out")"
+printf '{"timestamp":"%s","message":{"id":"msg_same2","model":"claude-test","usage":{"input_tokens":0,"cache_creation_input_tokens":0,"output_tokens":700}}}\n' "$now_iso" > "$same"
+touch -m -d "@$(( $(date +%s) + 5 ))" "$same"
+HOME="$fake_home" python3 bin/burnbar-collect --window 360 --buckets 12
+[ "$(jq -r '.claude.total' "$out")" = "1950" ] || fail "equal-size rewrite kept stale points: $(jq -r '.claude.total' "$out")"
+ok "equal-size rewrite with a new mtime is rescanned"
 
 echo
 echo "ALL TESTS PASSED"

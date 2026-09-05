@@ -20,11 +20,13 @@ Item {
   property int codexSessions: 0
   property var claudeLimits: []
   property var codexLimits: []
-  // When the usage record behind each limits list was written, and what it
-  // said about itself ("Sign-in expired", "Waiting for auth"). A percentage
-  // without its timestamp is how an 8-hour-old 0% got presented as live.
-  property real claudeLimitsUpdatedAt: 0
-  property real codexLimitsUpdatedAt: 0
+  // When each limits list was actually measured (not when its record was last
+  // rewritten — Omarchy re-stamps a record with cached limits when its probe
+  // fails), and what the record said about itself ("Sign-in expired"). A
+  // percentage without its measurement time is how an 8-hour-old 0% got
+  // presented as live.
+  property real claudeLimitsMeasuredAt: 0
+  property real codexLimitsMeasuredAt: 0
   property string claudeLimitsStatus: ""
   property string codexLimitsStatus: ""
   property var claudeByModel: ({})
@@ -39,7 +41,9 @@ Item {
   property real claudePeakAt: 0
   property real codexPeakAt: 0
   property real generatedAt: 0
-  property int bucketMinutes: 15
+  // real, not int: windowMinutes / bars is fractional for most settings
+  // (100 / 12 = 8.33), and an int here silently rounded every rate.
+  property real bucketMinutes: 15
   property bool ready: false
   property string lastError: ""
   // True once a collector run has actually failed, so the widget can show
@@ -127,7 +131,9 @@ Item {
   readonly property int bucketCount: boundedInt("bars", 12, 6, 32)
 
   readonly property int localRefreshMs: boundedInt("localRefreshMs", 1500, 500, 10000)
-  readonly property real localThreshold: Math.max(1, Number(setting("localThreshold", 8)) || 8)
+  // Same clamp as the manifest schema: load is capped at 100, so a threshold
+  // above it would mean "never inferencing".
+  readonly property int localThreshold: boundedInt("localThreshold", 8, 1, 50)
   // Local cells cover far less wall-clock than the cloud cells; that is on
   // purpose. Local load is a now-signal, not a budget.
   readonly property int localCells: boundedInt("localCells", 9, 4, 20)
@@ -154,26 +160,35 @@ Item {
     return t <= 0 || Date.now() - t > root.limitsStaleMs
   }
 
-  // -1 means "unknown": the record is stale, or the matching window has rolled
-  // over. A gauge must show nothing rather than a confident 0%.
-  function limitPercent(limits, needle, updatedAt) {
-    if (limitsStale(updatedAt)) return -1
-    var pick = null
+  // -1 means "unknown": the record is stale, the matching window has rolled
+  // over, the collector could not read the figure, or there is no window by
+  // that name at all. A gauge must show nothing rather than a confident 0%,
+  // and a session figure must never stand in for a weekly one.
+  function limitPercent(limits, needle, measuredAt) {
+    if (limitsStale(measuredAt)) return -1
     for (var i = 0; i < limits.length; i++) {
       var label = String(limits[i].label || "")
-      if (label.toLowerCase().indexOf(needle) >= 0) { pick = limits[i]; break }
+      if (label.toLowerCase().indexOf(needle) < 0) continue
+      if (limitExpired(limits[i])) return -1
+      var p = Number(limits[i].percent)
+      return isFinite(p) && p >= 0 ? p : -1
     }
-    if (!pick && limits.length) pick = limits[0]
-    if (!pick || limitExpired(pick)) return -1
-    return Number(pick.percent || 0)
+    return -1
   }
 
   // Weekly is the limit that actually bites on both plans.
-  readonly property real claudeWeekly: limitPercent(claudeLimits, "weekly", claudeLimitsUpdatedAt)
-  readonly property real codexWeekly: limitPercent(codexLimits, "weekly", codexLimitsUpdatedAt)
+  readonly property real claudeWeekly: limitPercent(claudeLimits, "weekly", claudeLimitsMeasuredAt)
+  readonly property real codexWeekly: limitPercent(codexLimits, "weekly", codexLimitsMeasuredAt)
 
+  // A collect() asked for while one is running is not dropped: the limits
+  // refresh asks for one the moment it lands, and that ask must survive an
+  // in-flight scan that read the old records.
+  property bool collectPending: false
+  property bool lastCollectOk: false
   function collect() {
-    if (collector.running) return
+    if (collector.running) { root.collectPending = true; return }
+    root.collectPending = false
+    collector.launched = false
     collector.command = ["python3", root.collectorPath,
       "--window", String(root.windowMinutes),
       "--buckets", String(root.bucketCount)]
@@ -183,22 +198,33 @@ Item {
 
   Process {
     id: collector
+    property bool launched: false
+    onStarted: launched = true
+    // Quickshell never emits exited() for a command that could not start (no
+    // python3, say): running just flips back to false. Verified on 0.3.1.
+    // Without this the strip's idle animation would call a missing runtime
+    // healthy — the exact silent outage 1.1 claimed to have fixed.
+    onRunningChanged: {
+      if (running || launched) return
+      watchdog.stop()
+      root.lastError = "python3 not found — Burn Bar needs it to read agent usage"
+      root.collectorBroken = true
+    }
     stderr: SplitParser {
       onRead: data => { if (String(data).trim() !== "") root.lastError = String(data).slice(0, 240) }
     }
     onExited: function(code) {
       watchdog.stop()
-      if (code === 0) {
-        root.lastError = ""
-        root.collectorBroken = false
-      } else {
-        // 127 is "command not found" — almost always a missing python3.
-        root.lastError = code === 127
-          ? "python3 not found — Burn Bar needs it to read agent usage"
-          : (root.lastError || ("collector exited " + code))
+      root.lastCollectOk = code === 0
+      if (code !== 0) {
+        root.lastError = root.lastError || ("collector exited " + code)
         root.collectorBroken = true
       }
+      // The fault is cleared by apply(), once a snapshot has actually been
+      // read and validated — not here, where a zero exit says nothing about
+      // whether what it wrote can be parsed.
       historyFile.reload()
+      if (root.collectPending) root.collect()
     }
   }
 
@@ -234,9 +260,14 @@ Item {
       parsed = JSON.parse(String(content || ""))
     } catch (e) {
       root.lastError = "Unreadable history file"
+      root.collectorBroken = true
       return
     }
-    if (!parsed || !Array.isArray(parsed.buckets)) return
+    if (!parsed || !Array.isArray(parsed.buckets)) {
+      root.lastError = "History file has no buckets"
+      root.collectorBroken = true
+      return
+    }
 
     root.buckets = parsed.buckets
     root.generatedAt = Number(parsed.generatedAt || 0)
@@ -252,8 +283,8 @@ Item {
     root.codexSessions = Number(x.sessions || 0)
     root.claudeLimits = Array.isArray(c.limits) ? c.limits : []
     root.codexLimits = Array.isArray(x.limits) ? x.limits : []
-    root.claudeLimitsUpdatedAt = Number(c.limitsUpdatedAt || 0)
-    root.codexLimitsUpdatedAt = Number(x.limitsUpdatedAt || 0)
+    root.claudeLimitsMeasuredAt = Number(c.limitsMeasuredAt || 0)
+    root.codexLimitsMeasuredAt = Number(x.limitsMeasuredAt || 0)
     root.claudeLimitsStatus = String(c.limitsStatus || "")
     root.codexLimitsStatus = String(x.limitsStatus || "")
     root.claudeByModel = c.byModel || ({})
@@ -268,6 +299,10 @@ Item {
     root.claudePeakAt = Number(c.peakAt || 0)
     root.codexPeakAt = Number(x.peakAt || 0)
     root.ready = true
+    if (root.lastCollectOk) {
+      root.lastError = ""
+      root.collectorBroken = false
+    }
 
     // Fire an impact pulse only when the live bucket actually grew, so a
     // no-op refresh does not make the widget twitch. On a bucket rollover the
@@ -304,13 +339,29 @@ Item {
   property bool limitsRefreshUnavailable: false
   function refreshLimits() {
     if (limitsRefresher.running || limitsRefreshUnavailable) return
-    limitsRefresher.command = ["omarchy-agent-usage-update", "--limits-only", "claude", "codex"]
+    limitsRefresher.launched = false
     limitsRefresher.running = true
     limitsWatchdog.restart()
   }
 
   Process {
     id: limitsRefresher
+    property bool launched: false
+    // The updater backgrounds one subshell per collector and waits on them, so
+    // a SIGTERM to the updater alone would orphan the actual probes. setsid
+    // gives the updater its own process group and the trap tears that whole
+    // group down; a missing updater still surfaces as exit 127 through wait.
+    command: ["bash", "-c",
+      "setsid omarchy-agent-usage-update --limits-only claude codex & p=$!; "
+      + "trap 'kill -TERM -- -$p 2>/dev/null; exit 143' TERM INT; wait $p"]
+    onStarted: launched = true
+    onRunningChanged: {
+      if (running || launched) return
+      // bash itself could not start. Nothing sane is left to try this session.
+      limitsWatchdog.stop()
+      root.limitsRefreshUnavailable = true
+      console.warn("burnbar: could not start the plan-limit refresh; limits will not refresh")
+    }
     stderr: SplitParser {
       onRead: data => { var s = String(data).trim(); if (s !== "") console.warn("burnbar: " + s) }
     }
@@ -353,7 +404,40 @@ Item {
   // burnbar-local-status sleeps ~200ms sampling /proc for runner CPU ticks, so
   // it must never be re-entered; the running guard is load-bearing, not defensive.
   function pollLocal() {
-    if (!localProbe.running) localProbe.running = true
+    if (localProbe.running) return
+    localProbe.launched = false
+    localProbe.running = true
+    localWatchdog.restart()
+  }
+
+  // A failed sample invalidates every current reading. Leaving yesterday's
+  // 70% GPU and a resident model on screen under an OFFLINE header is a lie
+  // with a footnote. The traces keep their history; the peaks are peaks.
+  function clearLocalTelemetry(reason) {
+    root.localOnline = false
+    root.localActive = false
+    root.localLoad = 0
+    root.localCpu = 0
+    root.localGpu = 0
+    root.localModelCount = 0
+    root.localModel = ""
+    root.localBackend = "none"
+    root.localModels = []
+    root.localModelDetails = []
+    root.localError = String(reason || "").slice(0, 240)
+    root.localVersion = ""
+    root.localGpuName = ""
+    root.localPowerW = 0
+    root.localPowerLimitW = 0
+    root.localTempC = 0
+    root.localVramUsedMb = 0
+    root.localVramTotalMb = 0
+    root.localVramModelsMb = 0
+    root.localClockMhz = 0
+    root.localClockMaxMhz = 0
+    root.localFanPct = 0
+    root.localSampledAt = Date.now()
+    root.pushLocalSample(0)
   }
 
   function applyLocal(raw) {
@@ -362,16 +446,7 @@ Item {
       data = JSON.parse(String(raw || ""))
       if (!data || typeof data !== "object") throw new Error("not an object")
     } catch (e) {
-      root.localOnline = false
-      root.localActive = false
-      root.localLoad = 0
-      root.localModelCount = 0
-      root.localModel = ""
-      root.localBackend = "none"
-      root.localError = "Unreadable local status"
-      root.localPowerW = 0
-      root.localSampledAt = Date.now()
-      root.pushLocalSample(0)
+      root.clearLocalTelemetry("Unreadable local status")
       return
     }
 
@@ -379,9 +454,10 @@ Item {
     root.localLoad = Math.max(0, Math.min(100, Number(data.load || 0)))
     root.localCpu = Math.max(0, Math.min(100, Number(data.cpu || 0)))
     root.localGpu = Math.max(0, Math.min(100, Number(data.gpu || 0)))
-    root.localActive = root.localOnline
-      && (data.active === true || root.localLoad >= root.localThreshold)
     root.localModelCount = Number(data.modelCount || 0)
+    // No resident model, no inference — whatever else is using the GPU.
+    root.localActive = root.localOnline && root.localModelCount > 0
+      && (data.active === true || root.localLoad >= root.localThreshold)
     root.localModel = String(data.model || "").slice(0, 128)
     root.localBackend = String(data.backend || "none").slice(0, 32)
     root.localModels = Array.isArray(data.models) ? data.models : []
@@ -422,12 +498,37 @@ Item {
 
   Process {
     id: localProbe
+    property bool launched: false
     command: ["python3", root.localStatusPath, "--threshold", String(root.localThreshold)]
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: root.applyLocal(text)
     }
-    onExited: function(code) { if (code !== 0) root.applyLocal("") }
+    onStarted: launched = true
+    onRunningChanged: {
+      if (running || launched) return
+      localWatchdog.stop()
+      root.clearLocalTelemetry("python3 not found")
+    }
+    onExited: function(code) {
+      localWatchdog.stop()
+      if (code !== 0) root.clearLocalTelemetry("local probe exited " + code)
+    }
+  }
+
+  // The probe's HTTP timeouts bound each blocking call, not the whole run; a
+  // trickling endpoint could hold it open forever, and pollLocal() refuses to
+  // start a second one. The probe normally takes ~250ms.
+  Timer {
+    id: localWatchdog
+    interval: 15000
+    repeat: false
+    onTriggered: {
+      if (localProbe.running) {
+        localProbe.signal(15)
+        root.clearLocalTelemetry("local probe timed out")
+      }
+    }
   }
 
   Timer {

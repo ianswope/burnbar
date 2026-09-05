@@ -161,10 +161,13 @@ live:
   fresh itself by running `omarchy-agent-usage-update --limits-only claude
   codex` every `limitsRefreshSec` seconds and whenever you open the panel,
   because nothing else guarantees they are: 1.3.0 presented an 8-hour-old
-  record with every Claude limit at 0% as live. Each record's own timestamp
-  and status travel with the numbers, and a figure the service cannot vouch
-  for — a stale record, or a window whose reset time has passed — is withheld
-  and labelled, never shown as 0%.
+  record with every Claude limit at 0% as live. The time each figure was
+  *measured* travels with it — read from Omarchy's probe cache, which only a
+  successful probe writes, because the record itself is re-stamped with cached
+  limits whenever a probe fails — along with the record's status text. A
+  figure the service cannot vouch for — measured too long ago, a window whose
+  reset time has passed, a value it could not read — is withheld and
+  labelled, never shown as 0%.
 
 Every point carries the input / cache-write / output / cache-read split, and the
 collector reports turns, first and last activity and the peak bucket per
@@ -241,7 +244,7 @@ exclusion, Codex delta math, cache idempotency, and the tail read.
 
 ## Changes
 
-See [CHANGELOG.md](CHANGELOG.md). Current version: 1.3.1.
+See [CHANGELOG.md](CHANGELOG.md). Current version: 1.3.2.
 
 ## Credits
 

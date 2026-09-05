@@ -1,5 +1,75 @@
 # Changelog
 
+## 1.3.2 — 2026-09-05
+
+Adversarial bug hunt (Codex, gpt-6-astra, read-only) over 1.3.1. Seventeen
+findings, every one verified against the code or by execution before it was
+fixed. In severity order:
+
+### Fixed
+- **A refreshed record could give an old Claude figure a fresh timestamp.**
+  Omarchy's Claude collector re-stamps its record with *cached* limits when
+  the probe fails or the sign-in has lapsed, so 1.3.1's staleness check —
+  keyed on the record's `updatedAt` — would have called an eight-hour-old 0%
+  fresh again the moment anything rewrote the file. The collector now reads
+  `fetchedAtMs` from Omarchy's probe cache, which only a successful probe
+  writes, and uses that as the measurement time (`limitsMeasuredAt`). A
+  silent fallback (`retryAdvised`) surfaces as "last probe failed, showing
+  last known".
+- **Quickshell emits no `exited()` for a command that cannot start.** Verified
+  on 0.3.1: a missing binary flips `running` back to false and nothing else.
+  So the 1.1 promise that a missing `python3` shows a fault was never true,
+  and 1.3.1's exit-127 guard on the limits refresh never fired. Every process
+  now tracks whether it ever started and treats a start failure as a fault:
+  the strip goes red for a missing runtime, the limits refresh gives up
+  instead of retrying every cycle, and a model action hands the buttons back.
+- **The limits watchdog only killed the wrapper.** `omarchy-agent-usage-update`
+  backgrounds one subshell per collector and waits; a SIGTERM to it orphaned
+  the probes. It now runs under `setsid` in its own process group and the
+  wrapper's trap tears the whole group down.
+- **A weekly figure was never substituted with a session one.** `limitPercent`
+  fell back to the first limit when no label matched "weekly"; a record with
+  only a session window read as an 80% weekly quota. No match is now unknown.
+- **Percentages are normalised one by one.** `null` read as 0%, `"bad"` raised
+  past the JSON guard and aborted both agents' collection, `"NaN"` wrote a
+  file the widget could not parse, and a raw `-1` reached the panel as
+  `-100%`. Anything that is not a finite 0..1 fraction is now -1 (unknown)
+  in the collector, the panel treats -1 as unknown, and the writer refuses
+  NaN.
+- **One malformed transcript record no longer aborts collection.** Valid JSON
+  with the wrong shape (`"input_tokens": "unknown"`, `"info": "bad"`) raised
+  outside the JSON guard and did so again on every run. Extractors now treat
+  the whole record as untrusted and skip it.
+- **A successful refresh's re-collect was dropped** if a scan was already in
+  flight (which had read the old records). Pending collects now coalesce and
+  run once the current scan exits.
+- **A zero exit no longer clears the fault before the file is validated.** An
+  unparseable or shapeless history.json now sets the fault; the fault clears
+  only after a snapshot has been applied.
+- **A failed local sample invalidates every current reading.** The error path
+  used to keep GPU load, VRAM, clocks, temperature, version and the resident
+  model list on screen under an OFFLINE header.
+- **Local processes have deadlines.** Probe 15s, model list 15s, model action
+  3 minutes; each cleans up its own state when it fires.
+- **Unrelated GPU work is not inference.** With no model resident the lane
+  reads the runner's CPU only and never goes "active". A game beside an idle
+  resident model still reads as load; the runner cannot say more.
+- **A displayed tooltip now follows the data.** Hover text is a binding, so a
+  tooltip left open through a rollover, a new sample or a collector failure
+  updates under the pointer instead of keeping its first sentence.
+- **`bucketMinutes` was an int.** `windowMinutes / bars` is fractional for
+  most settings (100 / 12 = 8.33) and every rate silently used the rounded
+  width. Now real; the panel floor is 15 seconds, not a minute.
+- **"1 HOUR" covered 31 minutes.** Two 30-minute buckets including the partial
+  newest one; the rate now takes enough buckets to cover a full trailing hour.
+  Chart hour labels keep their fixed spacing.
+- **An equal-length rewrite of a transcript was never rescanned.** The cache
+  resumed at EOF when the size matched; equal size with a new mtime is now a
+  rewrite.
+- **`localThreshold` is clamped 1–50 like the manifest says.** A stray 101
+  meant "never inferencing".
+- **A missing temperature sensor no longer reads "cool".**
+
 ## 1.3.1 — 2026-09-05
 
 ### Fixed

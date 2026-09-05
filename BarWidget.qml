@@ -75,7 +75,7 @@ BarWidget {
   function quotaText(percent, updatedAt) {
     if (percent < 0) {
       var t = Number(updatedAt) || 0
-      return t > 0 ? "unknown  ·  record from " + Qt.formatTime(new Date(t), "h:mm AP") : "unknown"
+      return t > 0 ? "unknown  ·  measured " + Qt.formatTime(new Date(t), "h:mm AP") : "unknown"
     }
     return Math.round(percent * 100) + "%"
   }
@@ -88,11 +88,11 @@ BarWidget {
     if (zone === zoneClaude)
       return "CLAUDE  ·  " + compact(svc.claudeTotal) + " tokens / last " + hours + "h"
         + "\nnow " + compact(svc.claudeLatest) + " this bucket  ·  " + svc.claudeSessions + " sessions"
-        + "\nweekly quota " + quotaText(svc.claudeWeekly, svc.claudeLimitsUpdatedAt)
+        + "\nweekly quota " + quotaText(svc.claudeWeekly, svc.claudeLimitsMeasuredAt)
     if (zone === zoneCodex)
       return "CODEX  ·  " + compact(svc.codexTotal) + " tokens / last " + hours + "h"
         + "\nnow " + compact(svc.codexLatest) + " this bucket  ·  " + svc.codexSessions + " sessions"
-        + "\nweekly quota " + quotaText(svc.codexWeekly, svc.codexLimitsUpdatedAt)
+        + "\nweekly quota " + quotaText(svc.codexWeekly, svc.codexLimitsMeasuredAt)
     if (zone === zoneLocal)
       return "LOCAL  ·  " + (!svc.localOnline
           ? "Ollama offline" + (svc.localError !== "" ? "\n" + svc.localError : "")
@@ -103,13 +103,18 @@ BarWidget {
     return ""
   }
 
+  // Bound, not computed once at zone entry: a tooltip left open while the
+  // quota rolls over, a fresh sample lands, or the collector fails has to
+  // change under the pointer. showTooltip re-checks tooltipHovered on this
+  // widget, so a stale request from a pointer that has already left resolves
+  // to nothing.
+  readonly property string hoverText: hoverZone === zoneNone ? "" : zoneTooltip(hoverZone)
+  onHoverTextChanged: if (hoverZone !== zoneNone && bar) bar.showTooltip(root, hoverText)
+
   function updateZone(x) {
     var zone = graph.zoneAt(x - graph.x)
     if (zone === hoverZone) return
     hoverZone = zone
-    // showTooltip re-checks tooltipHovered on this widget, so a stale request
-    // from a pointer that has already left resolves to nothing.
-    if (bar) bar.showTooltip(root, zoneTooltip(zone))
   }
 
   function setting(name, fallback) {
