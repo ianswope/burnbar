@@ -38,7 +38,18 @@ def normalize_url(url: str) -> str:
         parsed.port
     except ValueError as error:
         raise ValueError("Ollama URL has an invalid port") from error
+    # Endpoint paths are appended to this string; a query or fragment would
+    # swallow them ("?key=a/api/ps" is a query, "#x/api/ps" is never sent).
+    if parsed.query or parsed.fragment:
+        raise ValueError("Ollama URL must not carry a query or fragment")
     return url.rstrip("/")
+
+
+def is_local_endpoint(url: str) -> bool:
+    """Only a loopback endpoint's runner lives on this machine. For anything
+    else the GPU and /proc figures here describe the wrong computer."""
+    host = (urllib.parse.urlsplit(normalize_url(url)).hostname or "").lower()
+    return host in ("localhost", "::1") or host.startswith("127.")
 
 
 def reject_nonfinite(value: str):
@@ -64,9 +75,15 @@ def read_json_response(response) -> dict:
 
 
 def bounded_int(value, limit: int = 10**16) -> int:
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+    # Integers are clamped as integers: math.isfinite() converts to float
+    # first, and a 400-digit JSON integer raised OverflowError there.
+    if isinstance(value, bool):
         return 0
-    return int(min(max(value, 0), limit))
+    if isinstance(value, int):
+        return int(min(max(value, 0), limit))
+    if isinstance(value, float) and math.isfinite(value):
+        return int(min(max(value, 0), limit))
+    return 0
 
 
 def ollama_models(url: str) -> list[dict]:
@@ -109,37 +126,52 @@ def ollama_version(url: str) -> str:
         return ""
 
 
-def runner_ticks() -> tuple[int, int]:
-    total = 0
-    count = 0
+def runner_ticks_by_pid() -> dict[int, int]:
+    ticks = {}
     for proc in Path("/proc").glob("[0-9]*"):
         try:
             command = (proc / "cmdline").read_bytes().replace(b"\0", b" ").decode(errors="ignore")
             if "ollama runner" not in command and "ollama_llama_server" not in command:
                 continue
             fields = (proc / "stat").read_text().split()
-            total += int(fields[13]) + int(fields[14])
-            count += 1
+            ticks[int(proc.name)] = int(fields[13]) + int(fields[14])
         except (OSError, ValueError, IndexError):
             continue
-    return total, count
+    return ticks
 
 
 def cpu_load(sample_seconds: float = 0.20) -> float:
-    before, count = runner_ticks()
-    if count == 0:
+    """Runner CPU as a share of all cores, from per-PID tick deltas. Summing
+    lifetime ticks across runners and subtracting went negative — and read
+    as 0% — whenever a runner exited between the two samples."""
+    before = runner_ticks_by_pid()
+    if not before:
         return 0.0
+    started = time.monotonic()
     time.sleep(sample_seconds)
-    after, _ = runner_ticks()
-    ticks = max(0, after - before)
+    after = runner_ticks_by_pid()
+    elapsed = max(sample_seconds, time.monotonic() - started)
+    ticks = sum(max(0, after[pid] - before[pid]) for pid in after if pid in before)
     hz = os.sysconf("SC_CLK_TCK")
     cores = max(1, os.cpu_count() or 1)
-    return min(100.0, ticks / hz / sample_seconds / cores * 100.0)
+    return min(100.0, ticks / hz / elapsed / cores * 100.0)
 
 
-def gpu_load() -> tuple[float, str]:
+def percent_or_none(text) -> float | None:
+    try:
+        value = float(str(text).strip().rstrip("%"))
+    except ValueError:
+        return None
+    return value if math.isfinite(value) and 0 <= value <= 100 else None
+
+
+def gpu_load() -> tuple[float, str, int]:
+    """(utilisation, backend, device index) for the busiest GPU. Every device
+    is parsed on its own: one "[N/A]" used to throw the whole backend's
+    reading away, 80% on card 0 included. The index is what gpu_stats() asks
+    about, so name, power and memory describe the device whose load this is."""
     commands = [
-        (["nvidia-smi", "--query-gpu=utilization.gpu", "--format=csv,noheader,nounits"], "nvidia"),
+        (["nvidia-smi", "--query-gpu=index,utilization.gpu", "--format=csv,noheader,nounits"], "nvidia"),
         (["rocm-smi", "--showuse", "--json"], "rocm"),
     ]
     for command, backend in commands:
@@ -147,21 +179,37 @@ def gpu_load() -> tuple[float, str]:
             result = subprocess.run(command, capture_output=True, text=True, timeout=0.7, check=False)
             if result.returncode != 0:
                 continue
+            readings = []
             if backend == "nvidia":
-                values = [float(line.strip()) for line in result.stdout.splitlines() if line.strip()]
+                for line in result.stdout.splitlines():
+                    parts = [p.strip() for p in line.split(",")]
+                    if len(parts) != 2:
+                        continue
+                    value = percent_or_none(parts[1])
+                    try:
+                        index = int(parts[0])
+                    except ValueError:
+                        continue
+                    if value is not None:
+                        readings.append((value, index))
             else:
                 data = json.loads(result.stdout)
                 if not isinstance(data, dict):
                     raise ValueError("rocm-smi response must be a JSON object")
-                values = [float(str(value).strip("%")) for card in data.values()
-                          if isinstance(card, dict)
-                          for key, value in card.items() if "GPU use" in key]
-            values = [value for value in values if math.isfinite(value) and 0 <= value <= 100]
-            if values:
-                return max(values), backend
+                for card in data.values():
+                    if not isinstance(card, dict):
+                        continue
+                    for key, value in card.items():
+                        if "GPU use" in key:
+                            parsed = percent_or_none(value)
+                            if parsed is not None:
+                                readings.append((parsed, -1))
+            if readings:
+                value, index = max(readings)
+                return value, backend, index
         except (OSError, ValueError, subprocess.SubprocessError, json.JSONDecodeError):
             continue
-    return 0.0, "cpu"
+    return 0.0, "cpu", -1
 
 
 def parse_smi_number(text: str) -> float:
@@ -175,15 +223,17 @@ def parse_smi_number(text: str) -> float:
     return value if math.isfinite(value) and value >= 0 else 0.0
 
 
-def gpu_stats() -> dict:
-    """Power, thermals, memory and clocks off nvidia-smi in one call. Empty on
-    any failure: a machine without an NVIDIA GPU simply gets no GPU block."""
+def gpu_stats(index: int = -1) -> dict:
+    """Power, thermals, memory and clocks off nvidia-smi in one call, for the
+    device gpu_load() picked. Empty on any failure: a machine without an
+    NVIDIA GPU simply gets no GPU block."""
     fields = ["name", "power.draw", "power.limit", "temperature.gpu",
               "memory.used", "memory.total", "clocks.sm", "clocks.max.sm", "fan.speed"]
+    command = ["nvidia-smi", "--query-gpu=" + ",".join(fields), "--format=csv,noheader,nounits"]
+    if index >= 0:
+        command += ["-i", str(index)]
     try:
-        result = subprocess.run(
-            ["nvidia-smi", "--query-gpu=" + ",".join(fields), "--format=csv,noheader,nounits"],
-            capture_output=True, text=True, timeout=0.7, check=False)
+        result = subprocess.run(command, capture_output=True, text=True, timeout=0.7, check=False)
     except (OSError, subprocess.SubprocessError):
         return {}
     if result.returncode != 0:
@@ -218,9 +268,16 @@ def main() -> int:
                           "error": bounded_text(error, MAX_ERROR_LENGTH)}))
         return 0
 
-    gpu, backend = gpu_load()
-    cpu = cpu_load()
     names = [model["name"] for model in models]
+    # A remote Ollama's runner is on another machine. This machine's GPU and
+    # /proc say nothing about it, so nothing is claimed: residency and VRAM
+    # footprint come from the server, load and activity are unknown.
+    remote = not is_local_endpoint(args.url)
+    if remote:
+        gpu, backend, index, cpu = 0.0, "remote", -1, 0.0
+    else:
+        gpu, backend, index = gpu_load()
+        cpu = cpu_load()
     # Device-wide GPU utilisation belongs to whatever is using the GPU. With
     # no model resident none of it is inference: the lane then reads the
     # runner's own CPU only, and "active" needs a resident model. A game
@@ -228,13 +285,15 @@ def main() -> int:
     # runner could say more, and it does not. The raw gpu figure is still
     # reported separately for the GPU LOAD tile.
     load = round(max(cpu, gpu) if models else cpu, 1)
-    payload = {"online": True, "active": bool(models) and load >= args.threshold, "load": load,
+    payload = {"online": True, "active": bool(models) and not remote and load >= args.threshold,
+               "load": load, "remote": remote,
                "modelCount": len(models), "model": names[0] if names else "",
                "models": names, "modelDetails": models, "backend": backend,
                "cpu": round(cpu, 1), "gpu": round(gpu, 1),
                "version": ollama_version(args.url),
                "vramModelsMb": round(sum(m["sizeVram"] for m in models) / 1048576)}
-    payload.update(gpu_stats())
+    if not remote:
+        payload.update(gpu_stats(index))
     print(json.dumps(payload))
     return 0
 

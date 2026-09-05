@@ -1,5 +1,120 @@
 # Changelog
 
+## 1.3.3 — 2026-09-05
+
+Full-scope adversarial audit (Codex, gpt-6-astra, read-only, 24 minutes) over
+1.3.2: every file, the tests, the docs, and a regression pass over the 1.3.2
+fixes. 45 findings. Each was checked against the code, and the two that
+mattered most were reproduced first: 13 repeated Codex token counts in 8 of
+130 real rollouts on the development machine, and Ollama refusing to warm an
+embedding model through `/api/generate`. Everything below is fixed unless
+marked otherwise.
+
+### Counting (bin/burnbar-collect, rewritten)
+- **Codex could double-count a turn.** Every `token_count` event was treated
+  as a turn, but a rate-limit refresh re-emits the same `last_token_usage`
+  with an unchanged cumulative total. The collector now counts deltas of
+  `total_token_usage` per file, carries the baseline across incremental tail
+  reads, skips an unchanged snapshot, and falls back to the event's own
+  usage on a counter reset or on an older format without totals.
+- **Claude kept the first streamed revision.** A message is re-serialised as
+  it streams with growing output; the first seen won and later revisions
+  never updated the totals. The largest revision now wins.
+- **Two clocks.** Totals, rates, turns, activity, split and by-model are now
+  computed over the exact trailing window from timestamped points; the
+  grid-aligned buckets only draw the strip and chart. "last 6h" used to mean
+  330–360 minutes depending on the clock. Exact 5- and 60-minute sums travel
+  as `trailing`, and the panel's rates divide them by exactly 5 and 60 —
+  "1 HOUR" no longer covers 31 to 61 minutes and the one-minute denominator
+  floor is gone.
+- **Every count is validated on its own.** Negative components, booleans,
+  and numbers that only fit a float (`1e999`, which raised `OverflowError`
+  past the previous guard and aborted both agents on every run) reject the
+  record. Codex `cached_input_tokens` above `input_tokens` is malformed.
+- **A record that only read cache is still a turn** and still feeds the
+  cache-read line; it just adds nothing to the heat.
+- **A longer rewrite is not an append.** 48 bytes just before the saved
+  offset are remembered and must still match before a resume is trusted.
+- **Cache entries are validated** and versioned; a malformed one is a cache
+  miss for that file. A file whose cached replay throws is rescanned once.
+- **Cached points are pruned** to the longest supported window plus an hour,
+  so a session that runs for a week no longer rewrites its whole history
+  every five seconds.
+- **Writes use unique temp files and a per-directory lock.** Two collectors
+  sharing a state dir used to race on `history.json.tmp`; now the second
+  leaves quietly.
+- `peakAt` is 0 when nothing peaked, so the panel shows `--`.
+- `BURNBAR_NOW_MS` pins the clock for tests; the idempotency test no longer
+  fails when it straddles a bucket boundary.
+
+### Service.qml
+- A snapshot is validated in full — every bucket, both agents — before any
+  property changes; `{"buckets":[null]}` used to clear the fault and throw.
+- `file://` URLs are decoded to paths; a `#` in the install directory broke
+  every helper.
+- The local ring keeps sample timestamps; the trace caption shows the span
+  it actually covers instead of cells × interval.
+
+### BarWidget.qml
+- Cell counts come from the service's clamp, not a second one that disagreed
+  on `bars: 0`; a configured width too narrow for its cells is raised so
+  cells never overlap.
+- A cloud fault no longer reddens the local lane or zeroes its energy.
+- Idle flicker no longer restarts a 420 ms height animation on every cell
+  five times a second; motion is a scale on top of an eased sample height.
+- Shockwaves travel outward only: position has its own monotonic progress,
+  flash is brightness alone.
+- Quota heartbeat, live-cell ring and reactor loops are gated on their
+  instrument actually being shown, and each restores its property when it
+  stops — a quota that dropped under 90% mid-pulse was left dim.
+- Window labels are exact ("1h40m", "30m"), never rounded to hours.
+
+### BurnPanel.qml
+- Tiles are three persistent instances; a fresh model array every tick was
+  destroying and recreating them, so the count-up never showed.
+- Rate columns: 5 MIN / 1 HOUR / exact window, from the trailing sums.
+- Chart labels land on the bucket that starts each hour and show minutes
+  when it does not start on the hour ("7:30 PM", not "7 PM").
+- Claude-by-model and resident-model lists cap at six rows with a "+ N more"
+  line, so a 30-model install cannot push the footer off screen.
+- A model removed outside the panel is no longer left selected.
+- "tokens billed" → "tokens burned" (cache reads are excluded, and they are
+  billed); "saved N%" → "N% of all input" (a token share, not money);
+  "N IN VRAM" → "N LOADED" (`/api/ps` lists CPU-resident models too).
+- Remote Ollama (`OLLAMA_HOST` elsewhere) shows "no local hardware
+  telemetry" instead of this machine's GPU.
+
+### bin/burnbar-local-status
+- One `[N/A]` no longer discards every GPU reading; devices are parsed one by
+  one, the busiest wins, and name/power/memory are read for that device.
+- A remote endpoint gets no `/proc` or GPU attribution at all.
+- Runner CPU is per-PID; a runner exiting between samples read as 0%.
+- A 400-digit integer in `/api/ps` no longer raises out of `main()`.
+- URLs with a query or fragment are rejected instead of corrupted.
+
+### bin/burnbar-local-control
+- Embedding-only models are warmed through `/api/embed` (`/api/show`
+  capabilities decide); generate refused them.
+- A model name that would need truncating is refused, never shortened into
+  a different model's name.
+
+### Tests and docs
+- Shell fixture isolates `XDG_CACHE_HOME` from the first run and pins the
+  clock. Nine new collector fixtures, eleven new Python unit tests.
+- README and SECURITY.md corrected: Burn Bar triggers Omarchy's collectors
+  that contact Anthropic's usage endpoint; the scan cache holds model names,
+  message ids and transcript paths; `burnbar-local-control list` runs on
+  panel open; traces encode recency in brightness; unsupported GPU tiles
+  show dashes rather than disappearing.
+
+### Not changed
+- Vertical bars (left/right) are not supported; the strip lays three lanes
+  across the bar's length. Documented.
+- The panel still never scrolls, by design; the row caps above are the
+  overflow control.
+- A game running while a model sits idle in VRAM still reads as local load;
+  the runner cannot say more.
+
 ## 1.3.2 — 2026-09-05
 
 Adversarial bug hunt (Codex, gpt-6-astra, read-only) over 1.3.1. Seventeen

@@ -31,23 +31,30 @@ jq -e '
 ok "manifest contract"
 
 # The widget draws exactly one cell per bucket and aligns to the newest bucket.
-# If these defaults ever drift apart again the strip silently covers less time
-# than the tooltip claims — the bug this assertion exists to prevent.
+# It reads the count from the service; the only thing that can drift is the
+# fallback clamp each file carries for the moment before they bind, so both
+# clamps must be byte-identical and agree with the manifest's default and
+# range. (bars: 0 used to be 12 in the widget and 6 in the service.)
+clamp() { grep -oP "boundedInt\(\"$1\", [0-9, ]+\)" "$2" | head -1 || true; }
 man_bars=$(jq -r '.barWidget.defaults.bars' manifest.json)
-qml_cells=$(grep -oP 'setting\("bars", \K[0-9]+' BarWidget.qml | head -1)
-svc_buckets=$(grep -oP 'boundedInt\("bars", \K[0-9]+' Service.qml | head -1)
-[ "$man_bars" = "$qml_cells" ] || fail "manifest bars ($man_bars) != widget cells ($qml_cells)"
-[ "$man_bars" = "$svc_buckets" ] || fail "manifest bars ($man_bars) != service buckets ($svc_buckets)"
-ok "cell count == bucket count ($man_bars)"
+man_bars_min=$(jq -r '.barWidget.schema[] | select(.key=="bars") | .min' manifest.json)
+man_bars_max=$(jq -r '.barWidget.schema[] | select(.key=="bars") | .max' manifest.json)
+qml_clamp=$(clamp bars BarWidget.qml); svc_clamp=$(clamp bars Service.qml)
+[ -n "$qml_clamp" ] && [ "$qml_clamp" = "$svc_clamp" ] || fail "bars clamp differs: widget '$qml_clamp' vs service '$svc_clamp'"
+[ "$svc_clamp" = "boundedInt(\"bars\", $man_bars, $man_bars_min, $man_bars_max)" ] || fail "bars clamp '$svc_clamp' != manifest ($man_bars, $man_bars_min..$man_bars_max)"
+grep -q 'svc ? svc.bucketCount' BarWidget.qml || fail "widget must take its cell count from the service"
+ok "cell count == bucket count ($man_bars, clamp $man_bars_min..$man_bars_max)"
 
 # Same trap on the local lane: the widget draws localCells cells, the service
 # keeps a ring localCells long. Drift and the oldest sample is drawn as zero.
 man_local=$(jq -r '.barWidget.defaults.localCells' manifest.json)
-qml_local=$(grep -oP 'setting\("localCells", \K[0-9]+' BarWidget.qml | head -1)
-svc_local=$(grep -oP 'boundedInt\("localCells", \K[0-9]+' Service.qml | head -1)
-[ "$man_local" = "$qml_local" ] || fail "manifest localCells ($man_local) != widget ($qml_local)"
-[ "$man_local" = "$svc_local" ] || fail "manifest localCells ($man_local) != service ($svc_local)"
-ok "local cell count == local ring length ($man_local)"
+man_local_min=$(jq -r '.barWidget.schema[] | select(.key=="localCells") | .min' manifest.json)
+man_local_max=$(jq -r '.barWidget.schema[] | select(.key=="localCells") | .max' manifest.json)
+qml_lclamp=$(clamp localCells BarWidget.qml); svc_lclamp=$(clamp localCells Service.qml)
+[ -n "$qml_lclamp" ] && [ "$qml_lclamp" = "$svc_lclamp" ] || fail "localCells clamp differs: widget '$qml_lclamp' vs service '$svc_lclamp'"
+[ "$svc_lclamp" = "boundedInt(\"localCells\", $man_local, $man_local_min, $man_local_max)" ] || fail "localCells clamp '$svc_lclamp' != manifest"
+grep -q 'svc ? svc.localCells' BarWidget.qml || fail "widget must take its local cell count from the service"
+ok "local cell count == local ring length ($man_local, clamp $man_local_min..$man_local_max)"
 
 echo "== runtime dependency =="
 command -v python3 >/dev/null || fail "python3 missing"
@@ -79,6 +86,14 @@ echo "== collector against a fixture =="
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 export XDG_STATE_HOME="$tmp/state"
+# The caller's real cache must never leak into the fixture, and the clock is
+# pinned one minute past the next 30-minute grid line: two runs then compare
+# byte for byte across a bucket boundary, and the window arithmetic below is
+# deterministic. Fixture records stamped "now" are 1–31 minutes old to it.
+export XDG_CACHE_HOME="$tmp/cache"
+real_now=$(date +%s)
+pinned=$(( ( (real_now / 1800) + 1 ) * 1800 + 60 ))
+export BURNBAR_NOW_MS=$(( pinned * 1000 ))
 fake_home="$tmp/home"
 mkdir -p "$fake_home/.claude/projects/p" "$fake_home/.codex/sessions/2026/09/03"
 
@@ -151,7 +166,6 @@ ok "plan limits carry the record's own timestamp and status"
 # The probe cache next to it carries fetchedAtMs from the last successful
 # probe; that is the measurement time. Here the record says "now", the probe
 # cache says eight hours ago, and the record is a silent-fallback one.
-export XDG_CACHE_HOME="$tmp/cache"
 mkdir -p "$tmp/cache/omarchy/agent-usage"
 now_plain=$(date -u +%Y-%m-%dT%H:%M:%S+00:00)
 old_ms=$(( ( $(date +%s) - 8 * 3600 ) * 1000 ))
@@ -201,6 +215,97 @@ touch -m -d "@$(( $(date +%s) + 5 ))" "$same"
 HOME="$fake_home" python3 bin/burnbar-collect --window 360 --buckets 12
 [ "$(jq -r '.claude.total' "$out")" = "1950" ] || fail "equal-size rewrite kept stale points: $(jq -r '.claude.total' "$out")"
 ok "equal-size rewrite with a new mtime is rescanned"
+
+# ── 1.3.3 audit fixtures ─────────────────────────────────────────────────────
+# Codex's counter is cumulative. A rate-limit refresh re-emits the same
+# last_token_usage with an unchanged total, and counting last_token_usage
+# counted it twice. Three events: a turn, the same snapshot again, a second
+# turn — 300 + 0 + 250.
+cx2="$fake_home/.codex/sessions/2026/09/03/rollout-y.jsonl"
+tc() { printf '{"timestamp":"%s","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":%s,"cached_input_tokens":%s,"cache_write_input_tokens":0,"output_tokens":%s},"total_token_usage":{"input_tokens":%s,"cached_input_tokens":%s,"cache_write_input_tokens":0,"output_tokens":%s}}}}\n' "$now_iso" "$@"; }
+{ tc 500 300 100 500 300 100; tc 500 300 100 500 300 100; tc 200 0 50 700 300 150; } > "$cx2"
+before_total=$(jq -r '.codex.total' "$out"); before_turns=$(jq -r '.codex.turns' "$out")
+HOME="$fake_home" python3 bin/burnbar-collect --window 360 --buckets 12
+[ "$(jq -r '.codex.total' "$out")" = "$(( before_total + 550 ))" ] \
+  || fail "codex cumulative delta wrong: $(jq -r '.codex.total' "$out"), expected $(( before_total + 550 ))"
+[ "$(jq -r '.codex.turns' "$out")" = "$(( before_turns + 2 ))" ] || fail "a repeated codex snapshot was counted as a turn"
+ok "codex counts cumulative deltas: a repeated snapshot is not a second turn"
+
+# The baseline survives an incremental tail read: a fourth event appended to
+# the same file lands as its delta alone (800-300+170 minus 700-300+150 = 120).
+tc 100 0 20 800 300 170 >> "$cx2"
+HOME="$fake_home" python3 bin/burnbar-collect --window 360 --buckets 12
+[ "$(jq -r '.codex.total' "$out")" = "$(( before_total + 670 ))" ] \
+  || fail "codex baseline lost across a tail read: $(jq -r '.codex.total' "$out")"
+ok "codex cumulative baseline survives an incremental tail read"
+
+# Negative, overflowing (1e999 parses as a float infinity) and boolean counts
+# are rejected as records; a record that only read cache is still a turn and
+# still feeds the cache-read line, it just adds nothing to the heat.
+cl_before=$(jq -r '.claude.total' "$out"); cr_before=$(jq -r '.claude.split.cacheRead' "$out"); turns_before=$(jq -r '.claude.turns' "$out")
+printf '{"timestamp":"%s","message":{"id":"msg_neg","model":"claude-test","usage":{"input_tokens":-50,"output_tokens":100}}}\n' "$now_iso" >> "$fake_home/.claude/projects/p/s.jsonl"
+printf '{"timestamp":"%s","message":{"id":"msg_over","model":"claude-test","usage":{"input_tokens":1e999,"output_tokens":1}}}\n' "$now_iso" >> "$fake_home/.claude/projects/p/s.jsonl"
+printf '{"timestamp":"%s","message":{"id":"msg_bool","model":"claude-test","usage":{"input_tokens":true,"output_tokens":1}}}\n' "$now_iso" >> "$fake_home/.claude/projects/p/s.jsonl"
+printf '{"timestamp":"%s","message":{"id":"msg_cacheonly","model":"claude-test","usage":{"input_tokens":0,"cache_creation_input_tokens":0,"output_tokens":0,"cache_read_input_tokens":1000}}}\n' "$now_iso" >> "$fake_home/.claude/projects/p/s.jsonl"
+HOME="$fake_home" python3 bin/burnbar-collect --window 360 --buckets 12 || fail "audit records aborted the collector"
+[ "$(jq -r '.claude.total' "$out")" = "$cl_before" ] || fail "a negative, overflowing or boolean count changed the total"
+[ "$(jq -r '.claude.split.cacheRead' "$out")" = "$(( cr_before + 1000 ))" ] || fail "cache-read-only record lost from the split"
+[ "$(jq -r '.claude.turns' "$out")" = "$(( turns_before + 1 ))" ] || fail "cache-read-only record not counted as a turn"
+ok "negative, overflowing and boolean counts are rejected; a cache-read-only turn is kept"
+
+# Streaming re-serialises a message with growing output. The final revision
+# is the one that counts, not the first seen.
+rev="$fake_home/.claude/projects/p/rev.jsonl"
+printf '{"timestamp":"%s","message":{"id":"msg_rev","model":"claude-test","usage":{"input_tokens":100,"output_tokens":1}}}\n' "$now_iso" > "$rev"
+printf '{"timestamp":"%s","message":{"id":"msg_rev","model":"claude-test","usage":{"input_tokens":100,"output_tokens":100}}}\n' "$now_iso" >> "$rev"
+cl_before=$(jq -r '.claude.total' "$out")
+HOME="$fake_home" python3 bin/burnbar-collect --window 360 --buckets 12
+[ "$(jq -r '.claude.total' "$out")" = "$(( cl_before + 200 ))" ] \
+  || fail "claude dedupe kept the preliminary revision: $(jq -r '.claude.total' "$out")"
+ok "claude dedupe keeps the final streamed revision, not the first"
+
+# A rewrite that happens to be LONGER than the cached file is not an append.
+# The bytes just before the saved offset no longer match, so it is rescanned.
+grow="$fake_home/.claude/projects/p/grow.jsonl"
+printf '{"timestamp":"%s","message":{"id":"msg_g1","model":"claude-test","usage":{"input_tokens":0,"output_tokens":100}}}\n' "$now_iso" > "$grow"
+HOME="$fake_home" python3 bin/burnbar-collect --window 360 --buckets 12
+cl_before=$(jq -r '.claude.total' "$out")
+printf '{"timestamp":"%s","message":{"id":"msg_grow_two","model":"claude-test","usage":{"input_tokens":0,"output_tokens":900}}}\n' "$now_iso" > "$grow"
+touch -m -d "@$(( real_now + 7 ))" "$grow"
+HOME="$fake_home" python3 bin/burnbar-collect --window 360 --buckets 12
+[ "$(jq -r '.claude.total' "$out")" = "$(( cl_before - 100 + 900 ))" ] \
+  || fail "a longer rewrite was resumed as an append: $(jq -r '.claude.total' "$out")"
+ok "a longer rewrite fails the tail fingerprint and is rescanned"
+
+# A malformed cache entry is a cache miss for that file, never a crash that
+# repeats on every run.
+cache="$tmp/state/omarchy/burnbar/scan-cache.json"
+jq --arg k "$fake_home/.claude/projects/p/s.jsonl" '.files[$k].points = [["bad"]]' "$cache" > "$cache.new" && mv "$cache.new" "$cache"
+cl_before=$(jq -r '.claude.total' "$out")
+HOME="$fake_home" python3 bin/burnbar-collect --window 360 --buckets 12 || fail "a malformed cache entry aborted the collector"
+[ "$(jq -r '.claude.total' "$out")" = "$cl_before" ] || fail "a malformed cache entry changed the total: $(jq -r '.claude.total' "$out")"
+ok "a malformed cache entry is a cache miss, not a crash"
+
+# Two clocks. The strip's grid holds BUCKETS-1 whole buckets plus the partial
+# newest one, so at one minute past a grid line it reaches back 331 minutes;
+# the window is 360. A 345-minute-old record must be in the total and in no
+# bucket.
+old_ts=$(date -u -d "@$(( pinned - 345 * 60 ))" +%Y-%m-%dT%H:%M:%S.000Z)
+printf '{"timestamp":"%s","message":{"id":"msg_old","model":"claude-test","usage":{"input_tokens":0,"output_tokens":4000}}}\n' "$old_ts" > "$fake_home/.claude/projects/p/old.jsonl"
+cl_before=$(jq -r '.claude.total' "$out")
+HOME="$fake_home" python3 bin/burnbar-collect --window 360 --buckets 12
+[ "$(jq -r '.claude.total' "$out")" = "$(( cl_before + 4000 ))" ] \
+  || fail "a 345-minute-old record fell out of a 360-minute window: $(jq -r '.claude.total' "$out")"
+bsum=$(jq -r '[.buckets[].claude] | add' "$out")
+[ "$bsum" = "$cl_before" ] || fail "grid buckets should exclude the pre-grid record (bucket sum $bsum, expected $cl_before)"
+jq -e '.claude.trailing.m60 >= 0 and .claude.trailing.m5 >= 0 and .claude.trailing.m5 <= .claude.trailing.m60' "$out" >/dev/null \
+  || fail "trailing sums missing or inconsistent"
+ok "window totals are exact while the strip's grid stays aligned"
+
+# No activity means no peak time: the panel shows "--", not the window start.
+jq -e '(.codex.peak > 0 and .codex.peakAt > 0) or (.codex.peak == 0 and .codex.peakAt == 0)' "$out" >/dev/null \
+  || fail "peakAt disagrees with peak"
+ok "peakAt is 0 when nothing peaked"
 
 echo
 echo "ALL TESTS PASSED"

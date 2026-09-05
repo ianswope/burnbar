@@ -35,7 +35,21 @@ def normalize_url(url: str) -> str:
         parsed.port
     except ValueError as error:
         raise ValueError("Ollama URL has an invalid port") from error
+    # Endpoint paths are appended to this string; a query or fragment would
+    # swallow them ("?key=a/api/ps" is a query, "#x/api/ps" is never sent).
+    if parsed.query or parsed.fragment:
+        raise ValueError("Ollama URL must not carry a query or fragment")
     return url.rstrip("/")
+
+
+def model_name(value) -> str:
+    """An identifier that goes back to Ollama verbatim. Anything that would
+    need truncating or cleaning is refused rather than silently changed into
+    a different model's name."""
+    text = str(value or "")
+    if not text or len(text) > MAX_MODEL_NAME_LENGTH or not text.isprintable():
+        raise ValueError("model name is missing, too long, or not printable")
+    return text
 
 
 def reject_nonfinite(value: str):
@@ -69,6 +83,29 @@ def request(base: str, path: str, payload=None):
     return result
 
 
+def capabilities(base: str, model: str) -> list[str]:
+    """What /api/show says the model can do. Empty when the server does not
+    say (older Ollama), in which case generate is assumed."""
+    try:
+        caps = request(base, "/api/show", {"model": model}).get("capabilities")
+    except Exception:
+        return []
+    return [c for c in caps if isinstance(c, str)] if isinstance(caps, list) else []
+
+
+def warm(base: str, model: str) -> None:
+    """Load a model and pin it. An embedding-only model is refused by
+    /api/generate ("does not support generate"), so it is warmed through
+    /api/embed with an empty input instead — verified to pin it just the same."""
+    caps = capabilities(base, model)
+    if not caps or "completion" in caps:
+        request(base, "/api/generate", {"model": model, "prompt": "", "stream": False, "keep_alive": -1})
+    elif "embedding" in caps:
+        request(base, "/api/embed", {"model": model, "input": "", "keep_alive": -1})
+    else:
+        raise ValueError(model + " supports neither generate nor embed")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("action", choices=["list", "load", "unload"])
@@ -79,16 +116,21 @@ def main() -> int:
         if args.action == "list":
             tags = bounded_models(request(args.url, "/api/tags"))
             loaded = bounded_models(request(args.url, "/api/ps"))
-            loaded_names = {
-                bounded_text(item.get("name") or item.get("model"), MAX_MODEL_NAME_LENGTH)
-                for item in loaded if isinstance(item, dict)
-            }
+            loaded_names = set()
+            for item in loaded:
+                try:
+                    loaded_names.add(model_name(item.get("name") or item.get("model")) if isinstance(item, dict) else "")
+                except ValueError:
+                    continue
             models = []
             for item in tags:
                 if not isinstance(item, dict):
                     continue
-                name = bounded_text(item.get("name") or item.get("model"), MAX_MODEL_NAME_LENGTH)
-                if not name:
+                # A name that cannot go back to Ollama verbatim is not listed
+                # at all; a shortened one would act on a different model.
+                try:
+                    name = model_name(item.get("name") or item.get("model"))
+                except ValueError:
                     continue
                 details = item.get("details")
                 details = details if isinstance(details, dict) else {}
@@ -102,12 +144,12 @@ def main() -> int:
         elif not args.model:
             raise ValueError("a model name is required")
         elif args.action == "load":
-            model = bounded_text(args.model, MAX_MODEL_NAME_LENGTH)
-            request(args.url, "/api/generate", {"model": model, "prompt": "",
-                                                 "stream": False, "keep_alive": -1})
+            model = model_name(args.model)
+            warm(args.url, model)
             print(json.dumps({"ok": True, "message": model + " loaded"}))
         else:
-            model = bounded_text(args.model, MAX_MODEL_NAME_LENGTH)
+            model = model_name(args.model)
+            # keep_alive 0 through generate evicts embedding models too.
             request(args.url, "/api/generate", {"model": model, "prompt": "",
                                                  "stream": False, "keep_alive": 0})
             print(json.dumps({"ok": True, "message": model + " unloaded"}))

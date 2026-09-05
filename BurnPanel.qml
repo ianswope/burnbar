@@ -139,40 +139,36 @@ Panel {
   readonly property var buckets: svc ? svc.buckets : []
   readonly property real bucketMinutes: svc ? Math.max(0.25, svc.bucketMinutes) : 30
   readonly property real windowMinutes: svc ? svc.windowMinutes : 360
-  // Chart hour marks: one label per whole hour of buckets, fixed.
-  readonly property int labelEvery: Math.max(1, Math.round(60 / bucketMinutes))
-  // Rate horizon: enough buckets to cover the trailing 60 minutes including
-  // the partial newest one — never fewer. round(60 / width) used to give two
-  // 30-minute buckets, which at one minute past the hour covered 31 minutes
-  // and called it "1 HOUR". Re-evaluates on the tick as the newest fills.
-  readonly property int hourBuckets: {
-    void panel.tick
-    var b = panel.buckets
-    var newestT = b && b.length ? Number(b[b.length - 1].t || 0) : 0
-    var elapsed = newestT > 0 ? Math.max(0, Math.min(bucketMinutes, (Date.now() - newestT) / 60000)) : 0
-    return 1 + Math.max(0, Math.ceil((60 - elapsed) / bucketMinutes))
-  }
 
-  // Tokens per minute over the last N buckets. The newest bucket is partial,
-  // so "now" divides by the minutes actually elapsed inside it rather than the
-  // full bucket width — otherwise the live rate reads a fraction of the truth.
-  function rate(agent, bucketsBack) {
-    void panel.tick
-    var b = panel.buckets
-    if (!b || !b.length) return 0
-    var sum = 0
-    var n = Math.min(bucketsBack, b.length)
-    for (var i = 0; i < n; i++) sum += Number(b[b.length - 1 - i][agent] || 0)
-    var newestT = Number(b[b.length - 1].t || 0)
-    var elapsedInNewest = Math.max(1, Math.min(panel.bucketMinutes, (Date.now() - newestT) / 60000))
-    var minutes = (n - 1) * panel.bucketMinutes + elapsedInNewest
-    return sum / Math.max(1, minutes)
+  // Rates come from the collector's exact trailing sums — tokens in the last
+  // 5 and 60 minutes from timestamped points — and the exact window total.
+  // No bucket arithmetic: two 30-minute buckets called "1 HOUR" covered 31 to
+  // 61 minutes depending on the clock, and a one-minute denominator floor
+  // read 90 tokens in a 30-second bucket as 90/min.
+  function rateNow(agent) {
+    return (agent === "claude" ? (svc ? svc.claudeTrailing5 : 0) : (svc ? svc.codexTrailing5 : 0)) / 5
   }
+  function rateHour(agent) {
+    return (agent === "claude" ? (svc ? svc.claudeTrailing60 : 0) : (svc ? svc.codexTrailing60 : 0)) / 60
+  }
+  function rateWindow(agent) {
+    return (agent === "claude" ? (svc ? svc.claudeTotal : 0) : (svc ? svc.codexTotal : 0)) / Math.max(1, windowMinutes)
+  }
+  // "30" for whole minutes, "8.3" for fractional buckets.
+  function bucketLabel(minutes) {
+    var m = Number(minutes) || 0
+    return m === Math.round(m) ? String(Math.round(m)) : m.toFixed(1)
+  }
+  // At most this many rows in a list that can grow without bound. The panel
+  // never scrolls; a 30-model install must not push the footer off screen.
+  readonly property int maxRows: 6
 
   function splitTotal(split) {
     return Number(split.input || 0) + Number(split.cacheWrite || 0) + Number(split.output || 0)
   }
-  function cacheSavings(split) {
+  // Cache reads as a share of everything the model touched. It is a token
+  // share, not money: cache hits are billed too, at a lower rate.
+  function cacheShare(split) {
     var billed = splitTotal(split)
     var read = Number(split.cacheRead || 0)
     return billed + read > 0 ? read / (billed + read) : 0
@@ -237,7 +233,11 @@ Panel {
         })
       }
       panel.localOptions = options
-      if (panel.selectedModel === "" && options.length > 0) panel.selectedModel = options[0].value
+      // Reconcile the selection against every list, not just the first: a
+      // model removed outside the panel stayed selected and actionable.
+      var stillThere = false
+      for (var k = 0; k < options.length; k++) if (options[k].value === panel.selectedModel) stillThere = true
+      if (!stillThere) panel.selectedModel = options.length > 0 ? options[0].value : ""
     } catch (e) {
       panel.localNote = "Could not read installed models"
     }
@@ -497,12 +497,14 @@ Panel {
         PanelHero {
           Layout.fillWidth: true
           title: ""
-          meta: "tokens billed · last " + Math.round(panel.windowMinutes / 60) + "h  ·  "
+          // "burned", not "billed": this figure deliberately leaves cache
+          // reads out, and those are billed too, at a lower rate.
+          meta: "tokens burned · last " + panel.widget.windowLabel(panel.windowMinutes) + "  ·  "
             + ((panel.svc ? panel.svc.claudeTurns + panel.svc.codexTurns : 0)) + " turns  ·  "
             + ((panel.svc ? panel.svc.claudeSessions + panel.svc.codexSessions : 0)) + " sessions"
           detail: panel.svc
-            ? panel.widget.compact(panel.rate("claude", 1) + panel.rate("codex", 1)) + "/min now  ·  "
-              + panel.widget.compact(panel.rate("claude", panel.hourBuckets) + panel.rate("codex", panel.hourBuckets)) + "/min last hour  ·  "
+            ? panel.widget.compact(panel.rateNow("claude") + panel.rateNow("codex")) + "/min last 5m  ·  "
+              + panel.widget.compact(panel.rateHour("claude") + panel.rateHour("codex")) + "/min last hour  ·  "
               + "active " + panel.agoText(Math.max(panel.svc.claudeLastAt, panel.svc.codexLastAt))
             : ""
           foreground: panel.widget.claudeHot
@@ -551,58 +553,52 @@ Panel {
           opacity: panel.reveal
           transform: Translate { y: (1 - panel.reveal) * 8 }
 
+          // A fixed model of three keys. A model built as a fresh array of
+          // values was replaced on every tick, which destroyed and recreated
+          // the tiles — and a recreated Counter initialises straight to its
+          // target, so the count-up never showed.
           Repeater {
-            model: [
-              {
-                name: "CLAUDE",
-                accent: panel.widget.claudeHot,
-                value: panel.svc ? panel.svc.claudeTotal : 0,
-                format: panel.widget.compact,
-                sub: panel.svc
-                  ? panel.svc.claudeTurns + " turns · " + panel.svc.claudeSessions + " sessions · "
-                    + panel.widget.compact(panel.rate("claude", 1)) + "/min"
-                  : "",
-                sub2: panel.svc
-                  ? "peak " + panel.widget.compact(panel.svc.claudePeak) + " at " + panel.clockText(panel.svc.claudePeakAt)
-                    + " · active " + panel.agoText(panel.svc.claudeLastAt)
-                  : ""
-              },
-              {
-                name: "CODEX",
-                accent: panel.widget.codexHot,
-                value: panel.svc ? panel.svc.codexTotal : 0,
-                format: panel.widget.compact,
-                sub: panel.svc
-                  ? panel.svc.codexTurns + " turns · " + panel.svc.codexSessions + " sessions · "
-                    + panel.widget.compact(panel.rate("codex", 1)) + "/min"
-                  : "",
-                sub2: panel.svc
-                  ? "peak " + panel.widget.compact(panel.svc.codexPeak) + " at " + panel.clockText(panel.svc.codexPeakAt)
-                    + " · active " + panel.agoText(panel.svc.codexLastAt)
-                  : ""
-              },
-              {
-                name: "LOCAL",
-                accent: panel.localState,
-                value: panel.localOnline ? panel.svc.localLoad : 0,
-                format: function(v) { return panel.localOnline ? Math.round(v) + "%" : "off" },
-                sub: !panel.localOnline ? "ollama not answering"
-                  : (panel.svc.localActive ? "inferencing" : "idle")
-                    + " · " + panel.svc.localModelCount + " warm"
-                    + (panel.svc.localPowerW > 0 ? " · " + panel.svc.localPowerW.toFixed(1) + " W" : ""),
-                sub2: !panel.localOnline ? (panel.svc ? panel.svc.localError : "")
-                  : "peak " + Math.round(panel.svc.localPeakLoad) + "% · "
-                    + panel.svc.localPeakPowerW.toFixed(0) + " W this session"
-              }
-            ]
+            model: ["claude", "codex", "local"]
             delegate: Rectangle {
-              required property var modelData
+              id: tile
+              required property string modelData
+              readonly property bool isClaude: modelData === "claude"
+              readonly property bool isCodex: modelData === "codex"
+              readonly property var s: panel.svc
+              readonly property color accent: isClaude ? panel.widget.claudeHot
+                : isCodex ? panel.widget.codexHot : panel.localState
+              readonly property real value: !s ? 0 : isClaude ? s.claudeTotal
+                : isCodex ? s.codexTotal : (panel.localOnline ? s.localLoad : 0)
+              readonly property var format: (isClaude || isCodex) ? panel.widget.compact
+                : function(v) { return panel.localOnline ? Math.round(v) + "%" : "off" }
+              readonly property string sub: {
+                void panel.tick
+                if (!s) return ""
+                if (isClaude) return s.claudeTurns + " turns · " + s.claudeSessions + " sessions · "
+                  + panel.widget.compact(panel.rateNow("claude")) + "/min"
+                if (isCodex) return s.codexTurns + " turns · " + s.codexSessions + " sessions · "
+                  + panel.widget.compact(panel.rateNow("codex")) + "/min"
+                if (!panel.localOnline) return "ollama not answering"
+                return (s.localActive ? "inferencing" : "idle") + " · " + s.localModelCount + " warm"
+                  + (s.localPowerW > 0 ? " · " + s.localPowerW.toFixed(1) + " W" : "")
+              }
+              readonly property string sub2: {
+                void panel.tick
+                if (!s) return ""
+                if (isClaude) return "peak " + panel.widget.compact(s.claudePeak) + " at " + panel.clockText(s.claudePeakAt)
+                  + " · active " + panel.agoText(s.claudeLastAt)
+                if (isCodex) return "peak " + panel.widget.compact(s.codexPeak) + " at " + panel.clockText(s.codexPeakAt)
+                  + " · active " + panel.agoText(s.codexLastAt)
+                if (!panel.localOnline) return s.localError
+                return "peak " + Math.round(s.localPeakLoad) + "% · " + s.localPeakPowerW.toFixed(0) + " W this session"
+              }
+
               Layout.fillWidth: true
               implicitHeight: Style.space(76)
               radius: Style.cornerRadius
-              color: Util.alpha(modelData.accent, 0.10)
+              color: Util.alpha(tile.accent, 0.10)
               border.width: 1
-              border.color: Util.alpha(modelData.accent, 0.30)
+              border.color: Util.alpha(tile.accent, 0.30)
 
               ColumnLayout {
                 anchors.fill: parent
@@ -611,17 +607,17 @@ Panel {
                 RowLayout {
                   Layout.fillWidth: true
                   Counter {
-                    target: modelData.value
-                    format: modelData.format
-                    color: modelData.accent
+                    target: tile.value
+                    format: tile.format
+                    color: tile.accent
                     font.bold: true
                     font.pixelSize: Style.font.display
                   }
                   Item { Layout.fillWidth: true }
-                  Caption { text: modelData.name; color: panel.foreground; font.bold: true }
+                  Caption { text: tile.modelData.toUpperCase(); color: panel.foreground; font.bold: true }
                 }
-                Caption { text: modelData.sub; Layout.fillWidth: true }
-                Caption { text: modelData.sub2; Layout.fillWidth: true }
+                Caption { text: tile.sub; Layout.fillWidth: true }
+                Caption { text: tile.sub2; Layout.fillWidth: true }
               }
             }
           }
@@ -649,7 +645,7 @@ Panel {
               Layout.fillWidth: true
               PanelSectionHeader {
                 Layout.fillWidth: true
-                text: "BURN OVER TIME  ·  " + Math.round(panel.bucketMinutes) + " MIN BUCKETS"
+                text: "BURN OVER TIME  ·  " + panel.bucketLabel(panel.bucketMinutes) + " MIN BUCKETS"
                 foreground: panel.foreground
                 fontFamily: panel.fontFamily
                 elide: Text.ElideRight
@@ -740,12 +736,17 @@ Panel {
                     }
                   }
                   Caption {
-                    // Hour marks, with the last one or two suppressed so they
-                    // never crowd the "now" label.
-                    visible: col.live || (col.index % panel.labelEvery === 0 && col.index <= chart.n - 3)
+                    // Hour marks on the bucket that starts each hour, with the
+                    // minutes shown when that bucket does not start on the
+                    // hour itself (a :30 grid used to label 7:30 as "7 PM").
+                    // The last one or two are suppressed so they never crowd
+                    // the "now" label.
+                    readonly property real t: Number(col.b ? col.b.t : 0)
+                    readonly property bool onHour: t > 0 && (t % 3600000) < panel.bucketMinutes * 60000
+                    visible: col.live || (onHour && col.index <= chart.n - 3)
                     anchors.bottom: parent.bottom
                     anchors.horizontalCenter: parent.horizontalCenter
-                    text: col.live ? "now" : Qt.formatTime(new Date(Number(col.b ? col.b.t : 0)), "h AP")
+                    text: col.live ? "now" : Qt.formatTime(new Date(t), (t % 3600000) === 0 ? "h AP" : "h:mm AP")
                     font.pixelSize: Style.font.caption - 1
                     font.bold: col.live
                     color: col.live ? panel.foreground : panel.dim
@@ -762,19 +763,19 @@ Panel {
               columnSpacing: Style.space(8)
               rowSpacing: 2
               Caption { text: "RATE  ·  TOKENS / MIN"; font.bold: true; Layout.fillWidth: true }
-              Caption { text: "NOW"; font.bold: true; Layout.preferredWidth: Style.space(58); horizontalAlignment: Text.AlignRight }
+              Caption { text: "5 MIN"; font.bold: true; Layout.preferredWidth: Style.space(58); horizontalAlignment: Text.AlignRight }
               Caption { text: "1 HOUR"; font.bold: true; Layout.preferredWidth: Style.space(58); horizontalAlignment: Text.AlignRight }
-              Caption { text: Math.round(panel.windowMinutes / 60) + " HOURS"; font.bold: true; Layout.preferredWidth: Style.space(58); horizontalAlignment: Text.AlignRight }
+              Caption { text: panel.widget.windowLabel(panel.windowMinutes).toUpperCase(); font.bold: true; Layout.preferredWidth: Style.space(58); horizontalAlignment: Text.AlignRight }
 
               Body { text: "Claude"; color: panel.widget.claudeHot; Layout.fillWidth: true }
-              Counter { target: panel.rate("claude", 1); format: panel.widget.compact; color: panel.foreground; font.bold: true; font.pixelSize: Style.font.bodySmall; Layout.preferredWidth: Style.space(58); horizontalAlignment: Text.AlignRight }
-              Counter { target: panel.rate("claude", panel.hourBuckets); format: panel.widget.compact; color: panel.foreground; font.pixelSize: Style.font.bodySmall; Layout.preferredWidth: Style.space(58); horizontalAlignment: Text.AlignRight }
-              Counter { target: panel.rate("claude", panel.buckets.length); format: panel.widget.compact; color: panel.foreground; font.pixelSize: Style.font.bodySmall; Layout.preferredWidth: Style.space(58); horizontalAlignment: Text.AlignRight }
+              Counter { target: panel.rateNow("claude"); format: panel.widget.compact; color: panel.foreground; font.bold: true; font.pixelSize: Style.font.bodySmall; Layout.preferredWidth: Style.space(58); horizontalAlignment: Text.AlignRight }
+              Counter { target: panel.rateHour("claude"); format: panel.widget.compact; color: panel.foreground; font.pixelSize: Style.font.bodySmall; Layout.preferredWidth: Style.space(58); horizontalAlignment: Text.AlignRight }
+              Counter { target: panel.rateWindow("claude"); format: panel.widget.compact; color: panel.foreground; font.pixelSize: Style.font.bodySmall; Layout.preferredWidth: Style.space(58); horizontalAlignment: Text.AlignRight }
 
               Body { text: "Codex"; color: panel.widget.codexHot; Layout.fillWidth: true }
-              Counter { target: panel.rate("codex", 1); format: panel.widget.compact; color: panel.foreground; font.bold: true; font.pixelSize: Style.font.bodySmall; Layout.preferredWidth: Style.space(58); horizontalAlignment: Text.AlignRight }
-              Counter { target: panel.rate("codex", panel.hourBuckets); format: panel.widget.compact; color: panel.foreground; font.pixelSize: Style.font.bodySmall; Layout.preferredWidth: Style.space(58); horizontalAlignment: Text.AlignRight }
-              Counter { target: panel.rate("codex", panel.buckets.length); format: panel.widget.compact; color: panel.foreground; font.pixelSize: Style.font.bodySmall; Layout.preferredWidth: Style.space(58); horizontalAlignment: Text.AlignRight }
+              Counter { target: panel.rateNow("codex"); format: panel.widget.compact; color: panel.foreground; font.bold: true; font.pixelSize: Style.font.bodySmall; Layout.preferredWidth: Style.space(58); horizontalAlignment: Text.AlignRight }
+              Counter { target: panel.rateHour("codex"); format: panel.widget.compact; color: panel.foreground; font.pixelSize: Style.font.bodySmall; Layout.preferredWidth: Style.space(58); horizontalAlignment: Text.AlignRight }
+              Counter { target: panel.rateWindow("codex"); format: panel.widget.compact; color: panel.foreground; font.pixelSize: Style.font.bodySmall; Layout.preferredWidth: Style.space(58); horizontalAlignment: Text.AlignRight }
             }
 
             PanelSectionHeader {
@@ -785,9 +786,10 @@ Panel {
               elide: Text.ElideRight
             }
 
-            // What you paid for, by kind — and how much the cache absorbed
-            // that never hit the bill. That second number is the one people
-            // never think to look at and always want once they have seen it.
+            // What burned, by kind — and how much of everything the model
+            // touched came out of the cache instead. That second number is the
+            // one people never think to look at and always want once they
+            // have seen it. It is a token share; cache hits still cost money.
             Repeater {
               model: [
                 { name: "Claude", accent: panel.widget.claudeHot, split: panel.svc ? panel.svc.claudeSplit : ({}) },
@@ -810,7 +812,7 @@ Panel {
                   }
                   Caption {
                     text: "cache read " + panel.widget.compact(modelData.split.cacheRead || 0)
-                      + " · saved " + Math.round(panel.cacheSavings(modelData.split) * 100) + "%"
+                      + " · " + Math.round(panel.cacheShare(modelData.split) * 100) + "% of all input"
                     color: modelData.accent
                     font.bold: true
                   }
@@ -968,7 +970,8 @@ Panel {
 
             Repeater {
               id: modelRepeater
-              model: panel.sortedModels(panel.svc ? panel.svc.claudeByModel : ({}))
+              readonly property var rows: panel.sortedModels(panel.svc ? panel.svc.claudeByModel : ({}))
+              model: rows.slice(0, panel.maxRows)
               delegate: RowLayout {
                 required property var modelData
                 readonly property real share: panel.svc && panel.svc.claudeTotal > 0
@@ -980,6 +983,11 @@ Panel {
                 Caption { text: Math.round(share * 100) + "%"; Layout.preferredWidth: Style.space(30); horizontalAlignment: Text.AlignRight }
                 Body { text: panel.widget.compact(modelData.tokens); color: panel.widget.claudeHot; font.bold: true; Layout.preferredWidth: Style.space(44); horizontalAlignment: Text.AlignRight }
               }
+            }
+            Caption {
+              visible: modelRepeater.rows.length > panel.maxRows
+              text: "+ " + (modelRepeater.rows.length - panel.maxRows) + " more, smaller"
+              Layout.fillWidth: true
             }
           }
 
@@ -1036,11 +1044,13 @@ Panel {
                 }
                 Caption {
                   Layout.fillWidth: true
-                  text: panel.svc
-                    ? (panel.svc.localGpuName !== "" ? panel.svc.localGpuName.replace("NVIDIA GeForce ", "") : "no NVIDIA GPU")
-                      + "  ·  " + String(panel.svc.localBackend).toUpperCase()
-                      + (panel.svc.localVersion !== "" ? "  ·  ollama " + panel.svc.localVersion : "")
-                    : ""
+                  text: !panel.svc ? ""
+                    : panel.svc.localBackend === "remote"
+                      ? "remote Ollama  ·  no local hardware telemetry"
+                        + (panel.svc.localVersion !== "" ? "  ·  ollama " + panel.svc.localVersion : "")
+                      : (panel.svc.localGpuName !== "" ? panel.svc.localGpuName.replace("NVIDIA GeForce ", "") : "no NVIDIA GPU")
+                        + "  ·  " + String(panel.svc.localBackend).toUpperCase()
+                        + (panel.svc.localVersion !== "" ? "  ·  ollama " + panel.svc.localVersion : "")
                 }
               }
             }
@@ -1124,7 +1134,9 @@ Panel {
             }
 
             Trace {
-              caption: "LOAD  ·  LAST " + ((panel.svc ? panel.svc.localCells * panel.svc.localRefreshMs / 1000 : 0).toFixed(0)) + "S"
+              // The span the ring actually covers, from its own timestamps —
+              // polls skip while a probe runs and refreshes add early samples.
+              caption: "LOAD  ·  LAST " + Math.round((panel.svc ? panel.svc.localSpanMs : 0) / 1000) + "S"
               valueText: (panel.svc ? Math.round(panel.svc.localLoad) : 0) + "%  ·  peak " + (panel.svc ? Math.round(panel.svc.localPeakLoad) : 0) + "%"
               samples: panel.svc ? panel.svc.localHistory : []
               max: 100
@@ -1140,7 +1152,9 @@ Panel {
 
             PanelSectionHeader {
               Layout.fillWidth: true
-              text: "RESIDENT MODELS  ·  " + (panel.svc ? panel.svc.localModelCount : 0) + " IN VRAM"
+              // "loaded", not "in VRAM": /api/ps lists CPU-resident models too,
+              // and each row says how much VRAM it actually holds.
+              text: "RESIDENT MODELS  ·  " + (panel.svc ? panel.svc.localModelCount : 0) + " LOADED"
               foreground: panel.foreground
               fontFamily: panel.fontFamily
             }
@@ -1155,7 +1169,8 @@ Panel {
 
             Repeater {
               id: residentRepeater
-              model: panel.svc ? panel.svc.localModelDetails : []
+              readonly property var rows: panel.svc ? panel.svc.localModelDetails : []
+              model: rows.slice(0, panel.maxRows)
               delegate: ColumnLayout {
                 required property var modelData
                 Layout.fillWidth: true
@@ -1179,6 +1194,11 @@ Panel {
                     .filter(Boolean).join("  ·  ")
                 }
               }
+            }
+            Caption {
+              visible: residentRepeater.rows.length > panel.maxRows
+              text: "+ " + (residentRepeater.rows.length - panel.maxRows) + " more resident"
+              Layout.fillWidth: true
             }
 
             PanelSectionHeader {

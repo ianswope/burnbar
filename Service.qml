@@ -40,6 +40,12 @@ Item {
   property real codexLastAt: 0
   property real claudePeakAt: 0
   property real codexPeakAt: 0
+  // Exact trailing sums from the collector — tokens in the last 5 and 60
+  // minutes measured from timestamped points, not bucket approximations.
+  property real claudeTrailing5: 0
+  property real claudeTrailing60: 0
+  property real codexTrailing5: 0
+  property real codexTrailing60: 0
   property real generatedAt: 0
   // real, not int: windowMinutes / bars is fractional for most settings
   // (100 / 12 = 8.33), and an int here silently rounded every rate.
@@ -63,12 +69,14 @@ Item {
   readonly property string historyPath: stateDir + "/history.json"
   // Resolved from this component's own location, not a hardcoded plugin id:
   // the directory name changes if the plugin is cloned or renamed.
-  readonly property string collectorPath:
-    String(Qt.resolvedUrl("bin/burnbar-collect")).replace("file://", "")
-  readonly property string localStatusPath:
-    String(Qt.resolvedUrl("bin/burnbar-local-status")).replace("file://", "")
-  readonly property string localControlPath:
-    String(Qt.resolvedUrl("bin/burnbar-local-control")).replace("file://", "")
+  // A file URL is not a path: a '#' in the install directory stays '%23' in
+  // the URL, and python3 would be handed a file that does not exist.
+  function localPath(relative) {
+    return decodeURIComponent(String(Qt.resolvedUrl(relative)).replace(/^file:\/\//, ""))
+  }
+  readonly property string collectorPath: localPath("bin/burnbar-collect")
+  readonly property string localStatusPath: localPath("bin/burnbar-local-status")
+  readonly property string localControlPath: localPath("bin/burnbar-local-control")
 
   // ── local intelligence (Ollama) ────────────────────────────────────────────
   // Cloud burn is history reconstructed from transcripts; local burn is a live
@@ -89,6 +97,12 @@ Item {
   // Power draw ring, same length and cadence as the load ring, so the panel can
   // trace watts over the same seconds the lane shows load.
   property var localPowerHistory: []
+  // When each sample was taken. Polls are skipped while a probe runs and added
+  // early by a manual refresh, so the ring's real span is whatever these say,
+  // not cells × interval.
+  property var localTimeHistory: []
+  readonly property real localSpanMs: localTimeHistory.length > 1
+    ? Number(localTimeHistory[0]) - Number(localTimeHistory[localTimeHistory.length - 1]) : 0
   property real localPeakLoad: 0
   property real localPeakPowerW: 0
   property int localPulse: 0
@@ -254,50 +268,81 @@ Item {
     onLoadFailed: root.ready = false
   }
 
+  function fault(message) {
+    root.lastError = message
+    root.collectorBroken = true
+  }
+
+  function num(v) {
+    var n = Number(v)
+    return isFinite(n) ? n : 0
+  }
+
   function apply(content) {
     var parsed
     try {
       parsed = JSON.parse(String(content || ""))
     } catch (e) {
-      root.lastError = "Unreadable history file"
-      root.collectorBroken = true
+      fault("Unreadable history file")
       return
     }
-    if (!parsed || !Array.isArray(parsed.buckets)) {
-      root.lastError = "History file has no buckets"
-      root.collectorBroken = true
+    // The whole snapshot is validated before a single property changes. A
+    // bucket array containing null used to pass, clear the fault, and then
+    // throw inside the first binding that read the newest bucket.
+    if (!parsed || !Array.isArray(parsed.buckets) || parsed.buckets.length === 0) {
+      fault("History file has no buckets")
+      return
+    }
+    for (var i = 0; i < parsed.buckets.length; i++) {
+      var bk = parsed.buckets[i]
+      if (!bk || typeof bk !== "object" || !isFinite(Number(bk.t))
+          || !isFinite(Number(bk.claude)) || !isFinite(Number(bk.codex))) {
+        fault("History file has a malformed bucket")
+        return
+      }
+    }
+    var c = parsed.claude
+    var x = parsed.codex
+    if (!c || typeof c !== "object" || !x || typeof x !== "object") {
+      fault("History file is missing an agent")
       return
     }
 
-    root.buckets = parsed.buckets
-    root.generatedAt = Number(parsed.generatedAt || 0)
-    root.bucketMinutes = Number(parsed.bucketMinutes || 15)
-
-    var c = parsed.claude || {}
-    var x = parsed.codex || {}
-    root.claudeTotal = Number(c.total || 0)
-    root.codexTotal = Number(x.total || 0)
-    root.claudePeak = Number(c.peak || 0)
-    root.codexPeak = Number(x.peak || 0)
-    root.claudeSessions = Number(c.sessions || 0)
-    root.codexSessions = Number(x.sessions || 0)
-    root.claudeLimits = Array.isArray(c.limits) ? c.limits : []
-    root.codexLimits = Array.isArray(x.limits) ? x.limits : []
-    root.claudeLimitsMeasuredAt = Number(c.limitsMeasuredAt || 0)
-    root.codexLimitsMeasuredAt = Number(x.limitsMeasuredAt || 0)
-    root.claudeLimitsStatus = String(c.limitsStatus || "")
-    root.codexLimitsStatus = String(x.limitsStatus || "")
-    root.claudeByModel = c.byModel || ({})
-    root.claudeSplit = c.split || ({})
-    root.codexSplit = x.split || ({})
-    root.claudeTurns = Number(c.turns || 0)
-    root.codexTurns = Number(x.turns || 0)
-    root.claudeFirstAt = Number(c.firstAt || 0)
-    root.claudeLastAt = Number(c.lastAt || 0)
-    root.codexFirstAt = Number(x.firstAt || 0)
-    root.codexLastAt = Number(x.lastAt || 0)
-    root.claudePeakAt = Number(c.peakAt || 0)
-    root.codexPeakAt = Number(x.peakAt || 0)
+    try {
+      root.buckets = parsed.buckets
+      root.generatedAt = num(parsed.generatedAt)
+      root.bucketMinutes = num(parsed.bucketMinutes) > 0 ? num(parsed.bucketMinutes) : 15
+      root.claudeTotal = num(c.total)
+      root.codexTotal = num(x.total)
+      root.claudePeak = num(c.peak)
+      root.codexPeak = num(x.peak)
+      root.claudeSessions = num(c.sessions)
+      root.codexSessions = num(x.sessions)
+      root.claudeLimits = Array.isArray(c.limits) ? c.limits : []
+      root.codexLimits = Array.isArray(x.limits) ? x.limits : []
+      root.claudeLimitsMeasuredAt = num(c.limitsMeasuredAt)
+      root.codexLimitsMeasuredAt = num(x.limitsMeasuredAt)
+      root.claudeLimitsStatus = String(c.limitsStatus || "")
+      root.codexLimitsStatus = String(x.limitsStatus || "")
+      root.claudeByModel = c.byModel && typeof c.byModel === "object" ? c.byModel : ({})
+      root.claudeSplit = c.split && typeof c.split === "object" ? c.split : ({})
+      root.codexSplit = x.split && typeof x.split === "object" ? x.split : ({})
+      root.claudeTurns = num(c.turns)
+      root.codexTurns = num(x.turns)
+      root.claudeFirstAt = num(c.firstAt)
+      root.claudeLastAt = num(c.lastAt)
+      root.codexFirstAt = num(x.firstAt)
+      root.codexLastAt = num(x.lastAt)
+      root.claudePeakAt = num(c.peakAt)
+      root.codexPeakAt = num(x.peakAt)
+      root.claudeTrailing5 = num(c.trailing ? c.trailing.m5 : 0)
+      root.claudeTrailing60 = num(c.trailing ? c.trailing.m60 : 0)
+      root.codexTrailing5 = num(x.trailing ? x.trailing.m5 : 0)
+      root.codexTrailing60 = num(x.trailing ? x.trailing.m60 : 0)
+    } catch (e) {
+      fault("History file could not be applied")
+      return
+    }
     root.ready = true
     if (root.lastCollectOk) {
       root.lastError = ""
@@ -489,6 +534,9 @@ Item {
     var power = root.localPowerHistory.slice(0, Math.max(0, root.localCells - 1))
     power.unshift(root.localOnline ? root.localPowerW : 0)
     root.localPowerHistory = power
+    var when = root.localTimeHistory.slice(0, Math.max(0, root.localCells - 1))
+    when.unshift(Date.now())
+    root.localTimeHistory = when
     root.localPeakLoad = Math.max(root.localPeakLoad, Number(value) || 0)
     root.localPeakPowerW = Math.max(root.localPeakPowerW, root.localPowerW)
     // A pulse means the runner just got busier, not merely that it is busy —

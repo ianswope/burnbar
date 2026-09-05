@@ -7,7 +7,7 @@ plan limit, and what the GPU is doing about it.
 
 ![Burn Bar cockpit: cloud spend on the left, local GPU on the right](docs/cockpit.png)
 
-Everything in that screenshot is real and local: 10.5M tokens billed in six
+Everything in that screenshot is real and local: 10.5M tokens burned in six
 hours across 113 sessions, a cache that served 192.8M reads, and an RTX 4050
 holding one warm model at 38 W. Nothing was drawn by hand.
 
@@ -27,10 +27,13 @@ omarchy plugin remove nixfred.burnbar     # take it out again
 Requirements: a stock Omarchy install. `python3` is already there. Optional:
 Ollama for the local lane (it reads OFFLINE without it), `nvidia-smi` for full
 GPU telemetry or `rocm-smi` for utilisation only. No Codex? That lane simply
-stays cold.
+stays cold. Horizontal bars only: the strip lays its three lanes across the
+bar's length and does not rotate for a left or right bar.
 
 Read [SECURITY.md](SECURITY.md) before installing. Burn Bar opens your Claude
-and Codex transcripts to count tokens. It keeps only numbers.
+and Codex transcripts to count tokens. It keeps numbers, model names and
+message ids from them, never text — and it triggers Omarchy's own usage
+collectors, which contact your providers with the sign-ins you already have.
 
 ## The strip
 
@@ -94,8 +97,10 @@ metered cloud spend in tokens; right is the local runner in watts, degrees and
 megabytes. Different money, different units, so they never share a column.
 Everything grows into place on open, then moves only when the data does.
 
-**Header** — tokens billed in the history window, turns and sessions across
-both cloud agents, and a refresh button.
+**Header** — tokens burned in the exact trailing window (fresh input, cache
+writes and output; cache reads are left out, and they are billed too, at a
+lower rate), turns and sessions across both cloud agents, and a refresh
+button.
 
 **Three tiles** — Claude, Codex and Local, each with its own hue: turns,
 sessions, tokens per minute, when the peak bucket happened, and how long ago
@@ -108,12 +113,13 @@ watts, plus the session's peak load and power.
   coloured on the same heat ramp as the strip. Hour labels underneath, the
   peak of each agent flagged at the top right, and the live bucket breathes
   until the window rolls.
-- *Rate* — tokens per minute for each agent over three horizons: the current
-  bucket, the last hour and the whole window.
+- *Rate* — tokens per minute for each agent over three horizons: the last
+  five minutes, the last hour and the whole window, each measured exactly
+  from timestamped points rather than from buckets.
 - *Token mix* — input, cache write and output per agent, with cache reads on
-  their own line and the percentage of everything the model touched that the
-  cache absorbed. Cache reads are the cheap path; keeping them out of the
-  heat map but visible here is deliberate.
+  their own line and their share of everything the model took in. That is a
+  token share, not a cost saving: cache hits are billed too, at a lower rate.
+  Cache reads are kept out of the heat map but visible here on purpose.
 - *Plan limits* — every limit Omarchy's agent-usage records track (Claude
   session, weekly and any extra weekly buckets; Codex weekly), each with a
   countdown, the wall-clock reset time and a percentage bar. A window whose
@@ -130,17 +136,22 @@ watts, plus the session's peak load and power.
   session peak, temperature with a plain-language state, VRAM used of total
   with the models' share and what is free, SM clock against the board's boost
   ceiling, and warm-model count with sample age and poll interval.
-- Load and power traces, one cell per sample, coloured by intensity.
-- *Resident models* — everything Ollama currently holds in VRAM: parameter
-  count, quantisation, family, VRAM footprint, context length, and "evicts
-  in", read from Ollama's own `expires_at`.
+- Load and power traces, one cell per sample: height is intensity, brightness
+  is recency. The caption states the span the ring actually covers.
+- *Resident models* — everything Ollama currently holds in memory: parameter
+  count, quantisation, family, the VRAM each one actually occupies, context
+  length, and "evicts in", read from Ollama's own `expires_at`. Long lists
+  cap at six rows with a "+ N more" line; so does Claude-by-model.
 - *Model control* — pick any installed model and **Load & keep warm**
   (`keep_alive: -1`) or **Unload** (`keep_alive: 0`) without leaving the bar.
+  Embedding-only models are warmed through `/api/embed`, since generate
+  refuses them.
 
 Inside the panel `R` forces a refresh and `Esc` closes it. Telemetry fields
-the board does not expose (nvidia-smi prints `[N/A]`) read as zero and hide,
-so an AMD card or a headless box shows a shorter local column rather than a
-column of dashes.
+the board does not expose (nvidia-smi prints `[N/A]`) read as zero: their
+bars hide and their values show as `--`; the tiles themselves stay, so the
+column keeps its shape on an AMD card or a headless box. If `OLLAMA_HOST`
+points at another machine, no local GPU or CPU figure is attributed to it.
 
 ## Where the numbers come from
 
@@ -149,13 +160,25 @@ transcripts, the only place per-turn token deltas with timestamps actually
 live:
 
 - **Claude** — `~/.claude/projects/**/*.jsonl`, assistant lines carry
-  `message.usage`. The same message is re-serialized up to 3× as it streams, so
-  `message.id` is the mandatory dedupe key. Counts fresh input + cache writes +
-  output; cache *reads* are excluded from the heat map as the cheap path that
-  would swamp the graph, and carried separately for the token-mix line.
+  `message.usage`. The same message is re-serialized up to 3× as it streams,
+  each revision with more output, so `message.id` is the mandatory dedupe key
+  and the largest revision is the one that counts. Counts fresh input + cache
+  writes + output; cache *reads* are excluded from the heat map as the cheap
+  path that would swamp the graph, and carried separately for the token-mix
+  line.
 - **Codex** — `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`, `event_msg` lines
-  where `payload.type === "token_count"` carry `info.last_token_usage`, already
-  a per-turn delta.
+  where `payload.type === "token_count"` carry `info.total_token_usage`, a
+  cumulative counter. Deltas of that counter are what gets counted: a
+  rate-limit refresh re-emits the same `last_token_usage` with an unchanged
+  total, and counting `last_token_usage` counted it twice (13 times across 130
+  rollouts on the development machine).
+
+Two clocks. The strip and chart use grid-aligned buckets so cells march
+instead of jittering; the grid holds `bars - 1` whole buckets plus the partial
+newest one, so it reaches back a little less than the window. Every headline
+number — totals, rates, turns, activity, split, by-model — is computed over
+the exact trailing window from the timestamped points, and the 5-minute and
+1-hour rates are exact trailing sums too.
 - **Limits** — read straight off the records `omarchy-agent-usage-update` keeps
   in `~/.local/state/omarchy/agents/usage/`. Burn Bar keeps those records
   fresh itself by running `omarchy-agent-usage-update --limits-only claude
@@ -179,8 +202,12 @@ Omarchy rebuild every plugin service.
 
 Scanning is incremental twice over: a file whose size and mtime are unchanged
 replays its cached contribution, and a file that merely grew is read from the
-previous byte offset rather than re-parsed whole. Cold run ~2s, warm ~120ms,
-which is what makes a 5-second refresh reasonable.
+previous byte offset rather than re-parsed whole — but only if the 48 bytes
+just before that offset still read the same, so a rewrite that happens to be
+longer is not mistaken for an append. Cached points older than the longest
+supported window are pruned, cache entries are validated before they are
+believed, and one collector at a time holds a lock on the state directory.
+Cold run ~2s, warm ~150ms, which is what makes a 5-second refresh reasonable.
 
 **Local** — `bin/burnbar-local-status` asks Ollama's `/api/ps` what is resident
 and `/api/version` which build is running, samples runner CPU ticks from
@@ -188,8 +215,10 @@ and `/api/version` which build is running, samples runner CPU ticks from
 `nvidia-smi` (or utilisation alone from `rocm-smi`). Nothing about local load
 is persisted anywhere, so the service keeps its own rolling ring of samples —
 that ring *is* the local lane and the cockpit's traces.
-`bin/burnbar-local-control` lists installed models via `/api/tags` and warms
-or evicts one through `/api/generate` with `keep_alive`.
+`bin/burnbar-local-control` lists installed models via `/api/tags` and
+`/api/ps` (on panel open, on refresh, and after every action) and warms or
+evicts one through `/api/generate` with `keep_alive` — or through `/api/embed`
+for a model whose `/api/show` capabilities say it can only embed.
 
 Python 3 with no third-party imports is deliberate. Omarchy depends on `uwsm`
 and `kitty`, both of which depend on `python`, so `python3` is present on every
@@ -202,11 +231,18 @@ A wedged run is killed by a 30-second watchdog. It never fails silently.
 
 ## Privacy
 
-Burn Bar reads your Claude and Codex transcripts to count tokens, and keeps only
-numbers from them. Its only network traffic is to your own Ollama endpoint
-(`OLLAMA_HOST`, default `http://127.0.0.1:11434`) to read and control local
-models; nothing leaves the machine. Read [SECURITY.md](SECURITY.md) before
-installing.
+Burn Bar reads your Claude and Codex transcripts to count tokens. From them it
+keeps timestamps, token counts, model names and Claude's opaque message ids,
+plus the transcript paths it uses as cache keys — never prompt or reply text.
+Its own network traffic is to your Ollama endpoint (`OLLAMA_HOST`, default
+`http://127.0.0.1:11434`) to read and control models.
+
+It also runs Omarchy's own usage collectors every few minutes to keep the plan
+limits fresh. Those are Omarchy's, not Burn Bar's, and the Claude one contacts
+Anthropic's usage endpoint with the sign-in Claude Code already saved; Burn
+Bar never touches that credential itself. So "nothing leaves the machine" is
+not a claim this README makes. Read [SECURITY.md](SECURITY.md) for the full
+list before installing.
 
 ## Settings
 
@@ -214,7 +250,7 @@ Set from the Omarchy plugin settings UI, or in `shell.json`.
 
 | Key | Default | Meaning |
 |---|---|---|
-| `width` | 158 | Widget width in px |
+| `width` | 158 | Widget width in px (raised automatically if too narrow for the configured cells) |
 | `bars` | 12 | Cells per cloud agent (the collector makes exactly this many buckets) |
 | `windowMinutes` | 360 | How far back the cloud lanes and the cockpit chart reach |
 | `refreshIntervalSec` | 5 | Collector cadence |
@@ -237,14 +273,18 @@ buckets on the strip and the same twelve in the cockpit chart.
 ```
 
 Validates the manifest, asserts cell count equals bucket count and local cell
-count equals ring length, runs the Ollama URL/JSON hardening unit tests, checks
-that the local probe degrades to a clean offline object, and runs the collector
-against a synthetic fixture that checks `message.id` dedupe, cache-read
-exclusion, Codex delta math, cache idempotency, and the tail read.
+count equals ring length, runs the Ollama URL/JSON/GPU hardening unit tests,
+checks that the local probe degrades to a clean offline object, and runs the
+collector against a synthetic fixture under a pinned clock: `message.id`
+dedupe keeping the final revision, cache-read exclusion, Codex cumulative
+deltas and repeated snapshots, the incremental tail read and its fingerprint,
+equal-size and longer rewrites, malformed records and cache entries, junk
+percentages, plan-limit measurement time, and the exact window against the
+grid.
 
 ## Changes
 
-See [CHANGELOG.md](CHANGELOG.md). Current version: 1.3.2.
+See [CHANGELOG.md](CHANGELOG.md). Current version: 1.3.3.
 
 ## Credits
 

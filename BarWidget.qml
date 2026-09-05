@@ -37,9 +37,25 @@ BarWidget {
   readonly property bool ready: svc ? svc.ready : false
   readonly property var buckets: svc ? svc.buckets : []
 
-  readonly property int configuredWidth: Math.max(110, Math.min(400, Number(setting("width", 158)) || 158))
-  readonly property int cellCount: Math.max(6, Math.min(32, Number(setting("bars", 12)) || 12))
-  readonly property int localCells: Math.max(4, Math.min(20, Number(setting("localCells", 9)) || 9))
+  function boundedInt(name, fallback, low, high) {
+    var n = parseInt(String(setting(name, fallback)), 10)
+    if (!isFinite(n)) n = fallback
+    return Math.max(low, Math.min(high, n))
+  }
+  // One clamp — the service's — so the strip can never draw a different
+  // number of cells than the collector made buckets (bars: 0 used to read as
+  // 12 here and 6 there). The fallback only matters before the service binds.
+  readonly property int cellCount: svc ? svc.bucketCount : boundedInt("bars", 12, 6, 32)
+  readonly property int localCells: svc ? svc.localCells : boundedInt("localCells", 9, 4, 20)
+  // The narrowest strip that still gives every cell a whole pixel and a gap.
+  // A configured width below it is raised rather than honoured: overlapping
+  // cells are a heat map of nothing.
+  readonly property int minWidthForCells: {
+    var cloudNeed = (4 * cellCount + 3 + (showGauges ? 12 : 0) + (showLocal ? 4 : 0)) / (showLocal ? 0.75 : 1)
+    var localNeed = showLocal ? (2 * localCells + 6) * 4 : 0
+    return Math.max(110, Math.ceil(Math.max(cloudNeed, localNeed)) + 6)
+  }
+  readonly property int configuredWidth: Math.max(minWidthForCells, boundedInt("width", 158, 110, 400))
   readonly property bool showGauges: setting("showGauges", true) !== false
   readonly property bool showLocal: setting("showLocal", true) !== false
   readonly property bool emberFlicker: setting("emberFlicker", true) !== false
@@ -80,17 +96,24 @@ BarWidget {
     return Math.round(percent * 100) + "%"
   }
 
+  // "6h", "1h40m", "30m" — never a window rounded to the nearest hour.
+  function windowLabel(minutes) {
+    var m = Math.round(Number(minutes) || 0)
+    var h = Math.floor(m / 60), r = m % 60
+    return h > 0 ? (r > 0 ? h + "h" + r + "m" : h + "h") : m + "m"
+  }
+
   function zoneTooltip(zone) {
     if (!svc) return "Burn Bar — starting up"
     if (broken && zone !== zoneLocal)
       return "CLOUD FAULT — " + (svc.lastError || "collector failed")
-    var hours = Math.round((svc.windowMinutes || 360) / 60)
+    var span = windowLabel(svc.windowMinutes || 360)
     if (zone === zoneClaude)
-      return "CLAUDE  ·  " + compact(svc.claudeTotal) + " tokens / last " + hours + "h"
+      return "CLAUDE  ·  " + compact(svc.claudeTotal) + " tokens / last " + span
         + "\nnow " + compact(svc.claudeLatest) + " this bucket  ·  " + svc.claudeSessions + " sessions"
         + "\nweekly quota " + quotaText(svc.claudeWeekly, svc.claudeLimitsMeasuredAt)
     if (zone === zoneCodex)
-      return "CODEX  ·  " + compact(svc.codexTotal) + " tokens / last " + hours + "h"
+      return "CODEX  ·  " + compact(svc.codexTotal) + " tokens / last " + span
         + "\nnow " + compact(svc.codexLatest) + " this bucket  ·  " + svc.codexSessions + " sessions"
         + "\nweekly quota " + quotaText(svc.codexWeekly, svc.codexLimitsMeasuredAt)
     if (zone === zoneLocal)
@@ -159,8 +182,10 @@ BarWidget {
 
   // cold → warm → hot → amber → white. Four segments, deliberately uneven: most
   // of the resolution sits in the low-mid where day-to-day burn actually lives.
-  function heat(level, cold, warm, hot) {
-    if (root.broken) return Qt.rgba(urgent.r, urgent.g, urgent.b, 1)
+  // `faulted` is per lane: a dead cloud collector reddens the cloud lanes and
+  // nothing else. Local telemetry has its own probe and its own truth.
+  function heat(level, cold, warm, hot, faulted) {
+    if (faulted === undefined ? root.broken : faulted) return Qt.rgba(urgent.r, urgent.g, urgent.b, 1)
     var l = Math.max(0, Math.min(1, level))
     if (l < 0.30) return mix(cold, warm, l / 0.30)
     if (l < 0.62) return mix(warm, hot, (l - 0.30) / 0.32)
@@ -237,9 +262,9 @@ BarWidget {
 
   // One number for "how hard is this machine working right now", across all
   // three agents. Drives every global effect: under-glow, sparks, frame rate.
-  readonly property real energy: root.broken ? 0 : Math.max(
-      root.claudeLevel(root.cellCount - 1),
-      root.codexLevel(0),
+  readonly property real energy: Math.max(
+      root.broken ? 0 : root.claudeLevel(root.cellCount - 1),
+      root.broken ? 0 : root.codexLevel(0),
       root.showLocal && root.localOnline ? root.localLevel(0) : 0)
 
   readonly property color energyColor: root.broken ? urgent
@@ -279,16 +304,27 @@ BarWidget {
   property real claudeFlash: 0
   property real codexFlash: 0
   property real localFlash: 0
+  // Wave position gets its own monotonic 0→1. The flash value (up in 90 ms,
+  // down over 700) is brightness only; driving position from it sent the
+  // band racing outward and then drifting back toward the divider as it faded.
+  property real claudeWave: 0
+  property real codexWave: 0
 
-  SequentialAnimation {
+  ParallelAnimation {
     id: claudeImpact
-    NumberAnimation { target: root; property: "claudeFlash"; to: 1; duration: 90; easing.type: Easing.OutQuad }
-    NumberAnimation { target: root; property: "claudeFlash"; to: 0; duration: 700; easing.type: Easing.OutCubic }
+    NumberAnimation { target: root; property: "claudeWave"; from: 0; to: 1; duration: 790; easing.type: Easing.OutCubic }
+    SequentialAnimation {
+      NumberAnimation { target: root; property: "claudeFlash"; to: 1; duration: 90; easing.type: Easing.OutQuad }
+      NumberAnimation { target: root; property: "claudeFlash"; to: 0; duration: 700; easing.type: Easing.OutCubic }
+    }
   }
-  SequentialAnimation {
+  ParallelAnimation {
     id: codexImpact
-    NumberAnimation { target: root; property: "codexFlash"; to: 1; duration: 90; easing.type: Easing.OutQuad }
-    NumberAnimation { target: root; property: "codexFlash"; to: 0; duration: 700; easing.type: Easing.OutCubic }
+    NumberAnimation { target: root; property: "codexWave"; from: 0; to: 1; duration: 790; easing.type: Easing.OutCubic }
+    SequentialAnimation {
+      NumberAnimation { target: root; property: "codexFlash"; to: 1; duration: 90; easing.type: Easing.OutQuad }
+      NumberAnimation { target: root; property: "codexFlash"; to: 0; duration: 700; easing.type: Easing.OutCubic }
+    }
   }
   SequentialAnimation {
     id: localImpact
@@ -323,6 +359,9 @@ BarWidget {
     property bool newestLast: true
     property real flash: 0
     property real phaseSign: 1
+    // Which instrument's fault this lane shows. Cloud lanes follow the
+    // collector; the local lane never does.
+    property bool faulted: root.broken
 
     readonly property real slot: width / Math.max(1, count)
     readonly property real cellWidth: Math.max(1, slot - Style.spaceReal(1))
@@ -352,9 +391,15 @@ BarWidget {
         readonly property real idleSwell: root.idle && !root.broken
           ? 0.06 + Math.sin(root.driftPhase + index * 0.42 * lane.phaseSign) * 0.05 : 0
 
-        readonly property real heatLevel: Math.max(0,
-          level + flicker + lane.flash * recency * recency * 0.25 + idleSwell)
-        readonly property color tint: root.heat(heatLevel, lane.cold, lane.warm, lane.hot)
+        // Motion (flicker, idle drift, impact) rides on top of the sample.
+        // Colour reads the sum. Height reads the sample through an eased
+        // Behavior and the motion through a plain scale — so a 5 Hz flicker
+        // step never restarts a 420 ms height animation on every cell, which
+        // is what kept two rectangles per cell animating continuously while
+        // the strip was supposedly idle.
+        readonly property real motion: flicker + lane.flash * recency * recency * 0.25 + idleSwell
+        readonly property real heatLevel: Math.max(0, level + motion)
+        readonly property color tint: root.heat(heatLevel, lane.cold, lane.warm, lane.hot, lane.faulted)
 
         width: lane.cellWidth
         height: lane.height
@@ -364,11 +409,13 @@ BarWidget {
         // Height is the secondary channel: a 72%→100% swell that gives the lane
         // a profile without stealing the story from colour.
         readonly property real cellHeight:
-          lane.height * (0.72 + 0.28 * Math.min(1, cell.heatLevel))
+          lane.height * (0.72 + 0.28 * Math.min(1, cell.level))
+        readonly property real motionScale: Math.max(0.6, Math.min(1.3, 1 + 0.28 * cell.motion))
 
         // Bloom: a wider, softer ghost behind the cell. A cheap fake glow that
         // costs one rectangle instead of a blur pass.
         Rectangle {
+          id: bloom
           anchors.centerIn: parent
           width: parent.width + Style.spaceReal(3)
           height: cell.cellHeight + Style.spaceReal(3)
@@ -377,10 +424,12 @@ BarWidget {
           border.width: 0
           opacity: Math.pow(cell.level, 1.6) * 0.42 * (0.4 + 0.6 * cell.recency)
             + lane.flash * cell.recency * cell.recency * 0.45
+          transform: Scale { origin.x: bloom.width / 2; origin.y: bloom.height / 2; yScale: cell.motionScale }
           Behavior on height { NumberAnimation { duration: 420; easing.type: Easing.OutCubic } }
         }
 
         Rectangle {
+          id: body
           anchors.centerIn: parent
           width: parent.width
           height: cell.cellHeight
@@ -391,6 +440,7 @@ BarWidget {
           // Rectangle.border.width defaults to 1, not 0. Left implicit it
           // outlines every cell and the lane reads as a hollow comb.
           border.width: 0
+          transform: Scale { origin.x: body.width / 2; origin.y: body.height / 2; yScale: cell.motionScale }
           Behavior on height { NumberAnimation { duration: 420; easing.type: Easing.OutCubic } }
         }
 
@@ -410,7 +460,8 @@ BarWidget {
         // looks frozen at collector granularity. It rides on its own overlay so
         // it can never leak a border onto the fill.
         Rectangle {
-          visible: cell.live && !root.idle && !root.broken
+          id: liveRing
+          visible: cell.live && !root.idle && !lane.faulted && root.visible
           anchors.centerIn: parent
           width: parent.width
           height: cell.cellHeight
@@ -420,8 +471,9 @@ BarWidget {
           border.width: Style.spaceReal(1)
           opacity: 0
           SequentialAnimation on opacity {
-            running: cell.live && !root.idle && !root.broken
+            running: liveRing.visible
             loops: Animation.Infinite
+            onRunningChanged: if (!running) liveRing.opacity = 0
             NumberAnimation { to: 0.55; duration: 900; easing.type: Easing.InOutQuad }
             NumberAnimation { to: 0.0; duration: 900; easing.type: Easing.InOutQuad }
           }
@@ -448,6 +500,7 @@ BarWidget {
       Behavior on color { ColorAnimation { duration: 400 } }
     }
     Rectangle {
+      id: fill
       anchors.bottom: parent.bottom
       anchors.horizontalCenter: parent.horizontalCenter
       width: parent.width
@@ -460,10 +513,13 @@ BarWidget {
       Behavior on color { ColorAnimation { duration: 400 } }
 
       // Quota nearly gone gets its own heartbeat — you should not have to read
-      // a number to learn you are about to be cut off.
+      // a number to learn you are about to be cut off. Gated on the gauge
+      // actually being on screen, and the fill is restored to full when the
+      // beat stops so a quota that drops under 90% mid-pulse is not left dim.
       SequentialAnimation on opacity {
-        running: !gauge.unknown && gauge.percent >= 0.9
+        running: !gauge.unknown && gauge.percent >= 0.9 && gauge.visible && root.visible
         loops: Animation.Infinite
+        onRunningChanged: if (!running) fill.opacity = 1
         NumberAnimation { to: 0.35; duration: 700; easing.type: Easing.InOutQuad }
         NumberAnimation { to: 1.0; duration: 700; easing.type: Easing.InOutQuad }
       }
@@ -690,7 +746,7 @@ BarWidget {
         color: root.claudeHot
         border.width: 0
         anchors.verticalCenter: parent.verticalCenter
-        x: claudeLane.x + claudeLane.width * (1 - root.claudeFlash) - width / 2
+        x: claudeLane.x + claudeLane.width * (1 - root.claudeWave) - width / 2
         opacity: root.claudeFlash * 0.55
       }
       Rectangle {
@@ -702,7 +758,7 @@ BarWidget {
         color: root.codexHot
         border.width: 0
         anchors.verticalCenter: parent.verticalCenter
-        x: codexLane.x + codexLane.width * root.codexFlash - width / 2
+        x: codexLane.x + codexLane.width * root.codexWave - width / 2
         opacity: root.codexFlash * 0.55
       }
 
@@ -790,16 +846,21 @@ BarWidget {
             border.width: 0
             Behavior on color { ColorAnimation { duration: 260 } }
 
+            // Both loops are gated on the lane actually being shown, and each
+            // puts its property back when it stops — a stopped animation
+            // leaves whatever value it was mid-way through.
             SequentialAnimation on scale {
-              running: root.localActive && root.visible
+              running: root.localActive && root.visible && root.showLocal
               loops: Animation.Infinite
+              onRunningChanged: if (!running) coreDot.scale = 1
               NumberAnimation { to: 1.16; duration: 480; easing.type: Easing.InOutSine }
               NumberAnimation { to: 0.94; duration: 480; easing.type: Easing.InOutSine }
             }
             // Offline is a fault, and faults strobe rather than breathe.
             SequentialAnimation on opacity {
-              running: !root.localOnline && root.visible
+              running: !root.localOnline && root.visible && root.showLocal
               loops: Animation.Infinite
+              onRunningChanged: if (!running) coreDot.opacity = 1
               NumberAnimation { to: 0.25; duration: 620; easing.type: Easing.InOutQuad }
               NumberAnimation { to: 1.0; duration: 620; easing.type: Easing.InOutQuad }
             }
@@ -841,6 +902,7 @@ BarWidget {
           newestLast: false
           flash: root.localFlash
           phaseSign: -1
+          faulted: false
           // Offline drops the lane to nothing rather than freezing the last
           // reading, which would be a lie that looks like data.
           levelAt: function(i) { return root.localOnline ? root.localLevel(i) : 0 }

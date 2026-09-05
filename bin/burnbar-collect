@@ -13,16 +13,27 @@ writing in its own dir makes Omarchy rebuild every plugin service.
 
 Claude:  ~/.claude/projects/**/*.jsonl   assistant lines carry message.usage.
          The same assistant message is re-serialized up to 3x as it streams,
-         so message.id is a mandatory dedupe key.
+         each revision with more output than the last, so message.id is a
+         mandatory dedupe key and the LARGEST revision is the one that counts.
 Codex:   ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl   event_msg lines with
-         payload.type == "token_count" carry info.last_token_usage, already
-         a per-turn delta.
+         payload.type == "token_count" carry info.total_token_usage, a
+         cumulative counter for the session. Deltas of that counter are what
+         gets counted: a rate-limit refresh re-emits the same last_token_usage
+         with an unchanged total (13 times across 130 rollouts on the machine
+         this was built on), and counting last_token_usage would count it twice.
+
+Two clocks. The strip and chart use grid-aligned buckets so cells march instead
+of jittering; every headline number (totals, rates, turns, activity, split,
+by-model) is computed over the exact trailing window from the timestamped
+points, so "last 6h" means the last 360 minutes and "1 HOUR" means 60.
 """
 
 import datetime
+import fcntl
 import json
 import os
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -34,10 +45,24 @@ PROBE_CACHE_DIR = CACHE / "omarchy" / "agent-usage"
 OUT_DIR = STATE / "omarchy" / "burnbar"
 OUT_FILE = OUT_DIR / "history.json"
 CACHE_FILE = OUT_DIR / "scan-cache.json"
+LOCK_FILE = OUT_DIR / "collect.lock"
 USAGE_DIR = STATE / "omarchy" / "agents" / "usage"
 
 CLAUDE_ROOT = HOME / ".claude" / "projects"
 CODEX_ROOT = HOME / ".codex" / "sessions"
+
+CACHE_VERSION = 2
+# A token count larger than this is not a token count.
+MAX_TOKENS = 10**12
+# The longest supported window is 24h; cached points older than this can never
+# be asked for again and would otherwise accumulate for the life of a session.
+PRUNE_MS = 25 * 3600 * 1000
+# Bytes of transcript remembered just before the saved offset. A resume is only
+# trusted when those bytes still read the same: a rewrite that happens to be
+# longer than the cached file is not an append.
+TAIL_BYTES = 48
+# Records stamped further ahead of now than this are clock skew, not data.
+FUTURE_SLACK_MS = 60_000
 
 
 def int_arg(flag, fallback, low, high):
@@ -56,20 +81,38 @@ WINDOW_MIN = int_arg("--window", 360, 30, 1440)
 BUCKETS = int_arg("--buckets", 12, 6, 32)
 BUCKET_MS = round(WINDOW_MIN * 60_000 / BUCKETS)
 
-now_ms = int(time.time() * 1000)
-# Anchor to the bucket grid so cells march instead of jittering.
-grid_now = (now_ms // BUCKET_MS) * BUCKET_MS
-window_start = grid_now - (BUCKETS - 1) * BUCKET_MS
+# Tests pin the clock so two runs can be compared byte for byte across a bucket
+# boundary; nothing else sets it.
+try:
+    now_ms = int(os.environ["BURNBAR_NOW_MS"])
+except (KeyError, ValueError):
+    now_ms = int(time.time() * 1000)
 
-buckets = [{"t": window_start + i * BUCKET_MS, "claude": 0, "codex": 0}
+# Anchor the strip to the bucket grid so cells march instead of jittering. The
+# grid holds BUCKETS-1 whole buckets plus the partial newest one, so it covers
+# a little less than the window — which is why the headline numbers below use
+# the exact window instead.
+grid_now = (now_ms // BUCKET_MS) * BUCKET_MS
+grid_start = grid_now - (BUCKETS - 1) * BUCKET_MS
+exact_start = now_ms - WINDOW_MIN * 60_000
+scan_floor = min(grid_start, exact_start)
+latest_ok = now_ms + FUTURE_SLACK_MS
+t5 = now_ms - 5 * 60_000
+t60 = now_ms - 60 * 60_000
+
+buckets = [{"t": grid_start + i * BUCKET_MS, "claude": 0, "codex": 0}
            for i in range(BUCKETS)]
 
 
 def bucket_for(ts):
-    if ts < window_start:
+    if ts < grid_start or ts > latest_ok:
         return None
-    idx = (ts - window_start) // BUCKET_MS
+    idx = (ts - grid_start) // BUCKET_MS
     return buckets[idx] if 0 <= idx < BUCKETS else None
+
+
+def in_window(ts):
+    return exact_start <= ts <= latest_ok
 
 
 def parse_ts(value):
@@ -78,56 +121,121 @@ def parse_ts(value):
         return None
     try:
         text = str(value).replace("Z", "+00:00")
-        from datetime import datetime
-        return int(datetime.fromisoformat(text).timestamp() * 1000)
+        return int(datetime.datetime.fromisoformat(text).timestamp() * 1000)
     except Exception:
         return None
 
 
+def count(value):
+    """A token count: a non-negative bounded integer. None for anything else —
+    a bool, a string, a negative, a float that is not whole, 1e999."""
+    if value is None:
+        return 0
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, float):
+        if value != value or value in (float("inf"), float("-inf")) or not value.is_integer():
+            return None
+        value = int(value)
+    if not isinstance(value, int):
+        return None
+    if value < 0 or value > MAX_TOKENS:
+        return None
+    return value
+
+
 # ── incremental scan cache ───────────────────────────────────────────────────
 # Transcripts are append-only, so a file whose size and mtime are unchanged
-# contributes exactly what it contributed last run. Cache that contribution
-# so the window sliding forward does not force a full re-read.
-try:
-    cache = json.loads(CACHE_FILE.read_text()) if CACHE_FILE.exists() else {}
-    if not isinstance(cache, dict):
-        cache = {}
-except Exception:
-    cache = {}
+# contributes exactly what it contributed last run, and a file that merely grew
+# is read from the previous byte offset. Every entry is validated before it is
+# believed: a malformed one is a cache miss, never a crash that repeats forever.
+def load_cache():
+    try:
+        raw = json.loads(CACHE_FILE.read_text()) if CACHE_FILE.exists() else {}
+    except Exception:
+        return {}
+    if not isinstance(raw, dict) or raw.get("v") != CACHE_VERSION:
+        return {}
+    files = raw.get("files")
+    return files if isinstance(files, dict) else {}
+
+
+cache = load_cache()
 next_cache = {}
 
 
-def scan(path, extract):
-    """Return every point in `path`, re-parsing as little as possible.
+def valid_point(pt):
+    return (isinstance(pt, list) and len(pt) >= 2
+            and isinstance(pt[0], int) and not isinstance(pt[0], bool)
+            and isinstance(pt[1], int) and not isinstance(pt[1], bool)
+            and pt[1] >= 0)
 
-    Transcripts are append-only, so a file that merely grew is read from the
-    previous byte offset rather than from the start. Without this the active
-    session's multi-megabyte transcript is re-parsed in full every few seconds,
-    which is the whole cost of the collector.
-    """
+
+def valid_entry(hit):
+    if not isinstance(hit, dict):
+        return None
+    size, mtime, offset = hit.get("size"), hit.get("mtime"), hit.get("offset")
+    if not (isinstance(size, int) and not isinstance(size, bool) and size >= 0):
+        return None
+    if not isinstance(mtime, (int, float)) or isinstance(mtime, bool):
+        return None
+    if not (isinstance(offset, int) and not isinstance(offset, bool) and 0 <= offset <= size):
+        return None
+    points = hit.get("points")
+    if not isinstance(points, list) or not all(valid_point(p) for p in points):
+        return None
+    if not isinstance(hit.get("tail", ""), str):
+        return None
+    state = hit.get("state", {})
+    if not isinstance(state, dict):
+        return None
+    return hit
+
+
+def prune(points):
+    floor = now_ms - PRUNE_MS
+    return [p for p in points if p[0] >= floor]
+
+
+def read_tail(path, offset):
+    start = max(0, offset - TAIL_BYTES)
+    with path.open("rb") as fh:
+        fh.seek(start)
+        return fh.read(offset - start).hex()
+
+
+def _scan(path, extract, use_cache):
     try:
         st = path.stat()
     except OSError:
         return []
     # A file untouched since the window opened cannot hold points inside it.
-    if st.st_mtime * 1000 < window_start:
+    if st.st_mtime * 1000 < scan_floor:
         return []
 
     key = str(path)
-    hit = cache.get(key)
-    if hit and hit.get("size") == st.st_size and hit.get("mtime") == st.st_mtime:
+    hit = valid_entry(cache.get(key)) if use_cache else None
+    if hit and hit["size"] == st.st_size and hit["mtime"] == st.st_mtime:
+        hit = dict(hit, points=prune(hit["points"]))
         next_cache[key] = hit
         return hit["points"]
 
-    # Resume only when the file strictly grew. A shrink means it was rewritten
-    # and the cached offset is meaningless — and so does an equal size with a
-    # new mtime, which is a rewrite that happens to be the same length.
+    # Resume only when the file strictly grew AND the bytes just before the
+    # saved offset still read the same. A shrink, an equal size with a new
+    # mtime, or a longer rewrite are all rewrites; the cached offset is
+    # meaningless and the whole file is read again.
     start = 0
     points = []
-    if hit and isinstance(hit.get("offset"), int) \
-            and st.st_size > (hit.get("size") or 0) and hit["offset"] <= st.st_size:
-        start = hit["offset"]
-        points = list(hit.get("points") or [])
+    state = {}
+    if hit and st.st_size > hit["size"] and hit["offset"] <= st.st_size:
+        try:
+            same = read_tail(path, hit["offset"]) == hit.get("tail", "")
+        except OSError:
+            same = False
+        if same:
+            start = hit["offset"]
+            points = list(hit["points"])
+            state = dict(hit.get("state") or {})
 
     offset = start
     try:
@@ -140,32 +248,49 @@ def scan(path, extract):
     # Stop at the last newline: a trailing fragment is a half-written record,
     # and consuming it would both drop the record and desync the offset.
     cut = data.rfind(b"\n")
-    if cut == -1:
-        next_cache[key] = {"size": st.st_size, "mtime": st.st_mtime,
-                           "offset": offset, "points": points}
-        return points
-    offset = start + cut + 1
+    if cut != -1:
+        offset = start + cut + 1
+        for raw in data[:cut].split(b"\n"):
+            if not raw:
+                continue
+            pt = extract(raw.decode("utf-8", "replace"), state)
+            if pt:
+                points.append(pt)
 
-    for raw in data[:cut].split(b"\n"):
-        if not raw:
-            continue
-        pt = extract(raw.decode("utf-8", "replace"))
-        if pt:
-            points.append(pt)
-
-    next_cache[key] = {"size": st.st_size, "mtime": st.st_mtime,
-                       "offset": offset, "points": points}
+    points = prune(points)
+    try:
+        tail = read_tail(path, offset)
+    except OSError:
+        tail = ""
+    next_cache[key] = {"size": st.st_size, "mtime": st.st_mtime, "offset": offset,
+                       "tail": tail, "points": points, "state": state}
     return points
 
 
-# Both extractors treat a record as untrusted end to end: valid JSON with the
-# wrong shape ("input_tokens": "unknown", "info": "bad") used to raise past
-# the JSON guard and abort the whole collection for both agents — and the same
-# record would do it again on every run.
-MALFORMED = (TypeError, ValueError, AttributeError, KeyError)
+def scan(path, extract):
+    """Every point in `path`, re-parsing as little as possible. A cached entry
+    that turns out to be unusable is dropped and the file read from scratch;
+    a file that cannot be read at all contributes nothing and is not cached."""
+    try:
+        return _scan(path, extract, use_cache=True)
+    except Exception:
+        next_cache.pop(str(path), None)
+        try:
+            return _scan(path, extract, use_cache=False)
+        except Exception:
+            next_cache.pop(str(path), None)
+            return []
 
 
-def claude_extract(line):
+# Both extractors treat a record as untrusted end to end. Valid JSON with the
+# wrong shape ("input_tokens": "unknown", "info": "bad"), a number that only
+# fits a float (1e999 → OverflowError on int()), a negative count, a bool —
+# any of them used to abort the whole collection for both agents, and the
+# same record would do it again on every run. Now the record is skipped.
+MALFORMED = (TypeError, ValueError, AttributeError, KeyError, OverflowError)
+
+
+def claude_extract(line, _state):
     if "usage" not in line:
         return None
     try:
@@ -177,26 +302,44 @@ def claude_extract(line):
         ts = parse_ts(d.get("timestamp"))
         if ts is None:
             return None
+        parts = [count(usage.get("input_tokens")),
+                 count(usage.get("cache_creation_input_tokens")),
+                 count(usage.get("output_tokens")),
+                 count(usage.get("cache_read_input_tokens"))]
+        if any(p is None for p in parts):
+            return None
+        inp, cache_w, out, cache_r = parts
+        # A record that only read cache still happened: it is a turn, and the
+        # panel's cache-read line wants it. It just adds nothing to the heat.
+        if inp + cache_w + out + cache_r == 0:
+            return None
         # Billable work: fresh input + what we paid to write cache + output.
         # Cache reads are excluded on purpose — they are the cheap path and
         # would swamp the scale (939M read vs 24M written on the machine this
         # was built on).
-        inp = int(usage.get("input_tokens") or 0)
-        cache_w = int(usage.get("cache_creation_input_tokens") or 0)
-        out = int(usage.get("output_tokens") or 0)
         tokens = inp + cache_w + out
-        if tokens <= 0:
-            return None
-        # Cache reads ride along as a fifth field for the panel's "what did the
-        # cache save you" row — they still never touch the heat map.
-        cache_r = int(usage.get("cache_read_input_tokens") or 0)
-        return [ts, tokens, str(msg.get("id") or ""), str(msg.get("model") or "unknown"),
+        return [ts, tokens, str(msg.get("id") or "")[:64], str(msg.get("model") or "unknown")[:64],
                 [inp, cache_w, out, cache_r]]
     except MALFORMED:
         return None
 
 
-def codex_extract(line):
+def codex_usage(block):
+    """(input-minus-cached, cache_write, output, cached) from a Codex usage
+    block, or None if any field is not a sane count."""
+    if not isinstance(block, dict):
+        return None
+    parts = [count(block.get("input_tokens")), count(block.get("cached_input_tokens")),
+             count(block.get("cache_write_input_tokens")), count(block.get("output_tokens"))]
+    if any(p is None for p in parts):
+        return None
+    inp, cached, cache_w, out = parts
+    if cached > inp:
+        return None
+    return [inp - cached, cache_w, out, cached]
+
+
+def codex_extract(line, state):
     if "token_count" not in line:
         return None
     try:
@@ -204,20 +347,30 @@ def codex_extract(line):
         payload = d.get("payload") or {}
         if payload.get("type") != "token_count":
             return None
-        last = (payload.get("info") or {}).get("last_token_usage")
-        if not isinstance(last, dict):
-            return None
+        info = payload.get("info") or {}
         ts = parse_ts(d.get("timestamp"))
         if ts is None:
             return None
-        inp = int(last.get("input_tokens") or 0)
-        cache_r = int(last.get("cached_input_tokens") or 0)
-        cache_w = int(last.get("cache_write_input_tokens") or 0)
-        out = int(last.get("output_tokens") or 0)
-        tokens = inp - cache_r + cache_w + out
-        if tokens <= 0:
+        total = codex_usage(info.get("total_token_usage"))
+        last = codex_usage(info.get("last_token_usage"))
+        split = None
+        if total is not None:
+            prev = state.get("cum")
+            state["cum"] = total
+            if isinstance(prev, list) and len(prev) == 4:
+                delta = [total[i] - prev[i] for i in range(4)]
+                if all(x == 0 for x in delta):
+                    # The same snapshot again — a rate-limit refresh. Not a turn.
+                    return None
+                if all(x >= 0 for x in delta):
+                    split = delta
+                # A counter that went backwards is a session reset: fall through
+                # and take this event's own usage as the delta.
+        if split is None:
+            split = last
+        if split is None or sum(split) == 0:
             return None
-        return [ts, tokens, "", "codex", [max(0, inp - cache_r), cache_w, out, cache_r]]
+        return [ts, split[0] + split[1] + split[2], "", "codex", split]
     except MALFORMED:
         return None
 
@@ -231,76 +384,99 @@ def walk(root, match):
                 yield Path(dirpath) / name
 
 
-# ── Claude ───────────────────────────────────────────────────────────────────
-claude_by_model = {}
-claude_seen = set()
-claude_files = 0
-# Split + activity, so the panel can answer "was that input or output" and
-# "when did I last touch it" without a second pass over the transcripts.
-claude_split = {"input": 0, "cacheWrite": 0, "output": 0, "cacheRead": 0}
-claude_turns = 0
-claude_first = 0
-claude_last = 0
+# ── aggregation ──────────────────────────────────────────────────────────────
+class Agent:
+    def __init__(self, key):
+        self.key = key
+        self.by_model = {}
+        self.files = 0
+        self.split = {"input": 0, "cacheWrite": 0, "output": 0, "cacheRead": 0}
+        self.turns = 0
+        self.first = 0
+        self.last = 0
+        self.total = 0
+        self.m5 = 0
+        self.m60 = 0
+
+    def add(self, pt):
+        ts, tokens, model = pt[0], pt[1], pt[3] if len(pt) > 3 else self.key
+        b = bucket_for(ts)
+        if b is not None:
+            b[self.key] += tokens
+        if not in_window(ts):
+            return False
+        self.total += tokens
+        if ts >= t5:
+            self.m5 += tokens
+        if ts >= t60:
+            self.m60 += tokens
+        self.by_model[model] = self.by_model.get(model, 0) + tokens
+        part = pt[4] if len(pt) > 4 else None
+        if isinstance(part, list) and len(part) == 4:
+            self.split["input"] += part[0]
+            self.split["cacheWrite"] += part[1]
+            self.split["output"] += part[2]
+            self.split["cacheRead"] += part[3]
+        self.turns += 1
+        self.first = ts if not self.first or ts < self.first else self.first
+        self.last = max(self.last, ts)
+        return True
+
+    def payload(self):
+        peak = max((b[self.key] for b in buckets), default=0)
+        return {
+            "total": self.total,
+            "peak": peak,
+            "peakAt": max(buckets, key=lambda b: b[self.key])["t"] if peak > 0 else 0,
+            "trailing": {"m5": self.m5, "m60": self.m60},
+            "sessions": self.files,
+            "turns": self.turns,
+            "firstAt": self.first,
+            "lastAt": self.last,
+            "split": self.split,
+            "byModel": self.by_model,
+        }
 
 
-def add_split(target, part):
-    # Points cached by an older collector carry no split; they still count
-    # toward the heat map, they just cannot be attributed.
-    if not isinstance(part, list) or len(part) != 4:
-        return
-    target["input"] += int(part[0] or 0)
-    target["cacheWrite"] += int(part[1] or 0)
-    target["output"] += int(part[2] or 0)
-    target["cacheRead"] += int(part[3] or 0)
+claude = Agent("claude")
+codex = Agent("codex")
 
-
+# Claude: every revision of a streamed message carries the same id; the last
+# revision has the most output and is the one that counts. Anonymous points
+# (no id) are kept as they are.
+best = {}
+anonymous = []
+file_of = {}
 for f in walk(CLAUDE_ROOT, lambda n: n.endswith(".jsonl")):
-    pts = scan(f, claude_extract)
-    touched = False
-    for pt in pts:
-        ts, tokens, mid, model = pt[0], pt[1], pt[2], pt[3]
-        if mid:
-            if mid in claude_seen:
-                continue
-            claude_seen.add(mid)
-        b = bucket_for(ts)
-        if b is None:
+    for pt in scan(f, claude_extract):
+        try:
+            mid = pt[2] if len(pt) > 2 else ""
+        except Exception:
             continue
-        b["claude"] += tokens
-        claude_by_model[model] = claude_by_model.get(model, 0) + tokens
-        add_split(claude_split, pt[4] if len(pt) > 4 else None)
-        claude_turns += 1
-        claude_first = ts if not claude_first or ts < claude_first else claude_first
-        claude_last = max(claude_last, ts)
-        touched = True
-    if touched:
-        claude_files += 1
+        if not mid:
+            anonymous.append((pt, f))
+            continue
+        held = best.get(mid)
+        if held is None or pt[1] > held[0][1] or (pt[1] == held[0][1] and pt[0] > held[0][0]):
+            best[mid] = (pt, f)
+touched = set()
+for pt, f in list(best.values()) + anonymous:
+    try:
+        if claude.add(pt):
+            touched.add(f)
+    except Exception:
+        continue
+claude.files = len(touched)
 
-# ── Codex ────────────────────────────────────────────────────────────────────
-codex_by_model = {}
-codex_files = 0
-codex_split = {"input": 0, "cacheWrite": 0, "output": 0, "cacheRead": 0}
-codex_turns = 0
-codex_first = 0
-codex_last = 0
-
+touched = set()
 for f in walk(CODEX_ROOT, lambda n: n.startswith("rollout-") and n.endswith(".jsonl")):
-    pts = scan(f, codex_extract)
-    touched = False
-    for pt in pts:
-        ts, tokens = pt[0], pt[1]
-        b = bucket_for(ts)
-        if b is None:
+    for pt in scan(f, codex_extract):
+        try:
+            if codex.add(pt):
+                touched.add(f)
+        except Exception:
             continue
-        b["codex"] += tokens
-        codex_by_model["codex"] = codex_by_model.get("codex", 0) + tokens
-        add_split(codex_split, pt[4] if len(pt) > 4 else None)
-        codex_turns += 1
-        codex_first = ts if not codex_first or ts < codex_first else codex_first
-        codex_last = max(codex_last, ts)
-        touched = True
-    if touched:
-        codex_files += 1
+codex.files = len(touched)
 
 
 # ── limits, straight off the records omarchy-agent-usage-update maintains ────
@@ -329,9 +505,12 @@ def parse_iso_ms(raw):
 
 
 def norm_percent(value):
+    # bool is an int in Python; True would otherwise read as a confident 100%.
+    if isinstance(value, bool):
+        return -1.0
     try:
         n = float(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return -1.0
     if n != n or n in (float("inf"), float("-inf")) or n < 0 or n > 1:
         return -1.0
@@ -340,9 +519,9 @@ def norm_percent(value):
 
 def probe_measured_at(agent):
     try:
-        cache = json.loads((PROBE_CACHE_DIR / f"{agent}-limits.json").read_text())
-        return int(cache.get("fetchedAtMs") or 0) if isinstance(cache, dict) else 0
-    except (OSError, ValueError, TypeError):
+        cache_doc = json.loads((PROBE_CACHE_DIR / f"{agent}-limits.json").read_text())
+        return int(cache_doc.get("fetchedAtMs") or 0) if isinstance(cache_doc, dict) else 0
+    except (OSError, ValueError, TypeError, OverflowError):
         return 0
 
 
@@ -370,8 +549,12 @@ def limits_for(agent):
     return limits, measured, status
 
 
-claude_limits, claude_limits_at, claude_limits_status = limits_for("claude")
-codex_limits, codex_limits_at, codex_limits_status = limits_for("codex")
+def with_limits(agent_payload, agent_name):
+    limits, measured, status = limits_for(agent_name)
+    agent_payload["limits"] = limits
+    agent_payload["limitsMeasuredAt"] = measured
+    agent_payload["limitsStatus"] = status
+    return agent_payload
 
 
 payload = {
@@ -380,47 +563,43 @@ payload = {
     "bucketMinutes": BUCKET_MS / 60_000,
     "bucketCount": BUCKETS,
     "buckets": buckets,
-    "claude": {
-        "total": sum(b["claude"] for b in buckets),
-        "peak": max((b["claude"] for b in buckets), default=0),
-        "peakAt": max(buckets, key=lambda b: b["claude"])["t"] if buckets else 0,
-        "sessions": claude_files,
-        "turns": claude_turns,
-        "firstAt": claude_first,
-        "lastAt": claude_last,
-        "split": claude_split,
-        "byModel": claude_by_model,
-        "limits": claude_limits,
-        "limitsMeasuredAt": claude_limits_at,
-        "limitsStatus": claude_limits_status,
-    },
-    "codex": {
-        "total": sum(b["codex"] for b in buckets),
-        "peak": max((b["codex"] for b in buckets), default=0),
-        "peakAt": max(buckets, key=lambda b: b["codex"])["t"] if buckets else 0,
-        "sessions": codex_files,
-        "turns": codex_turns,
-        "firstAt": codex_first,
-        "lastAt": codex_last,
-        "split": codex_split,
-        "byModel": codex_by_model,
-        "limits": codex_limits,
-        "limitsMeasuredAt": codex_limits_at,
-        "limitsStatus": codex_limits_status,
-    },
+    "claude": with_limits(claude.payload(), "claude"),
+    "codex": with_limits(codex.payload(), "codex"),
 }
 
+
+def write_atomic(target, text):
+    """Unique temp file in the target's directory, then rename: a second
+    collector sharing this state dir can never publish half of ours or
+    trip over a shared temp name."""
+    fd, tmp = tempfile.mkstemp(dir=str(target.parent), prefix="." + target.name + ".", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as fh:
+            fh.write(text)
+        os.replace(tmp, target)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
 OUT_DIR.mkdir(parents=True, exist_ok=True)
-# Write-then-rename so the watching FileView never observes a half file.
-tmp = OUT_FILE.with_suffix(".json.tmp")
+# One collector per state directory at a time. If another holds the lock it is
+# about to publish the same answer; leave quietly rather than race it.
+lock = open(LOCK_FILE, "w")
+try:
+    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+except OSError:
+    sys.exit(0)
+
 # allow_nan=False: a NaN would serialise as a bare NaN token, which is not JSON
 # and would leave the widget holding whatever it parsed last.
-tmp.write_text(json.dumps(payload, allow_nan=False))
-tmp.replace(OUT_FILE)
-
+write_atomic(OUT_FILE, json.dumps(payload, allow_nan=False))
 try:
-    CACHE_FILE.write_text(json.dumps(next_cache))
-except OSError:
+    write_atomic(CACHE_FILE, json.dumps({"v": CACHE_VERSION, "files": next_cache}, allow_nan=False))
+except (OSError, ValueError):
     pass  # the cache is an optimisation; losing it only costs one slow run
 
 if "--print" in sys.argv:
