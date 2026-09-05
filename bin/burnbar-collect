@@ -19,6 +19,7 @@ Codex:   ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl   event_msg lines with
          a per-turn delta.
 """
 
+import datetime
 import json
 import os
 import sys
@@ -290,18 +291,38 @@ for f in walk(CODEX_ROOT, lambda n: n.startswith("rollout-") and n.endswith(".js
 
 
 # ── limits, straight off the records omarchy-agent-usage-update maintains ────
+# The record is copied, not trusted: its own updatedAt travels with the limits
+# so the widget can tell a live 0% from one written hours ago, and its status
+# text ("Sign-in expired", "Waiting for auth") travels too. Whether a window
+# has since rolled over is judged live in QML from resetsAt, not frozen here.
+def parse_iso_ms(raw):
+    raw = str(raw or "").strip()
+    if not raw:
+        return 0
+    try:
+        return int(datetime.datetime.fromisoformat(raw.replace("Z", "+00:00")).timestamp() * 1000)
+    except ValueError:
+        return 0
+
+
 def limits_for(agent):
+    """Return (limits, updated_at_ms, status_text) for one agent record."""
     try:
         raw = json.loads((USAGE_DIR / f"{agent}.json").read_text())
-        out = raw.get("limits")
-        if not isinstance(out, list):
-            return []
-        return [{"label": str(l.get("label") or ""),
-                 "percent": float(l.get("percent") or 0),
-                 "resetsAt": str(l.get("resetsAt") or "")}
-                for l in out if isinstance(l, dict)]
     except Exception:
-        return []
+        return [], 0, ""
+    if not isinstance(raw, dict):
+        return [], 0, ""
+    out = raw.get("limits")
+    limits = [{"label": str(l.get("label") or ""),
+               "percent": float(l.get("percent") or 0),
+               "resetsAt": str(l.get("resetsAt") or "")}
+              for l in out if isinstance(l, dict)] if isinstance(out, list) else []
+    return limits, parse_iso_ms(raw.get("updatedAt")), str(raw.get("usageStatusText") or "")[:120]
+
+
+claude_limits, claude_limits_at, claude_limits_status = limits_for("claude")
+codex_limits, codex_limits_at, codex_limits_status = limits_for("codex")
 
 
 payload = {
@@ -320,7 +341,9 @@ payload = {
         "lastAt": claude_last,
         "split": claude_split,
         "byModel": claude_by_model,
-        "limits": limits_for("claude"),
+        "limits": claude_limits,
+        "limitsUpdatedAt": claude_limits_at,
+        "limitsStatus": claude_limits_status,
     },
     "codex": {
         "total": sum(b["codex"] for b in buckets),
@@ -332,7 +355,9 @@ payload = {
         "lastAt": codex_last,
         "split": codex_split,
         "byModel": codex_by_model,
-        "limits": limits_for("codex"),
+        "limits": codex_limits,
+        "limitsUpdatedAt": codex_limits_at,
+        "limitsStatus": codex_limits_status,
     },
 }
 

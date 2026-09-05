@@ -20,6 +20,13 @@ Item {
   property int codexSessions: 0
   property var claudeLimits: []
   property var codexLimits: []
+  // When the usage record behind each limits list was written, and what it
+  // said about itself ("Sign-in expired", "Waiting for auth"). A percentage
+  // without its timestamp is how an 8-hour-old 0% got presented as live.
+  property real claudeLimitsUpdatedAt: 0
+  property real codexLimitsUpdatedAt: 0
+  property string claudeLimitsStatus: ""
+  property string codexLimitsStatus: ""
   property var claudeByModel: ({})
   property var claudeSplit: ({})
   property var codexSplit: ({})
@@ -107,6 +114,13 @@ Item {
   }
 
   readonly property int intervalSec: boundedInt("refreshIntervalSec", 5, 5, 600)
+  // Plan limits come from records Omarchy's own collectors write. Nothing
+  // else guarantees those records are fresh — the agents panel refreshes them
+  // on its own schedule, and when it does not, a 0% written hours ago stays
+  // 0%. So Burn Bar asks for them on its own clock.
+  readonly property int limitsRefreshSec: boundedInt("limitsRefreshSec", 300, 60, 3600)
+  // A record older than three refresh intervals (never under 15 min) is stale.
+  readonly property int limitsStaleMs: Math.max(900, 3 * limitsRefreshSec) * 1000
   readonly property int windowMinutes: boundedInt("windowMinutes", 360, 30, 1440)
   // Must match BarWidget.cellCount exactly — the widget draws one cell per
   // bucket, so a mismatch makes the strip cover less time than it claims.
@@ -122,17 +136,41 @@ Item {
   readonly property real claudeLatest: buckets.length ? Number(buckets[buckets.length - 1].claude || 0) : 0
   readonly property real codexLatest: buckets.length ? Number(buckets[buckets.length - 1].codex || 0) : 0
 
-  function limitPercent(limits, needle) {
+  // Re-evaluated every 30s so a record ages into "stale" and a window rolls
+  // into "expired" without waiting for a new sample to arrive.
+  property int limitsTick: 0
+  Timer { interval: 30000; running: true; repeat: true; onTriggered: root.limitsTick++ }
+
+  // A limit whose reset time has passed describes a window that is over. The
+  // number may be right for that window; it says nothing about this one.
+  function limitExpired(limit) {
+    void root.limitsTick
+    var t = Date.parse(String((limit && limit.resetsAt) || ""))
+    return isFinite(t) && t <= Date.now()
+  }
+  function limitsStale(updatedAt) {
+    void root.limitsTick
+    var t = Number(updatedAt) || 0
+    return t <= 0 || Date.now() - t > root.limitsStaleMs
+  }
+
+  // -1 means "unknown": the record is stale, or the matching window has rolled
+  // over. A gauge must show nothing rather than a confident 0%.
+  function limitPercent(limits, needle, updatedAt) {
+    if (limitsStale(updatedAt)) return -1
+    var pick = null
     for (var i = 0; i < limits.length; i++) {
       var label = String(limits[i].label || "")
-      if (label.toLowerCase().indexOf(needle) >= 0) return Number(limits[i].percent || 0)
+      if (label.toLowerCase().indexOf(needle) >= 0) { pick = limits[i]; break }
     }
-    return limits.length ? Number(limits[0].percent || 0) : 0
+    if (!pick && limits.length) pick = limits[0]
+    if (!pick || limitExpired(pick)) return -1
+    return Number(pick.percent || 0)
   }
 
   // Weekly is the limit that actually bites on both plans.
-  readonly property real claudeWeekly: limitPercent(claudeLimits, "weekly")
-  readonly property real codexWeekly: limitPercent(codexLimits, "weekly")
+  readonly property real claudeWeekly: limitPercent(claudeLimits, "weekly", claudeLimitsUpdatedAt)
+  readonly property real codexWeekly: limitPercent(codexLimits, "weekly", codexLimitsUpdatedAt)
 
   function collect() {
     if (collector.running) return
@@ -214,6 +252,10 @@ Item {
     root.codexSessions = Number(x.sessions || 0)
     root.claudeLimits = Array.isArray(c.limits) ? c.limits : []
     root.codexLimits = Array.isArray(x.limits) ? x.limits : []
+    root.claudeLimitsUpdatedAt = Number(c.limitsUpdatedAt || 0)
+    root.codexLimitsUpdatedAt = Number(x.limitsUpdatedAt || 0)
+    root.claudeLimitsStatus = String(c.limitsStatus || "")
+    root.codexLimitsStatus = String(x.limitsStatus || "")
     root.claudeByModel = c.byModel || ({})
     root.claudeSplit = c.split || ({})
     root.codexSplit = x.split || ({})
@@ -251,6 +293,60 @@ Item {
     repeat: true
     triggeredOnStart: true
     onTriggered: root.collect()
+  }
+
+  // ── plan-limit refresh ─────────────────────────────────────────────────────
+  // burnbar-collect only copies limits out of the records that
+  // omarchy-agent-usage-update maintains; this is what keeps those records
+  // fresh. --limits-only reuses any transcript scan under 15 minutes old and
+  // the Claude collector keeps a 15s probe cache, so repeated asks are cheap.
+  // Only the two agents Burn Bar draws are requested.
+  property bool limitsRefreshUnavailable: false
+  function refreshLimits() {
+    if (limitsRefresher.running || limitsRefreshUnavailable) return
+    limitsRefresher.command = ["omarchy-agent-usage-update", "--limits-only", "claude", "codex"]
+    limitsRefresher.running = true
+    limitsWatchdog.restart()
+  }
+
+  Process {
+    id: limitsRefresher
+    stderr: SplitParser {
+      onRead: data => { var s = String(data).trim(); if (s !== "") console.warn("burnbar: " + s) }
+    }
+    onExited: function(code) {
+      limitsWatchdog.stop()
+      if (code === 127) {
+        // Not an Omarchy box, or its bin dir is off PATH. Stop asking; the
+        // panel shows the record's age instead of a retry every cycle.
+        root.limitsRefreshUnavailable = true
+        console.warn("burnbar: omarchy-agent-usage-update not found; plan limits will not refresh")
+        return
+      }
+      // Whatever it wrote, fold the records into history.json now rather
+      // than on the next collector tick.
+      root.collect()
+    }
+  }
+
+  Timer {
+    id: limitsWatchdog
+    interval: 60000
+    repeat: false
+    onTriggered: {
+      if (limitsRefresher.running) {
+        console.warn("burnbar: usage-update exceeded 60s, killing")
+        limitsRefresher.signal(15)
+      }
+    }
+  }
+
+  Timer {
+    interval: root.limitsRefreshSec * 1000
+    running: true
+    repeat: true
+    triggeredOnStart: true
+    onTriggered: root.refreshLimits()
   }
 
   // ── local runner probe ─────────────────────────────────────────────────────

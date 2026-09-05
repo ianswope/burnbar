@@ -127,5 +127,24 @@ ct2=$(jq -r '.claude.total' "$out")
 [ "$ct2" = "1250" ] || fail "append not picked up: $ct2 != 1250"
 ok "tail read picks up appended records"
 
+# Plan limits are copied out of Omarchy's usage records together with the
+# record's own timestamp and status text, so the widget can refuse to present
+# a stale 0% as live. This record is eight hours old and says the sign-in
+# expired; the Codex record does not exist at all.
+mkdir -p "$tmp/state/omarchy/agents/usage"
+old_iso=$(date -u -d '8 hours ago' +%Y-%m-%dT%H:%M:%S+00:00)
+future_iso=$(date -u -d '2 hours' +%Y-%m-%dT%H:%M:%S+00:00)
+printf '{"limits":[{"label":"Weekly (7-day)","percent":0.42,"resetsAt":"%s"}],"updatedAt":"%s","usageStatusText":"Sign-in expired"}\n' \
+  "$future_iso" "$old_iso" > "$tmp/state/omarchy/agents/usage/claude.json"
+HOME="$fake_home" python3 bin/burnbar-collect --window 360 --buckets 12
+jq -e '.claude.limits[0].percent == 0.42 and .claude.limits[0].resetsAt != "" and .claude.limitsStatus == "Sign-in expired"' "$out" >/dev/null \
+  || fail "limits or status not carried from the usage record"
+at=$(jq -r '.claude.limitsUpdatedAt' "$out")
+age_h=$(( ( $(date +%s) * 1000 - at ) / 3600000 ))
+{ [ "$age_h" -ge 7 ] && [ "$age_h" -le 9 ]; } || fail "limitsUpdatedAt is not the record's own timestamp (age ${age_h}h)"
+jq -e '.codex.limits == [] and .codex.limitsUpdatedAt == 0 and .codex.limitsStatus == ""' "$out" >/dev/null \
+  || fail "a missing usage record should read as no limits, never updated"
+ok "plan limits carry the record's own timestamp and status"
+
 echo
 echo "ALL TESTS PASSED"

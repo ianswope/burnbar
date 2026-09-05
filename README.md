@@ -116,7 +116,10 @@ watts, plus the session's peak load and power.
   heat map but visible here is deliberate.
 - *Plan limits* — every limit Omarchy's agent-usage records track (Claude
   session, weekly and any extra weekly buckets; Codex weekly), each with a
-  countdown, the wall-clock reset time and a percentage bar.
+  countdown, the wall-clock reset time and a percentage bar. A window whose
+  reset time has passed reads "rolled over · awaiting refresh" with the
+  percentage withheld, and a record that is stale or carries a status
+  ("Sign-in expired") says so under the header, in red.
 - *Claude by model* — spend split by model with share bars, so you can see
   which model actually ate the window.
 
@@ -154,7 +157,14 @@ live:
   where `payload.type === "token_count"` carry `info.last_token_usage`, already
   a per-turn delta.
 - **Limits** — read straight off the records `omarchy-agent-usage-update` keeps
-  in `~/.local/state/omarchy/agents/usage/`.
+  in `~/.local/state/omarchy/agents/usage/`. Burn Bar keeps those records
+  fresh itself by running `omarchy-agent-usage-update --limits-only claude
+  codex` every `limitsRefreshSec` seconds and whenever you open the panel,
+  because nothing else guarantees they are: 1.3.0 presented an 8-hour-old
+  record with every Claude limit at 0% as live. Each record's own timestamp
+  and status travel with the numbers, and a figure the service cannot vouch
+  for — a stale record, or a window whose reset time has passed — is withheld
+  and labelled, never shown as 0%.
 
 Every point carries the input / cache-write / output / cache-read split, and the
 collector reports turns, first and last activity and the peak bucket per
@@ -205,6 +215,7 @@ Set from the Omarchy plugin settings UI, or in `shell.json`.
 | `bars` | 12 | Cells per cloud agent (the collector makes exactly this many buckets) |
 | `windowMinutes` | 360 | How far back the cloud lanes and the cockpit chart reach |
 | `refreshIntervalSec` | 5 | Collector cadence |
+| `limitsRefreshSec` | 300 | How often Omarchy's usage collectors are asked for fresh plan limits (60–3600) |
 | `showGauges` | true | Weekly quota columns bookending the cloud lanes |
 | `showLocal` | true | Show the local intelligence lane |
 | `localCells` | 9 | Cells in the local lane (= length of the sample ring) |
@@ -230,7 +241,7 @@ exclusion, Codex delta math, cache idempotency, and the tail read.
 
 ## Changes
 
-See [CHANGELOG.md](CHANGELOG.md). Current version: 1.3.0.
+See [CHANGELOG.md](CHANGELOG.md). Current version: 1.3.1.
 
 ## Credits
 

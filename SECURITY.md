@@ -66,8 +66,20 @@ Omarchy, Hyprland, or application configuration.
 
 ## Processes it runs
 
-Three scripts, all `python3`, all as your user, all from the plugin's own
-`bin/` directory:
+Three scripts of its own, all `python3`, all as your user, all from the
+plugin's own `bin/` directory — plus one Omarchy command:
+
+- `omarchy-agent-usage-update --limits-only claude codex`, every
+  `limitsRefreshSec` seconds (default 300), on panel open, and on refresh.
+  This is Omarchy's own collector, not Burn Bar's. It is what the stock agents
+  panel runs, and it is the only thing that produces the plan-limit records
+  Burn Bar reads. Its Claude collector contacts Anthropic's OAuth usage
+  endpoint with the sign-in Claude Code already saved, and its Codex collector
+  reads Codex's local rate-limit records. Burn Bar never reads, holds or sends
+  either credential itself; if the command is not present the limits simply
+  show their age. A run over 60 seconds is killed.
+
+Burn Bar's own scripts:
 
 - `burnbar-collect` on the refresh timer. It takes no input from the network
   and no input from the widget beyond two integers (window length and bucket

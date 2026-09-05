@@ -90,7 +90,7 @@ Panel {
     var t = Date.parse(String(iso || ""))
     if (!isFinite(t)) return "--"
     var ms = t - Date.now()
-    if (ms <= 0) return "now"
+    if (ms <= 0) return "rolled over"
     var mins = Math.floor(ms / 60000)
     var days = Math.floor(mins / 1440)
     var hours = Math.floor((mins % 1440) / 60)
@@ -192,7 +192,7 @@ Panel {
 
   function refreshAll() {
     refreshLocalModels()
-    if (svc) { svc.collect(); svc.pollLocal() }
+    if (svc) { svc.refreshLimits(); svc.collect(); svc.pollLocal() }
   }
 
   function runLocalAction(action) {
@@ -812,21 +812,81 @@ Panel {
               fontFamily: panel.fontFamily
             }
 
+            // The record behind each agent's limits, when it is not to be
+            // trusted: written too long ago, carrying a status ("Sign-in
+            // expired"), or unrefreshable because the Omarchy collector is
+            // missing. Silent otherwise — a healthy record needs no caption.
+            Repeater {
+              model: {
+                void panel.tick
+                var out = []
+                if (!panel.svc) return out
+                var rows = [
+                  { agent: "Claude", accent: panel.widget.claudeHot, limits: panel.svc.claudeLimits,
+                    updatedAt: panel.svc.claudeLimitsUpdatedAt, status: panel.svc.claudeLimitsStatus },
+                  { agent: "Codex", accent: panel.widget.codexHot, limits: panel.svc.codexLimits,
+                    updatedAt: panel.svc.codexLimitsUpdatedAt, status: panel.svc.codexLimitsStatus }
+                ]
+                for (var i = 0; i < rows.length; i++) {
+                  var r = rows[i]
+                  // No record and nothing to say: this agent is simply not
+                  // in use here. Do not nag about it.
+                  if (r.limits.length === 0 && r.status === "") continue
+                  var stale = panel.svc.limitsStale(r.updatedAt)
+                  var parts = []
+                  if (r.status !== "") parts.push(r.status)
+                  var t = Number(r.updatedAt) || 0
+                  if (t > 0) parts.push("record from " + Qt.formatDateTime(new Date(t), "ddd h:mm AP") + (stale ? "  ·  stale" : ""))
+                  else parts.push("record carries no timestamp")
+                  if (panel.svc.limitsRefreshUnavailable) parts.push("omarchy-agent-usage-update not found, cannot refresh")
+                  if (!stale && r.status === "" && !panel.svc.limitsRefreshUnavailable) continue
+                  r.text = parts.join("  ·  ")
+                  out.push(r)
+                }
+                return out
+              }
+              delegate: RowLayout {
+                required property var modelData
+                Layout.fillWidth: true
+                spacing: Style.space(6)
+                Body { text: modelData.agent; color: modelData.accent; Layout.preferredWidth: Style.space(48) }
+                Caption { text: modelData.text; color: Color.urgent; Layout.fillWidth: true }
+              }
+            }
+
             Repeater {
               model: {
                 var out = []
                 var c = panel.svc ? panel.svc.claudeLimits : []
                 var x = panel.svc ? panel.svc.codexLimits : []
+                var cAt = panel.svc ? panel.svc.claudeLimitsUpdatedAt : 0
+                var xAt = panel.svc ? panel.svc.codexLimitsUpdatedAt : 0
                 for (var i = 0; i < c.length; i++)
-                  out.push({ agent: "Claude", accent: panel.widget.claudeHot, limit: c[i] })
+                  out.push({ agent: "Claude", accent: panel.widget.claudeHot, limit: c[i], updatedAt: cAt })
                 for (var j = 0; j < x.length; j++)
-                  out.push({ agent: "Codex", accent: panel.widget.codexHot, limit: x[j] })
+                  out.push({ agent: "Codex", accent: panel.widget.codexHot, limit: x[j], updatedAt: xAt })
                 return out
               }
               delegate: ColumnLayout {
+                id: limitRow
                 required property var modelData
                 Layout.fillWidth: true
                 spacing: 2
+
+                // A window whose reset time has passed is over; the figure
+                // describes a period that is finished. A record older than
+                // the staleness bound may describe anything. Either way the
+                // percentage is withheld, not shown as a live 0%.
+                readonly property bool expired: {
+                  void panel.tick
+                  return panel.svc ? panel.svc.limitExpired(modelData.limit) : false
+                }
+                readonly property bool stale: {
+                  void panel.tick
+                  return panel.svc ? panel.svc.limitsStale(modelData.updatedAt) : true
+                }
+                readonly property bool unknown: expired || stale
+                readonly property real fraction: unknown ? 0 : Number(modelData.limit.percent)
 
                 RowLayout {
                   Layout.fillWidth: true
@@ -834,20 +894,23 @@ Panel {
                   Body { text: modelData.agent; color: modelData.accent; Layout.preferredWidth: Style.space(48) }
                   Body { text: modelData.limit.label; Layout.fillWidth: true }
                   Caption {
-                    text: "resets in " + panel.untilText(modelData.limit.resetsAt)
-                      + "  ·  " + panel.dayClockText(modelData.limit.resetsAt)
+                    text: limitRow.expired
+                      ? "window rolled over  ·  awaiting refresh"
+                      : "resets in " + panel.untilText(modelData.limit.resetsAt)
+                        + "  ·  " + panel.dayClockText(modelData.limit.resetsAt)
+                    color: limitRow.expired ? Color.urgent : panel.dim
                   }
                   Body {
-                    text: Math.round(Number(modelData.limit.percent) * 100) + "%"
-                    color: panel.widget.gaugeColor(Number(modelData.limit.percent))
+                    text: limitRow.unknown ? "—" : Math.round(Number(modelData.limit.percent) * 100) + "%"
+                    color: limitRow.unknown ? panel.dim : panel.widget.gaugeColor(Number(modelData.limit.percent))
                     font.bold: true
                     Layout.preferredWidth: Style.space(34)
                     horizontalAlignment: Text.AlignRight
                   }
                 }
                 Gauge {
-                  fraction: Number(modelData.limit.percent)
-                  accent: panel.widget.gaugeColor(Number(modelData.limit.percent))
+                  fraction: limitRow.fraction
+                  accent: limitRow.unknown ? panel.dim : panel.widget.gaugeColor(Number(modelData.limit.percent))
                 }
               }
             }

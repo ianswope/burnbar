@@ -1,5 +1,29 @@
 # Changelog
 
+## 1.3.1 — 2026-09-05
+
+### Fixed
+- **Claude plan limits showed 0% for hours.** Burn Bar only ever copied the
+  limits out of the records `omarchy-agent-usage-update` writes, and nothing
+  in Burn Bar kept those records fresh. When the agents panel stopped
+  refreshing them, an 8-hour-old record with every Claude limit at 0.0 was
+  presented as live, with "resets in now" for a window that had rolled over
+  hours earlier. Burn Bar now runs
+  `omarchy-agent-usage-update --limits-only claude codex` on its own timer
+  (`limitsRefreshSec`, default 300), on panel open, on `R`, and on middle
+  click, with a 60s watchdog; the collector's own 15s probe cache keeps that
+  cheap.
+- **A number nobody can vouch for is withheld, not shown as 0%.** The
+  collector now carries each usage record's own `updatedAt` and status text.
+  A limit whose reset time has passed reads "window rolled over · awaiting
+  refresh" with the percentage withheld; a record older than three refresh
+  intervals is flagged stale under the PLAN LIMITS header with its timestamp,
+  and any status the record carries ("Sign-in expired", "Waiting for auth")
+  is shown there too. The weekly quota columns on the strip go empty and dim
+  for an unknown value instead of drawing a green sliver, and their tooltip
+  says "unknown · record from 4:12 PM".
+- `untilText` no longer says "now" for a time in the past.
+
 ## 1.3.0 — 2026-09-04
 
 ### Added

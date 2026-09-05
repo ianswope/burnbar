@@ -70,6 +70,16 @@ BarWidget {
     return claudeHot
   }
 
+  // A weekly figure the service could not vouch for reads as unknown, with
+  // the age of the record behind it, never as a confident 0%.
+  function quotaText(percent, updatedAt) {
+    if (percent < 0) {
+      var t = Number(updatedAt) || 0
+      return t > 0 ? "unknown  ·  record from " + Qt.formatTime(new Date(t), "h:mm AP") : "unknown"
+    }
+    return Math.round(percent * 100) + "%"
+  }
+
   function zoneTooltip(zone) {
     if (!svc) return "Burn Bar — starting up"
     if (broken && zone !== zoneLocal)
@@ -78,11 +88,11 @@ BarWidget {
     if (zone === zoneClaude)
       return "CLAUDE  ·  " + compact(svc.claudeTotal) + " tokens / last " + hours + "h"
         + "\nnow " + compact(svc.claudeLatest) + " this bucket  ·  " + svc.claudeSessions + " sessions"
-        + "\nweekly quota " + Math.round(svc.claudeWeekly * 100) + "%"
+        + "\nweekly quota " + quotaText(svc.claudeWeekly, svc.claudeLimitsUpdatedAt)
     if (zone === zoneCodex)
       return "CODEX  ·  " + compact(svc.codexTotal) + " tokens / last " + hours + "h"
         + "\nnow " + compact(svc.codexLatest) + " this bucket  ·  " + svc.codexSessions + " sessions"
-        + "\nweekly quota " + Math.round(svc.codexWeekly * 100) + "%"
+        + "\nweekly quota " + quotaText(svc.codexWeekly, svc.codexLimitsUpdatedAt)
     if (zone === zoneLocal)
       return "LOCAL  ·  " + (!svc.localOnline
           ? "Ollama offline" + (svc.localError !== "" ? "\n" + svc.localError : "")
@@ -420,19 +430,25 @@ BarWidget {
     id: gauge
     property real percent: 0
     property color accent: "#ffffff"
+    // Negative means the service would not vouch for the number: the record
+    // is stale or its window rolled over. An unknown gauge is an empty,
+    // dimmer track — not a green sliver that reads as "0% used".
+    readonly property bool unknown: percent < 0
 
     Rectangle {
       anchors.fill: parent
       radius: width / 2
-      color: Util.alpha(gauge.accent, 0.14)
+      color: Util.alpha(gauge.accent, gauge.unknown ? 0.06 : 0.14)
       border.width: 0
+      Behavior on color { ColorAnimation { duration: 400 } }
     }
     Rectangle {
       anchors.bottom: parent.bottom
       anchors.horizontalCenter: parent.horizontalCenter
       width: parent.width
       radius: width / 2
-      height: Math.max(1, parent.height * Math.min(1, gauge.percent))
+      height: gauge.unknown ? 0 : Math.max(1, parent.height * Math.min(1, gauge.percent))
+      visible: !gauge.unknown
       color: root.gaugeColor(gauge.percent)
       border.width: 0
       Behavior on height { NumberAnimation { duration: 900; easing.type: Easing.OutCubic } }
@@ -441,7 +457,7 @@ BarWidget {
       // Quota nearly gone gets its own heartbeat — you should not have to read
       // a number to learn you are about to be cut off.
       SequentialAnimation on opacity {
-        running: gauge.percent >= 0.9
+        running: !gauge.unknown && gauge.percent >= 0.9
         loops: Animation.Infinite
         NumberAnimation { to: 0.35; duration: 700; easing.type: Easing.InOutQuad }
         NumberAnimation { to: 1.0; duration: 700; easing.type: Easing.InOutQuad }
@@ -566,7 +582,7 @@ BarWidget {
         height: parent.height
         anchors.left: parent.left
         anchors.verticalCenter: parent.verticalCenter
-        percent: Math.min(1, root.svc ? root.svc.claudeWeekly : 0)
+        percent: root.svc ? Math.min(1, root.svc.claudeWeekly) : -1
         accent: root.claudeHot
       }
 
@@ -694,7 +710,7 @@ BarWidget {
         anchors.left: codexLane.right
         anchors.leftMargin: graph.gaugeGap
         anchors.verticalCenter: parent.verticalCenter
-        percent: Math.min(1, root.svc ? root.svc.codexWeekly : 0)
+        percent: root.svc ? Math.min(1, root.svc.codexWeekly) : -1
         accent: root.codexHot
       }
 
@@ -897,13 +913,13 @@ BarWidget {
       // the panel that just opened. Clearing the zone re-arms the next hover.
       if (root.bar) root.bar.hideTooltip(root)
       root.hoverZone = root.zoneNone
-      if (code === Qt.MiddleButton) { if (root.svc) { root.svc.collect(); root.svc.pollLocal() } }
+      if (code === Qt.MiddleButton) { if (root.svc) { root.svc.refreshLimits(); root.svc.collect(); root.svc.pollLocal() } }
       else root.toggle()
     }
   }
 
   readonly property bool opened: panel.opened
-  function open() { panel.controller.show(); if (svc) { svc.collect(); svc.pollLocal() } }
+  function open() { panel.controller.show(); if (svc) { svc.refreshLimits(); svc.collect(); svc.pollLocal() } }
   function close() { panel.controller.hide() }
   function toggle() { opened ? close() : open() }
   function closeForPopoutSwitch() { close() }
