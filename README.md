@@ -304,7 +304,10 @@ Set from the Omarchy plugin settings UI, or in `shell.json`.
 
 | Key | Default | Meaning |
 |---|---|---|
-| `width` | 158 | Widget width in px (raised automatically if too narrow for the configured cells) |
+| `width` | 158 | Minimum width in px — the floor the strip grows from, or its fixed width with `stretch` off (raised automatically if too narrow for the configured cells) |
+| `stretch` | true | Fill the free room between the strip and the next section of the bar |
+| `maxWidth` | 1200 | Ceiling for the fill, px |
+| `stretchGap` | 14 | Breathing room kept between the strip and the neighbour it grows towards, px |
 | `bars` | 12 | Cells per cloud agent (the collector makes exactly this many buckets) |
 | `windowMinutes` | 360 | How far back the cloud lanes and the cockpit chart reach |
 | `refreshIntervalSec` | 5 | Collector cadence |
@@ -322,6 +325,18 @@ Set from the Omarchy plugin settings UI, or in `shell.json`.
 
 Bucket length is `windowMinutes / bars`, so the defaults give twelve 30-minute
 buckets on the strip and the same twelve in the cockpit chart.
+
+### Width
+
+The strip is elastic. The bar's sections never negotiate for space — each row
+is pinned to its own edge and nothing hands out what is left between them — so
+Burn Bar measures the gap itself, the way the Now Playing deck does on the
+left: where does the neighbouring section begin, what do the siblings in its
+own row still need, and it takes the rest. `width` is the smallest it will go
+and `maxWidth` the largest; between them it fills whatever the bar has free,
+and shrinks again when a neighbour grows. It works from any section — left,
+right, either side of the centre anchor, or as the anchor itself. Set
+`stretch` to `false` for a fixed strip at exactly `width`.
 
 ## Tests
 

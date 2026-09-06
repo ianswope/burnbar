@@ -62,8 +62,182 @@ BarWidget {
   readonly property bool emberFlicker: setting("emberFlicker", true) !== false
   readonly property bool sparks: setting("sparks", true) !== false
 
-  implicitWidth: vertical ? barSize : Style.spaceReal(configuredWidth)
+  // ── elastic width ─────────────────────────────────────────────────────────
+  // The bar's sections do not negotiate: each is a Row pinned to its own edge
+  // (or, for the centre, hung off the anchor module) and nothing hands out the
+  // room left between them. So the strip claims it by hand, the way beatdeck
+  // does on the left: measure where the neighbouring section begins, subtract
+  // what the siblings in our own row still need, and take the rest. `width` is
+  // the floor — the narrowest the strip will go, and its fixed size with the
+  // fill turned off — and `maxWidth` the ceiling.
+  //
+  // Loop-safe because no input depends on our own width. Which edge of ours
+  // is fixed depends on where the widget sits:
+  //   · left row, or centre row after the anchor    → our LEFT edge is pinned
+  //     by the siblings before us; we grow rightward to the next section.
+  //   · right row, or centre row before the anchor  → our RIGHT edge is pinned
+  //     (the row hangs from the right); we grow leftward.
+  //   · centre row with no anchor                   → the whole row is centred;
+  //     it can grow until either end meets a neighbouring section.
+  //   · we are the anchor                           → we sit on the centre line
+  //     and grow both ways, bounded by the tighter side.
+  // Siblings in our own row are measured by implicitWidth, never by position:
+  // their x moves when we grow, the space they need does not.
+  readonly property bool stretch: setting("stretch", true) !== false
+  readonly property int maxWidth: Math.max(configuredWidth, boundedInt("maxWidth", 1200, 110, 4000))
+  readonly property int stretchGap: boundedInt("stretchGap", 14, 0, 200)
+
+  // Device pixels. Seeded with the floor so the first frame is never zero-wide.
+  property real stretchedWidth: Style.spaceReal(configuredWidth)
+  readonly property real stripWidth: stretch && !vertical
+    ? Math.max(Style.spaceReal(configuredWidth), stretchedWidth)
+    : Style.spaceReal(configuredWidth)
+
+  implicitWidth: vertical ? barSize : stripWidth
   implicitHeight: vertical ? Style.spaceReal(configuredWidth) : barSize
+
+  function sameModule(a, b) {
+    var x = String(a || ""), y = String(b || "")
+    if (bar && typeof bar.canonicalWidgetId === "function") {
+      x = String(bar.canonicalWidgetId(x) || x)
+      y = String(bar.canonicalWidgetId(y) || y)
+    }
+    return x !== "" && x === y
+  }
+
+  function measureStretch() {
+    if (!stretch || vertical || !bar || !Array.isArray(bar.moduleSlots)) return
+
+    var minimum = Style.spaceReal(configuredWidth)
+    var maximum = Style.spaceReal(maxWidth)
+    var gap = Style.spaceReal(stretchGap)
+
+    var origin, barPoint
+    try {
+      origin = mapToItem(null, 0, 0)
+      barPoint = bar.mapToItem(null, 0, 0)
+    } catch (e) {
+      return
+    }
+    if (!origin || !barPoint || !(bar.width > 0)) return
+
+    // The rows sit Style.space(8) in from the bar's ends.
+    var barLeft = barPoint.x + Style.space(8)
+    var barRight = barPoint.x + bar.width - Style.space(8)
+    var barCentre = barPoint.x + bar.width / 2
+    var ourRight = origin.x + width
+
+    var anchorId = String(bar.centerAnchor || "")
+    var ourRegion = ""
+    var anchorInCentre = false
+    var others = []
+    for (var i = 0; i < bar.moduleSlots.length; i++) {
+      var slot = bar.moduleSlots[i]
+      if (!slot || !slot.activeItem) continue
+      if (slot.activeItem === root) { ourRegion = String(slot.region || ""); continue }
+      if (!slot.activeItem.visible) continue
+      var need = Math.max(0, Number(slot.implicitWidth) || 0)
+      if (need <= 0) continue
+      var point
+      try {
+        point = slot.mapToItem(null, 0, 0)
+      } catch (e2) {
+        continue
+      }
+      if (!point) continue
+      var region = String(slot.region || "")
+      if (region === "center" && anchorId && sameModule(slot.moduleName, anchorId)) anchorInCentre = true
+      others.push({ region: region, x: point.x, right: point.x + need, need: need })
+    }
+    if (!ourRegion) return
+
+    var weAreAnchor = ourRegion === "center" && anchorId && sameModule(moduleName, anchorId)
+    var mode
+    if (ourRegion === "left") mode = "pinLeft"
+    else if (ourRegion === "right") mode = "pinRight"
+    else if (weAreAnchor) mode = "anchor"
+    else if (!anchorInCentre) mode = "centred"
+    // The row after the anchor starts right of the centre line; the row before
+    // it ends left of the line. Which side we are on says which edge is fixed.
+    else mode = origin.x >= barCentre ? "pinLeft" : "pinRight"
+
+    var o, available, bound
+    if (mode === "pinLeft") {
+      // Grow rightward until whichever other section begins first.
+      bound = barRight
+      var trailing = 0
+      for (i = 0; i < others.length; i++) {
+        o = others[i]
+        if (o.region === ourRegion) { if (o.x > origin.x) trailing += o.need }
+        else if (o.x + 0.5 >= origin.x && o.x < bound) bound = o.x
+      }
+      available = bound - origin.x - trailing - gap
+    } else if (mode === "pinRight") {
+      // Grow leftward until whichever other section ends last.
+      bound = barLeft
+      var preceding = 0
+      for (i = 0; i < others.length; i++) {
+        o = others[i]
+        if (o.region === ourRegion) { if (o.x < origin.x) preceding += o.need }
+        else if (o.right <= ourRight + 0.5 && o.right > bound) bound = o.right
+      }
+      available = ourRight - bound - preceding - gap
+    } else {
+      var leftBound = barLeft, rightBound = barRight, before = 0, after = 0
+      for (i = 0; i < others.length; i++) {
+        o = others[i]
+        if (o.region === "left") leftBound = Math.max(leftBound, o.right)
+        else if (o.region === "right") rightBound = Math.min(rightBound, o.x)
+        else if (o.x < origin.x) before += o.need
+        else after += o.need
+      }
+      if (mode === "anchor")
+        // We sit on the centre line; the tighter side bounds both halves.
+        available = 2 * Math.min(barCentre - leftBound - before, rightBound - barCentre - after) - 2 * gap
+      else
+        // The row is centred as a whole; it may widen until one end touches.
+        available = 2 * Math.min(barCentre - leftBound, rightBound - barCentre) - 2 * gap - before - after
+    }
+
+    var next = Math.round(Math.max(minimum, Math.min(maximum, available)))
+    // Sub-pixel churn would re-lay every cell for nothing.
+    if (Math.abs(next - stretchedWidth) >= 1) stretchedWidth = next
+  }
+
+  onStretchChanged: measureStretch()
+  onConfiguredWidthChanged: measureStretch()
+  onMaxWidthChanged: measureStretch()
+  onStretchGapChanged: measureStretch()
+  onXChanged: measureStretch()
+  Component.onCompleted: measureStretch()
+
+  Connections {
+    target: root.bar
+    ignoreUnknownSignals: true
+    // A plugin added to or removed from any section reassigns moduleSlots.
+    function onModuleSlotsChanged() { settleTimer.restart() }
+    function onWidthChanged() { settleTimer.restart() }
+    function onBarConfigChanged() { settleTimer.restart() }
+  }
+
+  // Slots register before they have been laid out, so measure once the frame
+  // has settled rather than on the register itself.
+  Timer {
+    id: settleTimer
+    interval: 60
+    repeat: false
+    onTriggered: root.measureStretch()
+  }
+
+  // Safety net for the geometry changes QML gives no signal for: a
+  // neighbour's label growing, the tray gaining an icon, a font or scale
+  // change mid-session. Cheap next to the ember animation already running.
+  Timer {
+    interval: 500
+    running: root.stretch && !root.vertical && root.visible
+    repeat: true
+    onTriggered: root.measureStretch()
+  }
 
   // ── zones ─────────────────────────────────────────────────────────────────
   // The widget is three instruments in one slot, so each gets a tinted plate
@@ -538,7 +712,7 @@ BarWidget {
     text: ""
     labelVisible: false
     hasVisualContent: true
-    fixedWidth: root.configuredWidth
+    fixedWidth: root.stripWidth
     active: false
     useActiveColor: false
     // Tooltips are driven per zone from the hover overlay below, which owns the

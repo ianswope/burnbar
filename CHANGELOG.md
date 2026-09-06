@@ -1,5 +1,30 @@
 # Changelog
 
+## 1.6.0 — 2026-09-05
+
+### Added
+- **The strip fills the room beside it.** The bar's sections do not negotiate
+  for space — each row is pinned to its own edge and nothing hands out what is
+  left between them — so the widget now measures the gap itself, the way the
+  Now Playing deck (beatdeck) does on the left: where the neighbouring section
+  begins, what the siblings in its own row still need, and it takes the rest.
+  Loop-safe because no input depends on its own width: siblings in the same
+  row are measured by `implicitWidth`, never by position, and the fixed edge
+  is chosen from where the widget sits — left row or after the centre anchor
+  grows rightward, right row or before the anchor grows leftward, an
+  unanchored centre row widens until either end touches, and as the anchor
+  itself it grows both ways bounded by the tighter side. Re-measured when
+  slots are added or removed, when the bar resizes, on a 60 ms settle after
+  each, and on a 500 ms safety tick for the geometry changes QML gives no
+  signal for.
+- Settings `stretch` (default on), `maxWidth` (default 1200) and `stretchGap`
+  (default 14).
+
+### Changed
+- `width` is now the **minimum**: the narrowest the strip will go, and its
+  fixed width with `stretch` off. Existing configurations keep their meaning
+  as the floor; nothing gets narrower than before.
+
 ## 1.5.0 — 2026-09-05
 
 The local lane moves off this machine. dex has no GPU and no Ollama; nano —
