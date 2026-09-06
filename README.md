@@ -1,6 +1,6 @@
 # Burn Bar
 
-An Omarchy bar widget that renders every model you run — Claude, Codex and
+An Omarchy bar widget that renders every model you run — Claude, Codex, Grok and
 the Ollama on your Jetson — as one live thermal instrument in a single bar
 slot, with a click-to-open cockpit that shows what, how much, how fast, how
 close to the plan limit, and what the GPU is doing about it.
@@ -42,10 +42,10 @@ collectors, which contact your providers with the sign-ins you already have.
 ![Burn Bar in the Omarchy bar, right of the clock](docs/bar.png)
 
 ```
-CLAUDE ◄── time ──┤ now ├── time ──► CODEX  ║  NANO ──► seconds
+CLAUDE ◄── time ──┤ now ├── time ──► CODEX  │  GROK ──►  ║  NANO ──► seconds
 ```
 
-Claude burns on the left, Codex on the right, and the newest bucket for **both**
+Claude burns on the left, Codex on the right, Grok after Codex, and the newest bucket for the mirrored pair
 sits against the centre divider — so the divider is always "now" and time
 radiates outward. The two agents read as one instrument instead of two widgets
 that happen to be adjacent.
@@ -190,6 +190,8 @@ newest one, so it reaches back a little less than the window. Every headline
 number — totals, rates, turns, activity, split, by-model — is computed over
 the exact trailing window from the timestamped points, and the 5-minute and
 1-hour rates are exact trailing sums too.
+- **Grok** — `~/.grok/sessions/**/updates.jsonl`, `_meta.totalTokens` rise per `promptId` (estimate; Grok leaves no full API ledger). Weekly credits from `~/.grok/logs/unified.jsonl` billing snapshots.
+
 - **Limits** — read straight off the records `omarchy-agent-usage-update` keeps
   in `~/.local/state/omarchy/agents/usage/`. Burn Bar keeps those records
   fresh itself by running `omarchy-agent-usage-update --limits-only claude

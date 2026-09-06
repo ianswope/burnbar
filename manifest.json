@@ -2,20 +2,35 @@
   "schemaVersion": 1,
   "id": "nixfred.burnbar",
   "name": "Burn Bar",
-  "version": "1.6.0",
+  "version": "1.7.0",
   "author": "nixfred",
   "license": "MIT",
-  "description": "Live thermal heat map of Claude, Codex and the Ollama on your Jetson in one bar slot, with weekly quota gauges, remote model control, and the share of tokens kept off frontier models.",
-  "kinds": ["service", "bar-widget"],
+  "description": "Live thermal heat map of Claude, Codex, Grok and the Ollama on your Jetson in one bar slot, with weekly quota gauges, remote model control, and the share of tokens kept off frontier models.",
+  "kinds": [
+    "service",
+    "bar-widget"
+  ],
   "entryPoints": {
     "service": "Service.qml",
     "barWidget": "BarWidget.qml"
   },
   "barWidget": {
     "displayName": "Burn Bar",
-    "description": "Token spend as a heat map — Claude burns left, Codex right, newest at the centre, and a live lane for the Ollama box on the far right.",
+    "description": "Token spend as a heat map \u2014 Claude burns left, Codex right, Grok after Codex, newest at the centre for the mirrored pair, and a live lane for the Ollama box on the far right.",
     "category": "AI",
-    "aliases": ["tokens", "claude", "codex", "ollama", "nano", "jetson", "llm", "ai", "usage", "quota"],
+    "aliases": [
+      "tokens",
+      "claude",
+      "codex",
+      "ollama",
+      "nano",
+      "jetson",
+      "llm",
+      "ai",
+      "usage",
+      "quota",
+      "grok"
+    ],
     "allowMultiple": false,
     "defaultSection": "center",
     "defaults": {
@@ -39,24 +54,148 @@
       "sparks": true
     },
     "schema": [
-      {"key":"width","type":"integer","label":"Minimum width (px)","description":"The narrowest the strip will go, and its fixed width when Fill is off. Raised automatically when the configured cells would not fit.","min":110,"max":400,"defaultValue":158},
-      {"key":"stretch","type":"boolean","label":"Fill the room beside it","description":"Grow from the minimum to take whatever space is free between this widget and the next section of the bar, the way the Now Playing deck does on the left.","defaultValue":true},
-      {"key":"maxWidth","type":"integer","label":"Maximum width (px)","description":"Ceiling for the fill. Never below the minimum.","min":110,"max":4000,"defaultValue":1200},
-      {"key":"stretchGap","type":"integer","label":"Fill gap (px)","description":"Breathing room kept between the strip and the neighbour it grows towards.","min":0,"max":200,"defaultValue":14},
-      {"key":"bars","type":"integer","label":"Cells per cloud agent","min":6,"max":32,"defaultValue":12},
-      {"key":"windowMinutes","type":"integer","label":"History window (minutes)","description":"How far back the cloud lanes reach. 360 = six hours.","min":30,"max":1440,"defaultValue":360},
-      {"key":"refreshIntervalSec","type":"integer","label":"Refresh interval (seconds)","min":5,"max":600,"defaultValue":5},
-      {"key":"limitsRefreshSec","type":"integer","label":"Plan-limit refresh (seconds)","description":"How often Burn Bar asks Omarchy's own usage collectors for fresh Claude and Codex plan limits.","min":60,"max":3600,"defaultValue":300},
-      {"key":"showGauges","type":"boolean","label":"Show weekly quota gauges","defaultValue":true},
-      {"key":"showLocal","type":"boolean","label":"Show the nano lane","description":"Live load of the Ollama box (nano by default) on the right of the strip.","defaultValue":true},
-      {"key":"localCells","type":"integer","label":"Nano lane cells","min":4,"max":20,"defaultValue":9},
-      {"key":"localRefreshMs","type":"integer","label":"Nano poll interval (ms)","description":"Each poll is one HTTP call and one ssh round trip to the Ollama box.","min":1000,"max":10000,"defaultValue":2500},
-      {"key":"localThreshold","type":"integer","label":"Nano inference threshold (%)","description":"Load above this counts as actively inferencing.","min":1,"max":50,"defaultValue":8},
-      {"key":"ollamaUrl","type":"string","label":"Ollama URL","description":"Where Ollama answers. Through ollama-meter when it is installed there, so every request is counted.","defaultValue":"http://nano:11434"},
-      {"key":"localHost","type":"string","label":"Ollama box (ssh host)","description":"An alias from your ssh config; also what the strip and cockpit call the lane. Hardware telemetry, the token journal and the pre-load cache drop go over it; it must log in without a prompt.","defaultValue":"nano"},
-      {"key":"meterUnit","type":"string","label":"Meter systemd unit","description":"The ollama-meter unit on that box whose journal carries one line per request. Local token counts and the offload share come from there.","defaultValue":"ollama-meter"},
-      {"key":"emberFlicker","type":"boolean","label":"Ember flicker","description":"Live flicker on hot cells. Turn off to save a little GPU.","defaultValue":true},
-      {"key":"sparks","type":"boolean","label":"Rising sparks","description":"Embers lifting off the strip while anything is burning.","defaultValue":true}
+      {
+        "key": "width",
+        "type": "integer",
+        "label": "Minimum width (px)",
+        "description": "The narrowest the strip will go, and its fixed width when Fill is off. Raised automatically when the configured cells would not fit.",
+        "min": 110,
+        "max": 400,
+        "defaultValue": 158
+      },
+      {
+        "key": "stretch",
+        "type": "boolean",
+        "label": "Fill the room beside it",
+        "description": "Grow from the minimum to take whatever space is free between this widget and the next section of the bar, the way the Now Playing deck does on the left.",
+        "defaultValue": true
+      },
+      {
+        "key": "maxWidth",
+        "type": "integer",
+        "label": "Maximum width (px)",
+        "description": "Ceiling for the fill. Never below the minimum.",
+        "min": 110,
+        "max": 4000,
+        "defaultValue": 1200
+      },
+      {
+        "key": "stretchGap",
+        "type": "integer",
+        "label": "Fill gap (px)",
+        "description": "Breathing room kept between the strip and the neighbour it grows towards.",
+        "min": 0,
+        "max": 200,
+        "defaultValue": 14
+      },
+      {
+        "key": "bars",
+        "type": "integer",
+        "label": "Cells per cloud agent",
+        "min": 6,
+        "max": 32,
+        "defaultValue": 12
+      },
+      {
+        "key": "windowMinutes",
+        "type": "integer",
+        "label": "History window (minutes)",
+        "description": "How far back the cloud lanes reach. 360 = six hours.",
+        "min": 30,
+        "max": 1440,
+        "defaultValue": 360
+      },
+      {
+        "key": "refreshIntervalSec",
+        "type": "integer",
+        "label": "Refresh interval (seconds)",
+        "min": 5,
+        "max": 600,
+        "defaultValue": 5
+      },
+      {
+        "key": "limitsRefreshSec",
+        "type": "integer",
+        "label": "Plan-limit refresh (seconds)",
+        "description": "How often Burn Bar asks Omarchy's own usage collectors for fresh Claude and Codex plan limits. Grok limits are read from ~/.grok/logs/unified.jsonl on each collect.",
+        "min": 60,
+        "max": 3600,
+        "defaultValue": 300
+      },
+      {
+        "key": "showGauges",
+        "type": "boolean",
+        "label": "Show weekly quota gauges",
+        "defaultValue": true
+      },
+      {
+        "key": "showLocal",
+        "type": "boolean",
+        "label": "Show the nano lane",
+        "description": "Live load of the Ollama box (nano by default) on the right of the strip.",
+        "defaultValue": true
+      },
+      {
+        "key": "localCells",
+        "type": "integer",
+        "label": "Nano lane cells",
+        "min": 4,
+        "max": 20,
+        "defaultValue": 9
+      },
+      {
+        "key": "localRefreshMs",
+        "type": "integer",
+        "label": "Nano poll interval (ms)",
+        "description": "Each poll is one HTTP call and one ssh round trip to the Ollama box.",
+        "min": 1000,
+        "max": 10000,
+        "defaultValue": 2500
+      },
+      {
+        "key": "localThreshold",
+        "type": "integer",
+        "label": "Nano inference threshold (%)",
+        "description": "Load above this counts as actively inferencing.",
+        "min": 1,
+        "max": 50,
+        "defaultValue": 8
+      },
+      {
+        "key": "ollamaUrl",
+        "type": "string",
+        "label": "Ollama URL",
+        "description": "Where Ollama answers. Through ollama-meter when it is installed there, so every request is counted.",
+        "defaultValue": "http://nano:11434"
+      },
+      {
+        "key": "localHost",
+        "type": "string",
+        "label": "Ollama box (ssh host)",
+        "description": "An alias from your ssh config; also what the strip and cockpit call the lane. Hardware telemetry, the token journal and the pre-load cache drop go over it; it must log in without a prompt.",
+        "defaultValue": "nano"
+      },
+      {
+        "key": "meterUnit",
+        "type": "string",
+        "label": "Meter systemd unit",
+        "description": "The ollama-meter unit on that box whose journal carries one line per request. Local token counts and the offload share come from there.",
+        "defaultValue": "ollama-meter"
+      },
+      {
+        "key": "emberFlicker",
+        "type": "boolean",
+        "label": "Ember flicker",
+        "description": "Live flicker on hot cells. Turn off to save a little GPU.",
+        "defaultValue": true
+      },
+      {
+        "key": "sparks",
+        "type": "boolean",
+        "label": "Rising sparks",
+        "description": "Embers lifting off the strip while anything is burning.",
+        "defaultValue": true
+      }
     ]
   }
 }

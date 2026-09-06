@@ -62,6 +62,7 @@ Panel {
     target: panel.svc
     function onClaudePulseChanged() { if (panel.opened) chartImpact.restart() }
     function onCodexPulseChanged() { if (panel.opened) chartImpact.restart() }
+    function onGrokPulseChanged() { if (panel.opened) chartImpact.restart() }
   }
 
   // Left→right stagger for a row of n bars.
@@ -147,15 +148,24 @@ Panel {
   // read 90 tokens in a 30-second bucket as 90/min.
   function trailing5(agent) {
     if (!svc) return 0
-    return agent === "claude" ? svc.claudeTrailing5 : agent === "codex" ? svc.codexTrailing5 : svc.localTokensTrailing5
+    return agent === "claude" ? svc.claudeTrailing5
+      : agent === "codex" ? svc.codexTrailing5
+      : agent === "grok" ? svc.grokTrailing5
+      : svc.localTokensTrailing5
   }
   function trailing60(agent) {
     if (!svc) return 0
-    return agent === "claude" ? svc.claudeTrailing60 : agent === "codex" ? svc.codexTrailing60 : svc.localTokensTrailing60
+    return agent === "claude" ? svc.claudeTrailing60
+      : agent === "codex" ? svc.codexTrailing60
+      : agent === "grok" ? svc.grokTrailing60
+      : svc.localTokensTrailing60
   }
   function windowTotal(agent) {
     if (!svc) return 0
-    return agent === "claude" ? svc.claudeTotal : agent === "codex" ? svc.codexTotal : svc.localTokensTotal
+    return agent === "claude" ? svc.claudeTotal
+      : agent === "codex" ? svc.codexTotal
+      : agent === "grok" ? svc.grokTotal
+      : svc.localTokensTotal
   }
   function rateNow(agent) { return trailing5(agent) / 5 }
   function rateHour(agent) { return trailing60(agent) / 60 }
@@ -516,13 +526,13 @@ Panel {
           // "burned", not "billed": this figure deliberately leaves cache
           // reads out, and those are billed too, at a lower rate.
           meta: "frontier tokens burned · last " + panel.widget.windowLabel(panel.windowMinutes) + "  ·  "
-            + ((panel.svc ? panel.svc.claudeTurns + panel.svc.codexTurns : 0)) + " turns  ·  "
-            + ((panel.svc ? panel.svc.claudeSessions + panel.svc.codexSessions : 0)) + " sessions"
+            + ((panel.svc ? panel.svc.claudeTurns + panel.svc.codexTurns + panel.svc.grokTurns : 0)) + " turns  ·  "
+            + ((panel.svc ? panel.svc.claudeSessions + panel.svc.codexSessions + panel.svc.grokSessions : 0)) + " sessions"
             + (panel.localTokens ? "  ·  " + Math.round(panel.offload * 100) + "% kept on " + panel.boxName : "")
           detail: panel.svc
-            ? panel.widget.compact(panel.rateNow("claude") + panel.rateNow("codex")) + "/min last 5m  ·  "
-              + panel.widget.compact(panel.rateHour("claude") + panel.rateHour("codex")) + "/min last hour  ·  "
-              + "active " + panel.agoText(Math.max(panel.svc.claudeLastAt, panel.svc.codexLastAt))
+            ? panel.widget.compact(panel.rateNow("claude") + panel.rateNow("codex") + panel.rateNow("grok")) + "/min last 5m  ·  "
+              + panel.widget.compact(panel.rateHour("claude") + panel.rateHour("codex") + panel.rateHour("grok")) + "/min last hour  ·  "
+              + "active " + panel.agoText(Math.max(panel.svc.claudeLastAt, panel.svc.codexLastAt, panel.svc.grokLastAt))
             : ""
           foreground: panel.widget.claudeHot
           fontFamily: panel.fontFamily
@@ -543,7 +553,7 @@ Panel {
                   opacity: 0.75 + 0.25 * Math.sin(panel.widget.emberPhase * 2)
                 }
                 Counter {
-                  target: panel.svc ? panel.svc.claudeTotal + panel.svc.codexTotal : 0
+                  target: panel.svc ? panel.svc.claudeTotal + panel.svc.codexTotal + panel.svc.grokTotal : 0
                   format: panel.widget.compact
                   color: panel.widget.claudeHot
                   font.pixelSize: Style.font.displayLarge
@@ -563,7 +573,7 @@ Panel {
           }
         }
 
-        // ── three tiles, same order as the bar ───────────────────────────────
+        // ── agent tiles, same order as the bar (Claude/Codex/Grok + local) ─
         RowLayout {
           Layout.fillWidth: true
           spacing: Style.space(8)
@@ -575,22 +585,25 @@ Panel {
           // the tiles — and a recreated Counter initialises straight to its
           // target, so the count-up never showed.
           Repeater {
-            model: ["claude", "codex", "local"]
+            model: ["claude", "codex", "grok", "local"]
             delegate: Rectangle {
               id: tile
               required property string modelData
               readonly property bool isClaude: modelData === "claude"
               readonly property bool isCodex: modelData === "codex"
+              readonly property bool isGrok: modelData === "grok"
+              readonly property bool isCloud: isClaude || isCodex || isGrok
               readonly property var s: panel.svc
               readonly property color accent: isClaude ? panel.widget.claudeHot
-                : isCodex ? panel.widget.codexHot : panel.localState
-              // The local tile leads with tokens burned locally, the same
-              // unit as its two neighbours, when the journal gives them;
-              // otherwise it falls back to live load.
+                : isCodex ? panel.widget.codexHot
+                : isGrok ? panel.widget.grokHot : panel.localState
+              // Cloud tiles lead with tokens. Local leads with tokens when the
+              // journal gives them; otherwise it falls back to live load.
               readonly property real value: !s ? 0 : isClaude ? s.claudeTotal
                 : isCodex ? s.codexTotal
+                : isGrok ? s.grokTotal
                 : panel.localTokens ? s.localTokensTotal : (panel.localOnline ? s.localLoad : 0)
-              readonly property var format: (isClaude || isCodex || panel.localTokens) ? panel.widget.compact
+              readonly property var format: (isCloud || panel.localTokens) ? panel.widget.compact
                 : function(v) { return panel.localOnline ? Math.round(v) + "%" : "off" }
               readonly property string sub: {
                 void panel.tick
@@ -599,6 +612,8 @@ Panel {
                   + panel.widget.compact(panel.rateNow("claude")) + "/min"
                 if (isCodex) return s.codexTurns + " turns · " + s.codexSessions + " sessions · "
                   + panel.widget.compact(panel.rateNow("codex")) + "/min"
+                if (isGrok) return s.grokTurns + " turns · " + s.grokSessions + " sessions · "
+                  + panel.widget.compact(panel.rateNow("grok")) + "/min"
                 if (panel.localTokens) return Math.round(panel.offload * 100) + "% offloaded · "
                   + s.localTokensTurns + " turns · " + panel.widget.compact(panel.rateNow("local")) + "/min"
                 if (!panel.localOnline) return "ollama not answering"
@@ -612,6 +627,8 @@ Panel {
                   + " · active " + panel.agoText(s.claudeLastAt)
                 if (isCodex) return "peak " + panel.widget.compact(s.codexPeak) + " at " + panel.clockText(s.codexPeakAt)
                   + " · active " + panel.agoText(s.codexLastAt)
+                if (isGrok) return "peak " + panel.widget.compact(s.grokPeak) + " at " + panel.clockText(s.grokPeakAt)
+                  + " · active " + panel.agoText(s.grokLastAt)
                 if (!panel.localOnline) return s.localError
                 var live = (s.localActive ? "inferencing " : "idle ") + Math.round(s.localLoad) + "% · " + s.localModelCount + " warm"
                 if (panel.localTokens) return live + " · active " + panel.agoText(s.localTokensLastAt)
@@ -639,7 +656,7 @@ Panel {
                     font.pixelSize: Style.font.display
                   }
                   Item { Layout.fillWidth: true }
-                  Caption { text: tile.isClaude || tile.isCodex ? tile.modelData.toUpperCase() : panel.boxLabel; color: panel.foreground; font.bold: true }
+                  Caption { text: tile.isCloud ? tile.modelData.toUpperCase() : panel.boxLabel; color: panel.foreground; font.bold: true }
                 }
                 Caption { text: tile.sub; Layout.fillWidth: true }
                 Caption { text: tile.sub2; Layout.fillWidth: true }
@@ -677,6 +694,7 @@ Panel {
               }
               Caption { text: "▲ " + panel.widget.compact(panel.svc ? panel.svc.claudePeak : 0); color: panel.widget.claudeHot; font.bold: true }
               Caption { text: "▼ " + panel.widget.compact(panel.svc ? panel.svc.codexPeak : 0); color: panel.widget.codexHot; font.bold: true }
+              Caption { text: "◆ " + panel.widget.compact(panel.svc ? panel.svc.grokPeak : 0); color: panel.widget.grokHot; font.bold: true }
             }
 
             // Mirrored bars around a midline: Claude rises, Codex falls, both
@@ -694,6 +712,7 @@ Panel {
               readonly property real slot: n > 0 ? width / n : width
               readonly property real claudeRef: Math.max(1, panel.svc ? panel.svc.claudePeak : 1)
               readonly property real codexRef: Math.max(1, panel.svc ? panel.svc.codexPeak : 1)
+              readonly property real grokRef: Math.max(1, panel.svc ? panel.svc.grokPeak : 1)
 
               Rectangle {
                 y: chart.mid
@@ -710,8 +729,10 @@ Panel {
                   readonly property var b: panel.buckets[index]
                   readonly property real c: Number(b ? b.claude : 0)
                   readonly property real x_: Number(b ? b.codex : 0)
+                  readonly property real g: Number(b ? b.grok : 0)
                   readonly property real cl: Math.min(1, Math.pow(c / chart.claudeRef, 0.6))
                   readonly property real xl: Math.min(1, Math.pow(x_ / chart.codexRef, 0.6))
+                  readonly property real gl: Math.min(1, Math.pow(g / chart.grokRef, 0.6))
                   readonly property bool live: index === chart.n - 1
                   readonly property real grow: panel.wipe(index, chart.n)
                   readonly property real barWidth: Math.max(2, chart.slot - 3)
@@ -737,6 +758,18 @@ Panel {
                     radius: 2
                     color: panel.widget.heat(col.xl, panel.widget.codexCold, panel.widget.codexWarm, panel.widget.codexHot)
                     opacity: 0.55 + 0.45 * (col.index / Math.max(1, chart.n - 1))
+                    Behavior on height { NumberAnimation { duration: 320; easing.type: Easing.OutCubic } }
+                  }
+                  // Grok rides as a thin rose filament on the midline so the
+                  // Claude▲ / Codex▼ mirror stays intact.
+                  Rectangle {
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    y: chart.mid - height / 2
+                    width: Math.max(2, col.barWidth * 0.42)
+                    height: Math.max(col.g > 0 ? 2 : 0, (chart.mid - 4) * col.gl * 0.55) * col.grow
+                    radius: width / 2
+                    color: panel.widget.heat(col.gl, panel.widget.grokCold, panel.widget.grokWarm, panel.widget.grokHot)
+                    opacity: 0.70 + 0.30 * (col.index / Math.max(1, chart.n - 1))
                     Behavior on height { NumberAnimation { duration: 320; easing.type: Easing.OutCubic } }
                   }
                   // Live column breathes, same as the live cell on the bar, and
@@ -802,6 +835,11 @@ Panel {
               Counter { target: panel.rateHour("codex"); format: panel.widget.compact; color: panel.foreground; font.pixelSize: Style.font.bodySmall; Layout.preferredWidth: Style.space(58); horizontalAlignment: Text.AlignRight }
               Counter { target: panel.rateWindow("codex"); format: panel.widget.compact; color: panel.foreground; font.pixelSize: Style.font.bodySmall; Layout.preferredWidth: Style.space(58); horizontalAlignment: Text.AlignRight }
 
+              Body { text: "Grok"; color: panel.widget.grokHot; Layout.fillWidth: true }
+              Counter { target: panel.rateNow("grok"); format: panel.widget.compact; color: panel.foreground; font.bold: true; font.pixelSize: Style.font.bodySmall; Layout.preferredWidth: Style.space(58); horizontalAlignment: Text.AlignRight }
+              Counter { target: panel.rateHour("grok"); format: panel.widget.compact; color: panel.foreground; font.pixelSize: Style.font.bodySmall; Layout.preferredWidth: Style.space(58); horizontalAlignment: Text.AlignRight }
+              Counter { target: panel.rateWindow("grok"); format: panel.widget.compact; color: panel.foreground; font.pixelSize: Style.font.bodySmall; Layout.preferredWidth: Style.space(58); horizontalAlignment: Text.AlignRight }
+
               Body { visible: panel.localTokens; text: panel.boxName; color: panel.widget.localHot; Layout.fillWidth: true }
               Counter { visible: panel.localTokens; target: panel.rateNow("local"); format: panel.widget.compact; color: panel.foreground; font.bold: true; font.pixelSize: Style.font.bodySmall; Layout.preferredWidth: Style.space(58); horizontalAlignment: Text.AlignRight }
               Counter { visible: panel.localTokens; target: panel.rateHour("local"); format: panel.widget.compact; color: panel.foreground; font.pixelSize: Style.font.bodySmall; Layout.preferredWidth: Style.space(58); horizontalAlignment: Text.AlignRight }
@@ -824,7 +862,8 @@ Panel {
               model: {
                 var rows = [
                   { name: "Claude", accent: panel.widget.claudeHot, split: panel.svc ? panel.svc.claudeSplit : ({}) },
-                  { name: "Codex", accent: panel.widget.codexHot, split: panel.svc ? panel.svc.codexSplit : ({}) }
+                  { name: "Codex", accent: panel.widget.codexHot, split: panel.svc ? panel.svc.codexSplit : ({}) },
+                  { name: "Grok", accent: panel.widget.grokHot, split: panel.svc ? panel.svc.grokSplit : ({}) }
                 ]
                 // Local: evaluated prompt as "in", generated as "out", the
                 // reused prefix as the cache read. There is no cache write.
@@ -905,7 +944,9 @@ Panel {
                   { agent: "Claude", accent: panel.widget.claudeHot, limits: panel.svc.claudeLimits,
                     updatedAt: panel.svc.claudeLimitsMeasuredAt, status: panel.svc.claudeLimitsStatus },
                   { agent: "Codex", accent: panel.widget.codexHot, limits: panel.svc.codexLimits,
-                    updatedAt: panel.svc.codexLimitsMeasuredAt, status: panel.svc.codexLimitsStatus }
+                    updatedAt: panel.svc.codexLimitsMeasuredAt, status: panel.svc.codexLimitsStatus },
+                  { agent: "Grok", accent: panel.widget.grokHot, limits: panel.svc.grokLimits,
+                    updatedAt: panel.svc.grokLimitsMeasuredAt, status: panel.svc.grokLimitsStatus }
                 ]
                 for (var i = 0; i < rows.length; i++) {
                   var r = rows[i]
@@ -939,12 +980,16 @@ Panel {
                 var out = []
                 var c = panel.svc ? panel.svc.claudeLimits : []
                 var x = panel.svc ? panel.svc.codexLimits : []
+                var g = panel.svc ? panel.svc.grokLimits : []
                 var cAt = panel.svc ? panel.svc.claudeLimitsMeasuredAt : 0
                 var xAt = panel.svc ? panel.svc.codexLimitsMeasuredAt : 0
+                var gAt = panel.svc ? panel.svc.grokLimitsMeasuredAt : 0
                 for (var i = 0; i < c.length; i++)
                   out.push({ agent: "Claude", accent: panel.widget.claudeHot, limit: c[i], updatedAt: cAt })
                 for (var j = 0; j < x.length; j++)
                   out.push({ agent: "Codex", accent: panel.widget.codexHot, limit: x[j], updatedAt: xAt })
+                for (var k = 0; k < g.length; k++)
+                  out.push({ agent: "Grok", accent: panel.widget.grokHot, limit: g[k], updatedAt: gAt })
                 return out
               }
               delegate: ColumnLayout {
@@ -1024,6 +1069,36 @@ Panel {
             Caption {
               visible: modelRepeater.rows.length > panel.maxRows
               text: "+ " + (modelRepeater.rows.length - panel.maxRows) + " more, smaller"
+              Layout.fillWidth: true
+            }
+
+            PanelSectionHeader {
+              Layout.fillWidth: true
+              text: "GROK BY MODEL"
+              foreground: panel.foreground
+              fontFamily: panel.fontFamily
+              visible: grokModelRepeater.count > 0
+            }
+
+            Repeater {
+              id: grokModelRepeater
+              readonly property var rows: panel.sortedModels(panel.svc ? panel.svc.grokByModel : ({}))
+              model: rows.slice(0, panel.maxRows)
+              delegate: RowLayout {
+                required property var modelData
+                readonly property real share: panel.svc && panel.svc.grokTotal > 0
+                  ? modelData.tokens / panel.svc.grokTotal : 0
+                Layout.fillWidth: true
+                spacing: Style.space(8)
+                Body { text: panel.prettyModel(modelData.id); Layout.preferredWidth: Style.space(110) }
+                Gauge { fraction: share; accent: panel.widget.grokHot }
+                Caption { text: Math.round(share * 100) + "%"; Layout.preferredWidth: Style.space(30); horizontalAlignment: Text.AlignRight }
+                Body { text: panel.widget.compact(modelData.tokens); color: panel.widget.grokHot; font.bold: true; Layout.preferredWidth: Style.space(44); horizontalAlignment: Text.AlignRight }
+              }
+            }
+            Caption {
+              visible: grokModelRepeater.rows.length > panel.maxRows
+              text: "+ " + (grokModelRepeater.rows.length - panel.maxRows) + " more, smaller"
               Layout.fillWidth: true
             }
           }
@@ -1339,7 +1414,7 @@ Panel {
           Caption {
             Layout.fillWidth: true
             text: panel.svc && panel.svc.lastError !== "" ? panel.svc.lastError
-              : "Claude ◄ now ► Codex  ║  " + panel.boxName + "  ·  colour is heat  ·  cloud is tokens per bucket, " + panel.boxName + " is load per second"
+              : "Claude ◄ now ► Codex  │ Grok  ║  " + panel.boxName + "  ·  colour is heat  ·  cloud is tokens per bucket, " + panel.boxName + " is load per second"
             color: panel.svc && panel.svc.lastError !== "" ? Color.urgent : panel.dim
           }
           Caption {

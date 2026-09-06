@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.7.0 — 2026-09-06
+
+### Added
+- **Grok as a third cloud agent.** `burnbar-collect` reads
+  `~/.grok/sessions/**/updates.jsonl` (Grok Build / CLI sessions beside Grok
+  Bot) and estimates per-prompt burn as the rise in `_meta.totalTokens` within
+  each `promptId`. Weekly credit limits come from the newest
+  `billing: fetched credits config` line in `~/.grok/logs/unified.jsonl`, with
+  a fallback to `~/.local/state/omarchy/agents/usage/grok.json` when present.
+- Strip lane + hover tooltip for GROK (rose ramp), cockpit tile, rate row,
+  token-mix row, and plan-limit gauges — Claude and Codex reporting unchanged.
+
+### Notes
+- Grok does not persist a full API token ledger the way Claude/Codex do; the
+  heat is an estimate from context growth, not billed token counts. Empty Grok
+  heat with a live weekly gauge is a normal state.
+
+
 ## 1.6.0 — 2026-09-05
 
 ### Added
