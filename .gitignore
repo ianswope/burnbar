@@ -1,3 +1,4 @@
 *.pyc
 __pycache__/
 preview-raw.png
+.backups/

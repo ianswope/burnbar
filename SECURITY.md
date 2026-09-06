@@ -10,6 +10,7 @@ desktop session. Review the source and the commit you intend to install.
 file under:
 
 - `~/.claude/projects/**/*.jsonl` — your complete Claude Code conversations
+- `~/.grok/sessions/**/updates.jsonl` and `~/.grok/logs/unified.jsonl` — Grok Build/CLI session updates and billing snapshots
 - `~/.codex/sessions/**/rollout-*.jsonl` — your complete Codex sessions
 
 These files contain your prompts, the assistant's replies, and the contents of

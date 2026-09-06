@@ -107,6 +107,7 @@ export BURNBAR_NOW_MS=$(( pinned * 1000 ))
 export BURNBAR_METER_JOURNAL="$tmp/journal-empty.txt"
 fake_home="$tmp/home"
 mkdir -p "$fake_home/.claude/projects/p" "$fake_home/.codex/sessions/2026/09/03"
+mkdir -p "$fake_home/.grok/sessions/s1" "$fake_home/.grok/logs"
 
 now_iso=$(date -u +%Y-%m-%dT%H:%M:%S.000Z)
 # Claude: the SAME message.id three times, as the streaming writer emits it.
@@ -118,8 +119,15 @@ done
 # Codex: one turn worth 300 billable (500 in - 300 cached + 100 out).
 printf '{"timestamp":"%s","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":500,"cached_input_tokens":300,"cache_write_input_tokens":0,"output_tokens":100}}}}\n' \
   "$now_iso" > "$fake_home/.codex/sessions/2026/09/03/rollout-x.jsonl"
+# Grok: totalTokens rises 1000 → 2500 within one promptId → burn 1500.
+printf '%s\n' \
+  '{"timestamp":'"$BURNBAR_NOW_MS"',"method":"session/update","params":{"_meta":{"totalTokens":1000,"promptId":"p1","turnStartMs":'"$BURNBAR_NOW_MS"'}}}' \
+  '{"timestamp":'"$BURNBAR_NOW_MS"',"method":"session/update","params":{"_meta":{"totalTokens":2500,"promptId":"p1","turnStartMs":'"$BURNBAR_NOW_MS"'}}}' \
+  > "$fake_home/.grok/sessions/s1/updates.jsonl"
+printf '{"ts":"%s","msg":"billing: fetched credits config","ctx":{"config":{"creditUsagePercent":42,"currentPeriod":{"end":"2099-01-01T00:00:00+00:00"}}}}\n' \
+  "$now_iso" > "$fake_home/.grok/logs/unified.jsonl"
 
-HOME="$fake_home" python3 bin/burnbar-collect --window 360 --buckets 12
+HOME="$fake_home" GROK_HOME="$fake_home/.grok" python3 bin/burnbar-collect --window 360 --buckets 12
 out="$tmp/state/omarchy/burnbar/history.json"
 [ -f "$out" ] || fail "no history.json written"
 ok "history.json written"
@@ -136,10 +144,16 @@ xt=$(jq -r '.codex.total' "$out")
 [ "$xt" = "300" ] || fail "codex total $xt != 300"
 ok "codex per-turn delta math"
 
+gt=$(jq -r '.grok.total' "$out")
+[ "$gt" = "1500" ] || fail "grok total $gt != 1500 (totalTokens delta)"
+jq -e '.grok.limits[0].percent == 0.42 and (.buckets | map(has("grok")) | all)' "$out" >/dev/null \
+  || fail "grok limits/buckets missing"
+ok "grok totalTokens delta + billing limits"
+
 # Second run must be byte-identical: the incremental cache must not double-count
 # points it replays from a file whose mtime is unchanged.
 cp "$out" "$tmp/first.json"
-HOME="$fake_home" python3 bin/burnbar-collect --window 360 --buckets 12
+HOME="$fake_home" GROK_HOME="$fake_home/.grok" python3 bin/burnbar-collect --window 360 --buckets 12
 jq -S 'del(.generatedAt)' "$tmp/first.json" > "$tmp/a.json"
 jq -S 'del(.generatedAt)' "$out" > "$tmp/b.json"
 diff -q "$tmp/a.json" "$tmp/b.json" >/dev/null || fail "cached re-run changed totals"
@@ -148,7 +162,7 @@ ok "incremental cache is idempotent"
 # Appending must be picked up via the tail read, not ignored.
 printf '{"timestamp":"%s","message":{"id":"msg_new","model":"claude-test","usage":{"input_tokens":0,"cache_creation_input_tokens":0,"output_tokens":250}}}\n' \
   "$now_iso" >> "$fake_home/.claude/projects/p/s.jsonl"
-HOME="$fake_home" python3 bin/burnbar-collect --window 360 --buckets 12
+HOME="$fake_home" GROK_HOME="$fake_home/.grok" python3 bin/burnbar-collect --window 360 --buckets 12
 ct2=$(jq -r '.claude.total' "$out")
 [ "$ct2" = "1250" ] || fail "append not picked up: $ct2 != 1250"
 ok "tail read picks up appended records"
@@ -162,7 +176,7 @@ old_iso=$(date -u -d '8 hours ago' +%Y-%m-%dT%H:%M:%S+00:00)
 future_iso=$(date -u -d '2 hours' +%Y-%m-%dT%H:%M:%S+00:00)
 printf '{"limits":[{"label":"Weekly (7-day)","percent":0.42,"resetsAt":"%s"}],"updatedAt":"%s","usageStatusText":"Sign-in expired"}\n' \
   "$future_iso" "$old_iso" > "$tmp/state/omarchy/agents/usage/claude.json"
-HOME="$fake_home" python3 bin/burnbar-collect --window 360 --buckets 12
+HOME="$fake_home" GROK_HOME="$fake_home/.grok" python3 bin/burnbar-collect --window 360 --buckets 12
 jq -e '.claude.limits[0].percent == 0.42 and .claude.limits[0].resetsAt != "" and .claude.limitsStatus == "Sign-in expired"' "$out" >/dev/null \
   || fail "limits or status not carried from the usage record"
 at=$(jq -r '.claude.limitsMeasuredAt' "$out")
@@ -183,7 +197,7 @@ old_ms=$(( ( $(date +%s) - 8 * 3600 ) * 1000 ))
 printf '{"fetchedAtMs":%s,"limits":[]}\n' "$old_ms" > "$tmp/cache/omarchy/agent-usage/claude-limits.json"
 printf '{"limits":[{"label":"Weekly (7-day)","percent":0.0,"resetsAt":"%s"}],"updatedAt":"%s","usageStatusText":"","retryAdvised":true}\n' \
   "$future_iso" "$now_plain" > "$tmp/state/omarchy/agents/usage/claude.json"
-HOME="$fake_home" python3 bin/burnbar-collect --window 360 --buckets 12
+HOME="$fake_home" GROK_HOME="$fake_home/.grok" python3 bin/burnbar-collect --window 360 --buckets 12
 [ "$(jq -r '.claude.limitsMeasuredAt' "$out")" = "$old_ms" ] \
   || fail "a re-stamped fallback record must carry the probe's own fetchedAtMs"
 [ "$(jq -r '.claude.limitsStatus' "$out")" = "last probe failed, showing last known" ] \
@@ -198,7 +212,7 @@ rm -f "$tmp/cache/omarchy/agent-usage/claude-limits.json"
 printf '{"limits":[{"label":"a","percent":null,"resetsAt":"%s"},{"label":"b","percent":"bad","resetsAt":"%s"},{"label":"c","percent":"NaN","resetsAt":"%s"},{"label":"d","percent":-1,"resetsAt":"%s"},{"label":"e","percent":66,"resetsAt":"%s"},{"label":"Weekly (7-day)","percent":0.42,"resetsAt":"%s"}],"updatedAt":"%s"}\n' \
   "$future_iso" "$future_iso" "$future_iso" "$future_iso" "$future_iso" "$future_iso" "$now_plain" \
   > "$tmp/state/omarchy/agents/usage/claude.json"
-HOME="$fake_home" python3 bin/burnbar-collect --window 360 --buckets 12 || fail "junk percentages aborted the collector"
+HOME="$fake_home" GROK_HOME="$fake_home/.grok" python3 bin/burnbar-collect --window 360 --buckets 12 || fail "junk percentages aborted the collector"
 jq -e '[.claude.limits[].percent] == [-1, -1, -1, -1, -1, 0.42]' "$out" >/dev/null \
   || fail "percent normalisation wrong: $(jq -c '[.claude.limits[].percent]' "$out")"
 ok "junk percentages become -1, never 0, never a crash, never NaN on disk"
@@ -209,7 +223,7 @@ printf '{"timestamp":"%s","message":{"id":"msg_junk","model":"claude-test","usag
   "$now_iso" >> "$fake_home/.claude/projects/p/s.jsonl"
 printf '{"timestamp":"%s","payload":{"type":"token_count","info":"bad"}}\n' \
   "$now_iso" >> "$fake_home/.codex/sessions/2026/09/03/rollout-x.jsonl"
-HOME="$fake_home" python3 bin/burnbar-collect --window 360 --buckets 12 || fail "a malformed record aborted the collector"
+HOME="$fake_home" GROK_HOME="$fake_home/.grok" python3 bin/burnbar-collect --window 360 --buckets 12 || fail "a malformed record aborted the collector"
 [ "$(jq -r '.claude.total' "$out")" = "1250" ] || fail "malformed Claude record changed the total"
 [ "$(jq -r '.codex.total' "$out")" = "300" ] || fail "malformed Codex record changed the total"
 ok "malformed records are skipped, not fatal"
@@ -219,11 +233,11 @@ ok "malformed records are skipped, not fatal"
 # stale points forever.
 same="$fake_home/.claude/projects/p/same.jsonl"
 printf '{"timestamp":"%s","message":{"id":"msg_same1","model":"claude-test","usage":{"input_tokens":0,"cache_creation_input_tokens":0,"output_tokens":100}}}\n' "$now_iso" > "$same"
-HOME="$fake_home" python3 bin/burnbar-collect --window 360 --buckets 12
+HOME="$fake_home" GROK_HOME="$fake_home/.grok" python3 bin/burnbar-collect --window 360 --buckets 12
 [ "$(jq -r '.claude.total' "$out")" = "1350" ] || fail "same-length fixture setup: $(jq -r '.claude.total' "$out")"
 printf '{"timestamp":"%s","message":{"id":"msg_same2","model":"claude-test","usage":{"input_tokens":0,"cache_creation_input_tokens":0,"output_tokens":700}}}\n' "$now_iso" > "$same"
 touch -m -d "@$(( $(date +%s) + 5 ))" "$same"
-HOME="$fake_home" python3 bin/burnbar-collect --window 360 --buckets 12
+HOME="$fake_home" GROK_HOME="$fake_home/.grok" python3 bin/burnbar-collect --window 360 --buckets 12
 [ "$(jq -r '.claude.total' "$out")" = "1950" ] || fail "equal-size rewrite kept stale points: $(jq -r '.claude.total' "$out")"
 ok "equal-size rewrite with a new mtime is rescanned"
 
@@ -236,7 +250,7 @@ cx2="$fake_home/.codex/sessions/2026/09/03/rollout-y.jsonl"
 tc() { printf '{"timestamp":"%s","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":%s,"cached_input_tokens":%s,"cache_write_input_tokens":0,"output_tokens":%s},"total_token_usage":{"input_tokens":%s,"cached_input_tokens":%s,"cache_write_input_tokens":0,"output_tokens":%s}}}}\n' "$now_iso" "$@"; }
 { tc 500 300 100 500 300 100; tc 500 300 100 500 300 100; tc 200 0 50 700 300 150; } > "$cx2"
 before_total=$(jq -r '.codex.total' "$out"); before_turns=$(jq -r '.codex.turns' "$out")
-HOME="$fake_home" python3 bin/burnbar-collect --window 360 --buckets 12
+HOME="$fake_home" GROK_HOME="$fake_home/.grok" python3 bin/burnbar-collect --window 360 --buckets 12
 [ "$(jq -r '.codex.total' "$out")" = "$(( before_total + 550 ))" ] \
   || fail "codex cumulative delta wrong: $(jq -r '.codex.total' "$out"), expected $(( before_total + 550 ))"
 [ "$(jq -r '.codex.turns' "$out")" = "$(( before_turns + 2 ))" ] || fail "a repeated codex snapshot was counted as a turn"
@@ -245,7 +259,7 @@ ok "codex counts cumulative deltas: a repeated snapshot is not a second turn"
 # The baseline survives an incremental tail read: a fourth event appended to
 # the same file lands as its delta alone (800-300+170 minus 700-300+150 = 120).
 tc 100 0 20 800 300 170 >> "$cx2"
-HOME="$fake_home" python3 bin/burnbar-collect --window 360 --buckets 12
+HOME="$fake_home" GROK_HOME="$fake_home/.grok" python3 bin/burnbar-collect --window 360 --buckets 12
 [ "$(jq -r '.codex.total' "$out")" = "$(( before_total + 670 ))" ] \
   || fail "codex baseline lost across a tail read: $(jq -r '.codex.total' "$out")"
 ok "codex cumulative baseline survives an incremental tail read"
@@ -258,7 +272,7 @@ printf '{"timestamp":"%s","message":{"id":"msg_neg","model":"claude-test","usage
 printf '{"timestamp":"%s","message":{"id":"msg_over","model":"claude-test","usage":{"input_tokens":1e999,"output_tokens":1}}}\n' "$now_iso" >> "$fake_home/.claude/projects/p/s.jsonl"
 printf '{"timestamp":"%s","message":{"id":"msg_bool","model":"claude-test","usage":{"input_tokens":true,"output_tokens":1}}}\n' "$now_iso" >> "$fake_home/.claude/projects/p/s.jsonl"
 printf '{"timestamp":"%s","message":{"id":"msg_cacheonly","model":"claude-test","usage":{"input_tokens":0,"cache_creation_input_tokens":0,"output_tokens":0,"cache_read_input_tokens":1000}}}\n' "$now_iso" >> "$fake_home/.claude/projects/p/s.jsonl"
-HOME="$fake_home" python3 bin/burnbar-collect --window 360 --buckets 12 || fail "audit records aborted the collector"
+HOME="$fake_home" GROK_HOME="$fake_home/.grok" python3 bin/burnbar-collect --window 360 --buckets 12 || fail "audit records aborted the collector"
 [ "$(jq -r '.claude.total' "$out")" = "$cl_before" ] || fail "a negative, overflowing or boolean count changed the total"
 [ "$(jq -r '.claude.split.cacheRead' "$out")" = "$(( cr_before + 1000 ))" ] || fail "cache-read-only record lost from the split"
 [ "$(jq -r '.claude.turns' "$out")" = "$(( turns_before + 1 ))" ] || fail "cache-read-only record not counted as a turn"
@@ -270,7 +284,7 @@ rev="$fake_home/.claude/projects/p/rev.jsonl"
 printf '{"timestamp":"%s","message":{"id":"msg_rev","model":"claude-test","usage":{"input_tokens":100,"output_tokens":1}}}\n' "$now_iso" > "$rev"
 printf '{"timestamp":"%s","message":{"id":"msg_rev","model":"claude-test","usage":{"input_tokens":100,"output_tokens":100}}}\n' "$now_iso" >> "$rev"
 cl_before=$(jq -r '.claude.total' "$out")
-HOME="$fake_home" python3 bin/burnbar-collect --window 360 --buckets 12
+HOME="$fake_home" GROK_HOME="$fake_home/.grok" python3 bin/burnbar-collect --window 360 --buckets 12
 [ "$(jq -r '.claude.total' "$out")" = "$(( cl_before + 200 ))" ] \
   || fail "claude dedupe kept the preliminary revision: $(jq -r '.claude.total' "$out")"
 ok "claude dedupe keeps the final streamed revision, not the first"
@@ -279,11 +293,11 @@ ok "claude dedupe keeps the final streamed revision, not the first"
 # The bytes just before the saved offset no longer match, so it is rescanned.
 grow="$fake_home/.claude/projects/p/grow.jsonl"
 printf '{"timestamp":"%s","message":{"id":"msg_g1","model":"claude-test","usage":{"input_tokens":0,"output_tokens":100}}}\n' "$now_iso" > "$grow"
-HOME="$fake_home" python3 bin/burnbar-collect --window 360 --buckets 12
+HOME="$fake_home" GROK_HOME="$fake_home/.grok" python3 bin/burnbar-collect --window 360 --buckets 12
 cl_before=$(jq -r '.claude.total' "$out")
 printf '{"timestamp":"%s","message":{"id":"msg_grow_two","model":"claude-test","usage":{"input_tokens":0,"output_tokens":900}}}\n' "$now_iso" > "$grow"
 touch -m -d "@$(( real_now + 7 ))" "$grow"
-HOME="$fake_home" python3 bin/burnbar-collect --window 360 --buckets 12
+HOME="$fake_home" GROK_HOME="$fake_home/.grok" python3 bin/burnbar-collect --window 360 --buckets 12
 [ "$(jq -r '.claude.total' "$out")" = "$(( cl_before - 100 + 900 ))" ] \
   || fail "a longer rewrite was resumed as an append: $(jq -r '.claude.total' "$out")"
 ok "a longer rewrite fails the tail fingerprint and is rescanned"
@@ -293,7 +307,7 @@ ok "a longer rewrite fails the tail fingerprint and is rescanned"
 cache="$tmp/state/omarchy/burnbar/scan-cache.json"
 jq --arg k "$fake_home/.claude/projects/p/s.jsonl" '.files[$k].points = [["bad"]]' "$cache" > "$cache.new" && mv "$cache.new" "$cache"
 cl_before=$(jq -r '.claude.total' "$out")
-HOME="$fake_home" python3 bin/burnbar-collect --window 360 --buckets 12 || fail "a malformed cache entry aborted the collector"
+HOME="$fake_home" GROK_HOME="$fake_home/.grok" python3 bin/burnbar-collect --window 360 --buckets 12 || fail "a malformed cache entry aborted the collector"
 [ "$(jq -r '.claude.total' "$out")" = "$cl_before" ] || fail "a malformed cache entry changed the total: $(jq -r '.claude.total' "$out")"
 ok "a malformed cache entry is a cache miss, not a crash"
 
@@ -304,7 +318,7 @@ ok "a malformed cache entry is a cache miss, not a crash"
 old_ts=$(date -u -d "@$(( pinned - 345 * 60 ))" +%Y-%m-%dT%H:%M:%S.000Z)
 printf '{"timestamp":"%s","message":{"id":"msg_old","model":"claude-test","usage":{"input_tokens":0,"output_tokens":4000}}}\n' "$old_ts" > "$fake_home/.claude/projects/p/old.jsonl"
 cl_before=$(jq -r '.claude.total' "$out")
-HOME="$fake_home" python3 bin/burnbar-collect --window 360 --buckets 12
+HOME="$fake_home" GROK_HOME="$fake_home/.grok" python3 bin/burnbar-collect --window 360 --buckets 12
 [ "$(jq -r '.claude.total' "$out")" = "$(( cl_before + 4000 ))" ] \
   || fail "a 345-minute-old record fell out of a 360-minute window: $(jq -r '.claude.total' "$out")"
 bsum=$(jq -r '[.buckets[].claude] | add' "$out")
@@ -333,14 +347,14 @@ $(( t0 + 8 )).080384 nano python3[9143]: meter ts=$(( t0 + 8 ))080 path=/api/emb
 $(( t0 + 40 )).358225 nano python3[9143]: meter ts=$(( t0 + 40 ))358 path=/api/generate model=qwen2.5:3b status=500 prompt=-1 eval=-1 ms=30259 client=100.101.176.48
 $(( t0 + 41 )).000000 nano python3[9143]: meter ts=$(( t0 + 41 ))000 path=/api/generate model=qwen2.5:3b status=200 prompt=-1 eval=-1 ms=10 client=100.101.176.48
 EOF
-BURNBAR_METER_JOURNAL="$j" HOME="$fake_home" python3 bin/burnbar-collect --window 360 --buckets 12
+BURNBAR_METER_JOURNAL="$j" HOME="$fake_home" GROK_HOME="$fake_home/.grok" python3 bin/burnbar-collect --window 360 --buckets 12
 jq -e '.local.available == true and .local.total == 124 and .local.turns == 3
   and .local.split.input == 68 and .local.split.output == 56 and .local.split.cacheRead == 0 and .local.split.cacheWrite == 0
   and .local.byModel["llama3.2:3b"] == 120 and .local.byModel["nomic-embed-text"] == 4
   and .local.host == "nano" and .local.unit == "ollama-meter"' "$out" >/dev/null \
   || fail "meter journal parse wrong: $(jq -c '.local | {available, total, turns, split, byModel}' "$out")"
-ct=$(jq -r '.claude.total' "$out"); xt=$(jq -r '.codex.total' "$out")
-want=$(python3 -c "print(round(124 / (124 + $ct + $xt), 6))")
+ct=$(jq -r '.claude.total' "$out"); xt=$(jq -r '.codex.total' "$out"); gt=$(jq -r '.grok.total' "$out")
+want=$(python3 -c "print(round(124 / (124 + $ct + $xt + $gt), 6))")
 got=$(jq -r '.offloadShare | . * 1000000 | round / 1000000' "$out")
 [ "$got" = "$want" ] || fail "offload share $got != $want"
 jq -e '[.buckets[].local] | add == 124' "$out" >/dev/null || fail "local tokens missing from the buckets"
@@ -349,7 +363,7 @@ ok "local tokens parsed from the meter journal; failed requests skipped; offload
 # An unreadable journal is reported with its reason. The last-known points
 # stay in the cache (the panel hides the numbers while available is false),
 # so the total is not asserted here.
-BURNBAR_METER_JOURNAL="$tmp/does-not-exist.txt" HOME="$fake_home" python3 bin/burnbar-collect --window 360 --buckets 12
+BURNBAR_METER_JOURNAL="$tmp/does-not-exist.txt" HOME="$fake_home" GROK_HOME="$fake_home/.grok" python3 bin/burnbar-collect --window 360 --buckets 12
 jq -e '.local.available == false and (.local.reason | length) > 0' "$out" >/dev/null \
   || fail "unreadable journal not reported: $(jq -c '.local | {available, reason, total}' "$out")"
 ok "an unreadable journal reads as unavailable with a reason"

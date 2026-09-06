@@ -23,8 +23,8 @@ Codex:   ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl   event_msg lines with
          this was built on), and counting last_token_usage would count it twice.
 
 Grok:    ~/.grok/sessions/**/updates.jsonl   _meta.totalTokens is the running
-         context size for a promptId (Grok Build / Grok CLI — the local
-         transcript store beside Grok Bot). Per-prompt burn is estimated as
+         context size for a promptId (Grok Bot / Build sessions — the local
+         transcript store beside the Grok Bot app process). Per-prompt burn is estimated as
          max(totalTokens)-min(totalTokens) within that prompt; flat prompts
          contribute nothing. Plan limits come from the latest
          "billing: fetched credits config" line in ~/.grok/logs/unified.jsonl
