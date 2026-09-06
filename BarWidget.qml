@@ -3,17 +3,17 @@ import Quickshell
 import qs.Commons
 import qs.Ui
 
-// Burn Bar — one live thermal instrument for every model you run.
+// Burn Bar — one live thermal instrument for every model this machine runs.
 //
-//   CLAUDE ◄── time ──┤ now ├── time ──► CODEX  │  GROK ──►  ║  NANO ──► seconds
+//   CLAUDE ◄── time ──┤ now ├── time ──► CODEX  │  GROK ──►  ║  GPU ──► seconds
 //
-// Claude burns on the left and Codex on the right, both with their newest
-// bucket against the shared centre line, so the divider is always "now".
-// Grok (Grok Build / CLI under ~/.grok, beside Grok Bot) rides after Codex as
-// a third cloud lane on the same token scale, before the hard rule. Local
-// intelligence — the Ollama on nano — stays bolted on the right behind that
-// rule: live load per second on another box, never another column of the same
-// scale.
+// Lanes appear only for agents this machine actually uses. Claude burns on
+// the left and Codex on the right, both with their newest bucket against the
+// shared centre line, so the divider is always "now". Grok (Grok Build / CLI
+// under ~/.grok) rides after Codex when it is present, or takes a side of
+// the pair when Codex is not. Local intelligence — Ollama on a compute GPU —
+// stays bolted on the right behind a hard rule, and is omitted entirely when
+// no NVIDIA / AMD / Jetson GPU is detected. Intel iGPU does not count.
 //
 // This is a heat map first: COLOUR carries the magnitude, on a per-agent ramp
 // that runs cold ember → agent identity → amber → white-hot. Height is only a
@@ -47,19 +47,30 @@ BarWidget {
   // 12 here and 6 there). The fallback only matters before the service binds.
   readonly property int cellCount: svc ? svc.bucketCount : boundedInt("bars", 12, 6, 32)
   readonly property int localCells: svc ? svc.localCells : boundedInt("localCells", 9, 4, 20)
+  // Presence comes from the collector. Until the first snapshot lands the
+  // strip stays empty rather than inventing Claude/Codex/Grok lanes that
+  // this machine may not use.
+  readonly property bool showClaude: svc ? svc.claudePresent : false
+  readonly property bool showCodex: svc ? svc.codexPresent : false
+  readonly property bool showGrok: svc ? svc.grokPresent : false
+  readonly property int cloudAgents: (showClaude ? 1 : 0) + (showCodex ? 1 : 0) + (showGrok ? 1 : 0)
+  readonly property bool grokExtra: showGrok && showClaude && showCodex
+  readonly property bool grokAsRight: showGrok && showClaude && !showCodex
+  readonly property bool grokAsLeft: showGrok && !showClaude && showCodex
   // The narrowest strip that still gives every cell a whole pixel and a gap.
   // A configured width below it is raised rather than honoured: overlapping
   // cells are a heat map of nothing.
   readonly property int minWidthForCells: {
-    // Claude+Codex mirrored pair + Grok lane (~16%) + gauges/seps.
-    var cloudNeed = (4 * cellCount + 3 + Math.ceil(0.4 * cellCount)
-      + (showGauges ? 18 : 0) + (showLocal ? 4 : 0)) / (showLocal ? 0.75 : 1)
+    var n = Math.max(1, cloudAgents)
+    var cloudNeed = (2 * n * cellCount + 3 + (showGauges ? 6 * n : 0) + (showLocal ? 4 : 0)) / (showLocal ? 0.75 : 1)
     var localNeed = showLocal ? (2 * localCells + 6) * 4 : 0
     return Math.max(110, Math.ceil(Math.max(cloudNeed, localNeed)) + 6)
   }
   readonly property int configuredWidth: Math.max(minWidthForCells, boundedInt("width", 158, 110, 400))
   readonly property bool showGauges: setting("showGauges", true) !== false
-  readonly property bool showLocal: setting("showLocal", true) !== false
+  // Local settings stay in the plugin schema so a GPU box can be pointed at,
+  // but the lane itself only appears when a compute GPU was actually found.
+  readonly property bool showLocal: setting("showLocal", true) !== false && (svc ? svc.hasComputeGpu : false)
   readonly property bool emberFlicker: setting("emberFlicker", true) !== false
   readonly property bool sparks: setting("sparks", true) !== false
 
@@ -88,14 +99,19 @@ BarWidget {
   readonly property int maxWidth: Math.max(configuredWidth, boundedInt("maxWidth", 1200, 110, 4000))
   readonly property int stretchGap: boundedInt("stretchGap", 14, 0, 200)
 
-  // Device pixels. Seeded with the floor so the first frame is never zero-wide.
-  property real stretchedWidth: Style.spaceReal(configuredWidth)
+  // Device pixels. Seeded at the preferred width; measureStretch then
+  // replaces it with a fair share of the hole to the centre section.
+  readonly property real preferredWidth: Style.spaceReal(configuredWidth)
+  property real stretchedWidth: preferredWidth
   readonly property real stripWidth: stretch && !vertical
-    ? Math.max(Style.spaceReal(configuredWidth), stretchedWidth)
-    : Style.spaceReal(configuredWidth)
+    ? Math.max(0, stretchedWidth)
+    : preferredWidth
 
   implicitWidth: vertical ? barSize : stripWidth
   implicitHeight: vertical ? Style.spaceReal(configuredWidth) : barSize
+  // Bloom/glow is drawn larger than the slot; clip so it cannot paint
+  // through the temperature and clock in the next section.
+  clip: true
 
   function sameModule(a, b) {
     var x = String(a || ""), y = String(b || "")
@@ -106,39 +122,51 @@ BarWidget {
     return x !== "" && x === y
   }
 
+  function slotStretches(item) {
+    // Now Playing (beatdeck) exposes `stretch` and `stretchedWidth`. Either
+    // means it is filling the same hole we are; we split with it.
+    if (!item || item === root) return false
+    if (item.vertical === true) return false
+    if (item.stretch === false) return false
+    if (item.stretch === true) return true
+    return typeof item.stretchedWidth === "number"
+  }
+
+  function slotMinWidth(item) {
+    var n = Number(item && item.stretchMinWidth)
+    if (isFinite(n) && n > 0) return n
+    n = Number(item && item.configuredWidth)
+    if (isFinite(n) && n > 0) return n
+    return 96
+  }
+
   function measureStretch() {
     if (!stretch || vertical || !bar || !Array.isArray(bar.moduleSlots)) return
 
-    var minimum = Style.spaceReal(configuredWidth)
     var maximum = Style.spaceReal(maxWidth)
     var gap = Style.spaceReal(stretchGap)
-
-    var origin, barPoint
+    var ourMin = Math.max(80, minWidthForCells)
+    var origin
     try {
       origin = mapToItem(null, 0, 0)
-      barPoint = bar.mapToItem(null, 0, 0)
     } catch (e) {
       return
     }
-    if (!origin || !barPoint || !(bar.width > 0)) return
+    if (!origin) return
 
-    // The rows sit Style.space(8) in from the bar's ends.
-    var barLeft = barPoint.x + Style.space(8)
-    var barRight = barPoint.x + bar.width - Style.space(8)
-    var barCentre = barPoint.x + bar.width / 2
-    var ourRight = origin.x + width
+    // Centre bound is screen x, not implicitWidth: weather has painted at
+    // 68px with an implicitWidth of 0. Hidden indicators sit on the same x.
+    var centreLeft = -1
+    var trailing = 0
+    var partnerX = -1
+    var partnerMin = 0
+    var nPartners = 0
 
-    var anchorId = String(bar.centerAnchor || "")
-    var ourRegion = ""
-    var anchorInCentre = false
-    var others = []
     for (var i = 0; i < bar.moduleSlots.length; i++) {
       var slot = bar.moduleSlots[i]
       if (!slot || !slot.activeItem) continue
-      if (slot.activeItem === root) { ourRegion = String(slot.region || ""); continue }
-      if (!slot.activeItem.visible) continue
-      var need = Math.max(0, Number(slot.implicitWidth) || 0)
-      if (need <= 0) continue
+      if (slot.activeItem === root) continue
+
       var point
       try {
         point = slot.mapToItem(null, 0, 0)
@@ -146,62 +174,66 @@ BarWidget {
         continue
       }
       if (!point) continue
-      var region = String(slot.region || "")
-      if (region === "center" && anchorId && sameModule(slot.moduleName, anchorId)) anchorInCentre = true
-      others.push({ region: region, x: point.x, right: point.x + need, need: need })
+
+      if (slot.region === "center") {
+        if (point.x + 1 < origin.x) continue
+        if (centreLeft < 0 || point.x < centreLeft) centreLeft = point.x
+      } else if (slot.region === "left") {
+        if (point.x > origin.x && slot.activeItem.visible)
+          trailing += Math.max(0, Number(slot.implicitWidth) || 0)
+        else if (point.x < origin.x) {
+          var name = String(slot.moduleName || "")
+          var peer = slotStretches(slot.activeItem)
+            || name.indexOf("beatdeck") >= 0
+            || name.indexOf("nowplaying") >= 0
+            || name.indexOf("now-playing") >= 0
+          if (!peer) continue
+          // Immediate predecessor that also fills: share from ITS left
+          // edge (stable) not from our x (which it controls).
+          if (point.x >= partnerX) {
+            nPartners = 1
+            partnerX = point.x
+            partnerMin = slotMinWidth(slot.activeItem)
+          }
+        }
+      }
     }
-    if (!ourRegion) return
 
-    var weAreAnchor = ourRegion === "center" && anchorId && sameModule(moduleName, anchorId)
-    var mode
-    if (ourRegion === "left") mode = "pinLeft"
-    else if (ourRegion === "right") mode = "pinRight"
-    else if (weAreAnchor) mode = "anchor"
-    else if (!anchorInCentre) mode = "centred"
-    // The row after the anchor starts right of the centre line; the row before
-    // it ends left of the line. Which side we are on says which edge is fixed.
-    else mode = origin.x >= barCentre ? "pinLeft" : "pinRight"
+    var boundary = centreLeft
+    if (boundary < 0) {
+      var barPoint
+      try {
+        barPoint = bar.mapToItem(null, 0, 0)
+      } catch (e3) {
+        return
+      }
+      if (!barPoint) return
+      boundary = barPoint.x + bar.width
+    }
 
-    var o, available, bound
-    if (mode === "pinLeft") {
-      // Grow rightward until whichever other section begins first.
-      bound = barRight
-      var trailing = 0
-      for (i = 0; i < others.length; i++) {
-        o = others[i]
-        if (o.region === ourRegion) { if (o.x > origin.x) trailing += o.need }
-        else if (o.x + 0.5 >= origin.x && o.x < bound) bound = o.x
-      }
-      available = bound - origin.x - trailing - gap
-    } else if (mode === "pinRight") {
-      // Grow leftward until whichever other section ends last.
-      bound = barLeft
-      var preceding = 0
-      for (i = 0; i < others.length; i++) {
-        o = others[i]
-        if (o.region === ourRegion) { if (o.x < origin.x) preceding += o.need }
-        else if (o.right <= ourRight + 0.5 && o.right > bound) bound = o.right
-      }
-      available = ourRight - bound - preceding - gap
-    } else {
-      var leftBound = barLeft, rightBound = barRight, before = 0, after = 0
-      for (i = 0; i < others.length; i++) {
-        o = others[i]
-        if (o.region === "left") leftBound = Math.max(leftBound, o.right)
-        else if (o.region === "right") rightBound = Math.min(rightBound, o.x)
-        else if (o.x < origin.x) before += o.need
-        else after += o.need
-      }
-      if (mode === "anchor")
-        // We sit on the centre line; the tighter side bounds both halves.
-        available = 2 * Math.min(barCentre - leftBound - before, rightBound - barCentre - after) - 2 * gap
+    var holeStart = partnerX >= 0 ? partnerX : origin.x
+    var hole = boundary - holeStart - trailing - gap
+    var next
+    if (partnerX >= 0 && nPartners > 0) {
+      // Split the hole with the preceding stretcher (Now Playing).
+      // Beatdeck sizes itself as (hole - our implicitWidth), so reporting
+      // the fair share here is what makes the two converge instead of
+      // one eating the other. Independent of our current x/width.
+      var n = nPartners + 1
+      var extra = hole - ourMin - partnerMin
+      if (extra < 0)
+        next = hole * ourMin / Math.max(1, ourMin + partnerMin)
       else
-        // The row is centred as a whole; it may widen until one end touches.
-        available = 2 * Math.min(barCentre - leftBound, rightBound - barCentre) - 2 * gap - before - after
+        next = ourMin + extra / n
+      next = Math.min(next, hole - partnerMin)
+    } else {
+      next = hole
     }
-
-    var next = Math.round(Math.max(minimum, Math.min(maximum, available)))
-    // Sub-pixel churn would re-lay every cell for nothing.
+    next = Math.round(Math.max(0, Math.min(maximum, next)))
+    // First-frame mapToItem can report the bar origin (x≈0, bound≈0) before
+    // slots exist; applying that would collapse the strip to 0px.
+    if (boundary < origin.x + 24 && partnerX < 0) return
+    if (next < 40 && stretchedWidth > 80) return
     if (Math.abs(next - stretchedWidth) >= 1) stretchedWidth = next
   }
 
@@ -210,6 +242,7 @@ BarWidget {
   onMaxWidthChanged: measureStretch()
   onStretchGapChanged: measureStretch()
   onXChanged: measureStretch()
+  onBarChanged: measureStretch()
   Component.onCompleted: measureStretch()
 
   Connections {
@@ -456,15 +489,16 @@ BarWidget {
   // data. A fault must never animate like a calm idle strip — that is how a
   // total outage hides in plain sight.
   readonly property bool idle: !broken && (!ready
-    || ((svc ? svc.claudeLatest : 0) <= 0 && (svc ? svc.codexLatest : 0) <= 0
-        && (svc ? svc.grokLatest : 0) <= 0))
+    || ((!showClaude || (svc ? svc.claudeLatest : 0) <= 0)
+        && (!showCodex || (svc ? svc.codexLatest : 0) <= 0)
+        && (!showGrok || (svc ? svc.grokLatest : 0) <= 0)))
 
   // One number for "how hard is this machine working right now", across all
   // three agents. Drives every global effect: under-glow, sparks, frame rate.
   readonly property real energy: Math.max(
-      root.broken ? 0 : root.claudeLevel(root.cellCount - 1),
-      root.broken ? 0 : root.codexLevel(0),
-      root.broken ? 0 : root.grokLevel(root.cellCount - 1),
+      root.broken || !root.showClaude ? 0 : root.claudeLevel(root.cellCount - 1),
+      root.broken || !root.showCodex ? 0 : root.codexLevel(0),
+      root.broken || !root.showGrok ? 0 : root.grokLevel(root.cellCount - 1),
       root.showLocal && root.localOnline ? root.localLevel(0) : 0)
 
   readonly property color energyColor: root.broken ? urgent
@@ -780,34 +814,52 @@ BarWidget {
       // supporting instrument: the cloud agents are what costs money.
       readonly property real localWidth: root.showLocal ? Math.round(width * 0.25) : 0
       readonly property int ruleWidth: root.showLocal ? Style.space(4) : 0
-      // Grok takes a fixed share of the non-local strip so Claude/Codex keep
-      // their mirrored centre instrument and stay readable.
       readonly property int grokSep: Style.space(2)
-      readonly property real grokLaneWidth: Math.max(Style.space(10),
-        Math.round((width - localWidth - ruleWidth) * 0.16))
-      readonly property real cloudWidth:
-        width - localWidth - ruleWidth - grokLaneWidth - grokSep
-        - 3 * (gaugeWidth + gaugeGap) - dividerWidth
-      readonly property real sideWidth: Math.max(1, cloudWidth / 2)
+      readonly property bool showDivider: (root.showClaude && root.showCodex) || root.grokAsRight
+      readonly property int gaugeCount: root.showGauges ? root.cloudAgents : 0
+      readonly property real gaugesSpace: gaugeCount * (gaugeWidth + gaugeGap)
+      readonly property real dividerSpace: showDivider ? dividerWidth : 0
+      readonly property real grokSepSpace: root.grokExtra ? grokSep : 0
+      readonly property real inner: Math.max(1, width - localWidth - ruleWidth
+        - gaugesSpace - dividerSpace - grokSepSpace)
+      readonly property real extraGrokW: root.grokExtra
+        ? Math.max(Style.space(10), Math.round(inner * 0.16)) : 0
+      readonly property real pairInner: Math.max(1, inner - extraGrokW)
+      readonly property real sideWidth: root.cloudAgents <= 1 ? pairInner
+        : Math.max(1, pairInner / 2)
+      readonly property real claudeLaneWidth: !root.showClaude ? 0
+        : root.cloudAgents === 1 ? pairInner : sideWidth
+      readonly property real codexLaneWidth: !root.showCodex ? 0
+        : root.cloudAgents === 1 ? pairInner : sideWidth
+      readonly property real grokLaneWidth: !root.showGrok ? 0
+        : root.cloudAgents === 1 ? pairInner
+        : root.grokExtra ? extraGrokW
+        : sideWidth
 
       // Zone spans, used for both the tinted plates and hit-testing. Derived
       // from the same numbers that lay the lanes out, so a plate can never
       // drift out from under the instrument it is naming.
+      readonly property real claudeGaugeSpace: root.showGauges && root.showClaude ? gaugeWidth + gaugeGap : 0
+      readonly property real codexGaugeSpace: root.showGauges && root.showCodex ? gaugeGap + gaugeWidth : 0
+      readonly property real grokGaugeSpace: root.showGauges && root.showGrok ? gaugeGap + gaugeWidth : 0
       readonly property real claudeZoneWidth:
-        gaugeWidth + gaugeGap + sideWidth + dividerWidth / 2
+        claudeGaugeSpace + claudeLaneWidth + (showDivider ? dividerWidth / 2 : 0)
       readonly property real codexZoneWidth:
-        dividerWidth / 2 + sideWidth + gaugeGap + gaugeWidth
+        (showDivider ? dividerWidth / 2 : 0) + codexLaneWidth + codexGaugeSpace
       readonly property real grokZoneStart: claudeZoneWidth + codexZoneWidth
       readonly property real grokZoneWidth:
-        grokSep + grokLaneWidth + gaugeGap + gaugeWidth + ruleWidth / 2
+        grokSepSpace + grokLaneWidth + grokGaugeSpace + ruleWidth / 2
       readonly property real localZoneStart: grokZoneStart + grokZoneWidth
       readonly property real localZoneWidth: Math.max(0, width - localZoneStart)
 
       function zoneAt(x) {
-        if (x < claudeZoneWidth) return root.zoneClaude
-        if (x < grokZoneStart) return root.zoneCodex
-        if (!root.showLocal || x < localZoneStart) return root.zoneGrok
-        return root.zoneLocal
+        if (root.showClaude && x < claudeZoneWidth) return root.zoneClaude
+        if (root.showCodex && x < grokZoneStart) return root.zoneCodex
+        if (root.showGrok && (!root.showLocal || x < localZoneStart)) return root.zoneGrok
+        if (root.showLocal) return root.zoneLocal
+        if (root.showGrok) return root.zoneGrok
+        if (root.showCodex) return root.zoneCodex
+        return root.showClaude ? root.zoneClaude : root.zoneNone
       }
 
       // Tinted plates: the cheapest possible answer to "where does Claude end
@@ -816,9 +868,9 @@ BarWidget {
       // the tooltip is talking about.
       Repeater {
         model: [
-          { zone: root.zoneClaude, from: 0, span: graph.claudeZoneWidth, on: true },
-          { zone: root.zoneCodex, from: graph.claudeZoneWidth, span: graph.codexZoneWidth, on: true },
-          { zone: root.zoneGrok, from: graph.grokZoneStart, span: graph.grokZoneWidth, on: true },
+          { zone: root.zoneClaude, from: 0, span: graph.claudeZoneWidth, on: root.showClaude },
+          { zone: root.zoneCodex, from: graph.claudeZoneWidth, span: graph.codexZoneWidth, on: root.showCodex },
+          { zone: root.zoneGrok, from: graph.grokZoneStart, span: graph.grokZoneWidth, on: root.showGrok },
           { zone: root.zoneLocal, from: graph.localZoneStart, span: graph.localZoneWidth, on: root.showLocal }
         ]
         delegate: Item {
@@ -860,8 +912,8 @@ BarWidget {
       // Claude weekly fuel gauge — far left, outermost.
       QuotaGauge {
         id: claudeGauge
-        visible: root.showGauges
-        width: graph.gaugeWidth
+        visible: root.showGauges && root.showClaude
+        width: visible ? graph.gaugeWidth : 0
         height: parent.height
         anchors.left: parent.left
         anchors.verticalCenter: parent.verticalCenter
@@ -871,10 +923,11 @@ BarWidget {
 
       ThermalLane {
         id: claudeLane
-        width: graph.sideWidth
+        visible: root.showClaude
+        width: graph.claudeLaneWidth
         height: parent.height
-        anchors.left: root.showGauges ? claudeGauge.right : parent.left
-        anchors.leftMargin: graph.gaugeGap
+        anchors.left: claudeGauge.right
+        anchors.leftMargin: claudeGauge.visible ? graph.gaugeGap : 0
         anchors.verticalCenter: parent.verticalCenter
         count: root.cellCount
         cold: root.claudeCold; warm: root.claudeWarm; hot: root.claudeHot
@@ -887,7 +940,8 @@ BarWidget {
       // ── the now line ────────────────────────────────────────────────────────
       Item {
         id: divider
-        width: graph.dividerWidth
+        visible: graph.showDivider
+        width: graph.showDivider ? graph.dividerWidth : 0
         height: parent.height
         anchors.left: claudeLane.right
         anchors.verticalCenter: parent.verticalCenter
@@ -944,13 +998,14 @@ BarWidget {
 
       ThermalLane {
         id: codexLane
-        width: graph.sideWidth
+        visible: root.showCodex
+        width: graph.codexLaneWidth
         height: parent.height
         anchors.left: divider.right
         anchors.verticalCenter: parent.verticalCenter
         count: root.cellCount
         cold: root.codexCold; warm: root.codexWarm; hot: root.codexHot
-        newestLast: false
+        newestLast: root.cloudAgents === 1
         flash: root.codexFlash
         phaseSign: -1
         levelAt: function(i) { return root.codexLevel(i) }
@@ -987,11 +1042,11 @@ BarWidget {
       // Codex weekly fuel gauge — the right bookend of the mirrored pair.
       QuotaGauge {
         id: codexGauge
-        visible: root.showGauges
-        width: graph.gaugeWidth
+        visible: root.showGauges && root.showCodex
+        width: visible ? graph.gaugeWidth : 0
         height: parent.height
         anchors.left: codexLane.right
-        anchors.leftMargin: graph.gaugeGap
+        anchors.leftMargin: visible ? graph.gaugeGap : 0
         anchors.verticalCenter: parent.verticalCenter
         percent: root.svc ? Math.min(1, root.svc.codexWeekly) : -1
         accent: root.codexHot
@@ -1000,9 +1055,10 @@ BarWidget {
       // Soft sep before Grok so the mirrored Claude/Codex instrument stays whole.
       Item {
         id: grokSep
-        width: graph.grokSep
+        visible: root.grokExtra
+        width: root.grokExtra ? graph.grokSep : 0
         height: parent.height
-        anchors.left: root.showGauges ? codexGauge.right : codexLane.right
+        anchors.left: codexGauge.right
         anchors.verticalCenter: parent.verticalCenter
         Rectangle {
           anchors.centerIn: parent
@@ -1016,6 +1072,7 @@ BarWidget {
 
       ThermalLane {
         id: grokLane
+        visible: root.showGrok
         width: graph.grokLaneWidth
         height: parent.height
         anchors.left: grokSep.right
@@ -1043,11 +1100,11 @@ BarWidget {
 
       QuotaGauge {
         id: grokGauge
-        visible: root.showGauges
-        width: graph.gaugeWidth
+        visible: root.showGauges && root.showGrok
+        width: visible ? graph.gaugeWidth : 0
         height: parent.height
         anchors.left: grokLane.right
-        anchors.leftMargin: graph.gaugeGap
+        anchors.leftMargin: visible ? graph.gaugeGap : 0
         anchors.verticalCenter: parent.verticalCenter
         percent: root.svc ? Math.min(1, root.svc.grokWeekly) : -1
         accent: root.grokHot

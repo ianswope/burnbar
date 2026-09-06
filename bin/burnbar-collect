@@ -111,8 +111,11 @@ def str_arg(flag, fallback, limit=64):
 WINDOW_MIN = int_arg("--window", 360, 30, 1440)
 BUCKETS = int_arg("--buckets", 12, 6, 32)
 BUCKET_MS = round(WINDOW_MIN * 60_000 / BUCKETS)
-METER_HOST = str_arg("--meter-host", os.environ.get("BURNBAR_LOCAL_HOST") or "nano", 128)
+METER_HOST = str_arg("--meter-host", os.environ.get("BURNBAR_LOCAL_HOST") or "localhost", 128)
 METER_UNIT = str_arg("--meter-unit", os.environ.get("BURNBAR_METER_UNIT") or "ollama-meter")
+# Service passes --no-local when no compute GPU was found, so a GPU-less
+# laptop never ssh's to a host named nano that does not exist.
+NO_LOCAL = "--no-local" in sys.argv or os.environ.get("BURNBAR_NO_LOCAL") == "1"
 
 # Tests pin the clock so two runs can be compared byte for byte across a bucket
 # boundary; nothing else sets it.
@@ -677,6 +680,25 @@ def with_grok_limits(agent_payload):
     return agent_payload
 
 
+def agent_present(root, match):
+    """True when this machine has actually used the agent: a transcript file
+    exists. A binary on PATH with no sessions is not 'in use' — that would
+    light Claude on every Omarchy box."""
+    try:
+        return next(walk(root, match)) is not None
+    except StopIteration:
+        return False
+
+
+# Present means 'this machine uses this agent', not 'tokens in the window'.
+# A quiet hour must not hide a lane that was installed yesterday.
+claude_present = agent_present(CLAUDE_ROOT, lambda n: n.endswith(".jsonl"))
+codex_present = agent_present(CODEX_ROOT, lambda n: n.startswith("rollout-") and n.endswith(".jsonl"))
+grok_present = agent_present(GROK_ROOT, lambda n: n == "updates.jsonl")
+if not grok_present and GROK_LOG.is_file():
+    grok_present = True
+
+
 # ── local (Ollama) tokens, from the ollama-meter journal on the Ollama box ───
 # One line per request, written by nano/ollama-meter.py (journalctl -o short-unix):
 #   1788649667.804220 nano python3[9143]: meter ts=1788649667803 path=/api/generate \
@@ -776,27 +798,32 @@ jhit = valid_journal_entry(cache.get(JOURNAL_KEY))
 cursor = jhit["cursor"] if jhit else ""
 state = dict(jhit["state"]) if jhit else {}
 kept = list(jhit["points"]) if jhit else []
-lines, new_cursor, err = journal_lines(cursor)
-# A cursor the journal can no longer seek to (a vacuumed file, or one it
-# simply refuses) fails the read. Re-read the window from scratch: that
-# returns the complete set for the window and replaces what was kept.
-if err and cursor:
-    cursor, state, kept = "", {}, []
-    lines, new_cursor, err = journal_lines("")
-if err:
+if NO_LOCAL:
+    lines, new_cursor, err = [], "", "no discrete GPU"
     local_available = False
-    local_reason = err
+    local_reason = "no discrete GPU"
+else:
+    lines, new_cursor, err = journal_lines(cursor)
+    # A cursor the journal can no longer seek to (a vacuumed file, or one it
+    # simply refuses) fails the read. Re-read the window from scratch: that
+    # returns the complete set for the window and replaces what was kept.
+    if err and cursor:
+        cursor, state, kept = "", {}, []
+        lines, new_cursor, err = journal_lines("")
+    if err:
+        local_available = False
+        local_reason = err
+    elif not cursor and not lines and os.environ.get("BURNBAR_METER_JOURNAL") is None:
+        # A cold read that found nothing: is the meter even installed, or just quiet?
+        try:
+            probe = subprocess.run(ssh_command(["systemctl", "show", "-p", "LoadState", "--value", METER_UNIT]),
+                                   capture_output=True, text=True, timeout=10)
+            if probe.returncode == 0 and probe.stdout.strip() == "not-found":
+                local_available = False
+                local_reason = "%s has no %s unit — run nano/install.sh" % (METER_HOST, METER_UNIT)
+        except (OSError, subprocess.SubprocessError):
+            pass
 local_points = prune(kept + parse_journal(lines, state)) if not err else prune(kept)
-if not err and not cursor and not local_points and os.environ.get("BURNBAR_METER_JOURNAL") is None:
-    # A cold read that found nothing: is the meter even installed, or just quiet?
-    try:
-        probe = subprocess.run(ssh_command(["systemctl", "show", "-p", "LoadState", "--value", METER_UNIT]),
-                               capture_output=True, text=True, timeout=10)
-        if probe.returncode == 0 and probe.stdout.strip() == "not-found":
-            local_available = False
-            local_reason = "%s has no %s unit — run nano/install.sh" % (METER_HOST, METER_UNIT)
-    except (OSError, subprocess.SubprocessError):
-        pass
 for pt in local_points:
     try:
         local.add(pt)
@@ -902,6 +929,12 @@ payload = {
     "local": dict(local.payload(), available=local_available, reason=local_reason,
                   host=METER_HOST, unit=METER_UNIT),
     "offloadShare": (local.total / all_burn) if all_burn > 0 else 0,
+    # Which agents this machine actually uses. The strip hides the rest.
+    "presence": {
+        "claude": claude_present,
+        "codex": codex_present,
+        "grok": grok_present,
+    },
 }
 
 

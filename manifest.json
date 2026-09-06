@@ -2,10 +2,10 @@
   "schemaVersion": 1,
   "id": "nixfred.burnbar",
   "name": "Burn Bar",
-  "version": "1.7.0",
+  "version": "1.8.0",
   "author": "nixfred",
   "license": "MIT",
-  "description": "Live thermal heat map of Claude, Codex, Grok and the Ollama on your Jetson in one bar slot, with weekly quota gauges, remote model control, and the share of tokens kept off frontier models.",
+  "description": "Live thermal heat map of the AIs this machine actually uses — Claude, Codex, Grok, and local Ollama when a GPU is present — with weekly quota gauges and the share of tokens kept off frontier models.",
   "kinds": [
     "service",
     "bar-widget"
@@ -16,7 +16,7 @@
   },
   "barWidget": {
     "displayName": "Burn Bar",
-    "description": "Token spend as a heat map \u2014 Claude burns left, Codex right, Grok after Codex, newest at the centre for the mirrored pair, and a live lane for the Ollama box on the far right.",
+    "description": "Token spend as a heat map \u2014 lanes appear for the AIs this machine uses. Claude burns left, Codex right, Grok after Codex, and a live GPU lane only when a discrete GPU is detected.",
     "category": "AI",
     "aliases": [
       "tokens",
@@ -47,8 +47,8 @@
       "localCells": 9,
       "localRefreshMs": 2500,
       "localThreshold": 8,
-      "ollamaUrl": "http://nano:11434",
-      "localHost": "nano",
+      "ollamaUrl": "http://127.0.0.1:11434",
+      "localHost": "localhost",
       "meterUnit": "ollama-meter",
       "emberFlicker": true,
       "sparks": true
@@ -131,14 +131,14 @@
       {
         "key": "showLocal",
         "type": "boolean",
-        "label": "Show the nano lane",
-        "description": "Live load of the Ollama box (nano by default) on the right of the strip.",
+        "label": "Show the local GPU lane",
+        "description": "Allow the local intelligence lane. It still stays hidden until a discrete GPU (NVIDIA, AMD, or Jetson) is detected on this machine or the configured Ollama box. Intel integrated graphics does not count.",
         "defaultValue": true
       },
       {
         "key": "localCells",
         "type": "integer",
-        "label": "Nano lane cells",
+        "label": "Local lane cells",
         "min": 4,
         "max": 20,
         "defaultValue": 9
@@ -146,8 +146,8 @@
       {
         "key": "localRefreshMs",
         "type": "integer",
-        "label": "Nano poll interval (ms)",
-        "description": "Each poll is one HTTP call and one ssh round trip to the Ollama box.",
+        "label": "Local poll interval (ms)",
+        "description": "Each poll is one HTTP call, plus ssh when the Ollama box is another machine. Ignored when no GPU is detected.",
         "min": 1000,
         "max": 10000,
         "defaultValue": 2500
@@ -155,7 +155,7 @@
       {
         "key": "localThreshold",
         "type": "integer",
-        "label": "Nano inference threshold (%)",
+        "label": "Local inference threshold (%)",
         "description": "Load above this counts as actively inferencing.",
         "min": 1,
         "max": 50,
@@ -165,15 +165,15 @@
         "key": "ollamaUrl",
         "type": "string",
         "label": "Ollama URL",
-        "description": "Where Ollama answers. Through ollama-meter when it is installed there, so every request is counted.",
-        "defaultValue": "http://nano:11434"
+        "description": "Where Ollama answers. Defaults to this machine. Set to http://nano:11434 (and localHost to nano) for a Jetson on the tailnet. Unused when no GPU is detected.",
+        "defaultValue": "http://127.0.0.1:11434"
       },
       {
         "key": "localHost",
         "type": "string",
         "label": "Ollama box (ssh host)",
-        "description": "An alias from your ssh config; also what the strip and cockpit call the lane. Hardware telemetry, the token journal and the pre-load cache drop go over it; it must log in without a prompt.",
-        "defaultValue": "nano"
+        "description": "localhost for a GPU on this machine, or an ssh alias of another box (nano, a Jetson). Hardware telemetry and the token journal go over ssh only when the host is not this machine. Unused when no GPU is detected.",
+        "defaultValue": "localhost"
       },
       {
         "key": "meterUnit",

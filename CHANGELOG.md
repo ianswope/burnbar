@@ -1,5 +1,28 @@
 # Changelog
 
+## 1.8.0 — 2026-09-06
+
+### Added
+- **Agent detection.** The strip and cockpit only show Claude, Codex and Grok
+  when this machine has actually used them (transcripts on disk). A Grok-only
+  box lights Grok. A quiet hour does not hide a lane that was used yesterday.
+- **Compute-GPU detection.** NVIDIA, AMD and Jetson count. Intel integrated
+  graphics does not. No GPU → no local lane, no local column in the cockpit,
+  no ssh to a host named nano, no 2.5s poll. Discovery retries every 5 minutes
+  so a GPU that appears later can still light the lane.
+- Local NVIDIA telemetry via `nvidia-smi` when the Ollama box is this machine.
+
+### Changed
+- Default `ollamaUrl` is `http://127.0.0.1:11434` and `localHost` is
+  `localhost`. Point them at `nano` if the Ollama box is a Jetson on the
+  tailnet. Existing configs that already set those keys are unchanged.
+- Plan-limit refresh only asks Omarchy for the cloud agents that are present.
+- **Stretch shares the hole with Now Playing.** Beatdeck sizes itself as
+  (gap minus our implicitWidth). Burn Bar now reports a fair half of that
+  gap, measured from Beatdeck's left edge, so the two converge instead of
+  one eating the other or painting through the temperature. The strip
+  clips to its slot.
+
 ## 1.7.0 — 2026-09-06
 
 ### Added

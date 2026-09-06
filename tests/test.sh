@@ -79,11 +79,18 @@ python3 -m unittest discover -s tests -p 'test_local_scripts.py' -q >/dev/null \
   || fail "local script unit tests"
 ok "ollama url/json/ssh/tegra/meter hardening tests"
 
+# GPU discovery is a JSON object with a boolean hasGpu. Intel iGPU must not
+# count; the unit tests cover that. This just proves the flag exists.
+discover=$(python3 bin/burnbar-local-status --discover --host localhost)
+echo "$discover" | jq -e 'has("hasGpu") and ((.hasGpu == true) or (.hasGpu == false))' >/dev/null \
+  || fail "GPU discover did not report hasGpu: $discover"
+ok "GPU discover reports hasGpu"
+
 # The local probe must degrade to a clean offline JSON object rather than
 # crashing when nothing is listening — that path is what draws the red core.
-# It must also never reach for ssh on that path: --host is a name that no
-# ssh config resolves, and the probe still returns at once.
-offline=$(python3 bin/burnbar-local-status --threshold 8 --url http://127.0.0.1:1 --host burnbar-no-such-host)
+# A GPU-less localhost never ssh's; a GPU box whose Ollama is down still
+# returns online=false.
+offline=$(python3 bin/burnbar-local-status --threshold 8 --url http://127.0.0.1:1 --host localhost)
 echo "$offline" | jq -e '.online == false and .load == 0' >/dev/null \
   || fail "offline probe did not report a clean offline object"
 ok "local probe degrades to offline JSON"
@@ -149,6 +156,10 @@ gt=$(jq -r '.grok.total' "$out")
 jq -e '.grok.limits[0].percent == 0.42 and (.buckets | map(has("grok")) | all)' "$out" >/dev/null \
   || fail "grok limits/buckets missing"
 ok "grok totalTokens delta + billing limits"
+
+jq -e '.presence.claude == true and .presence.codex == true and .presence.grok == true' "$out" >/dev/null \
+  || fail "presence flags missing or false with transcripts on disk: $(jq -c '.presence' "$out")"
+ok "presence detects Claude, Codex and Grok from transcripts"
 
 # Second run must be byte-identical: the incremental cache must not double-count
 # points it replays from a file whose mtime is unchanged.
@@ -351,7 +362,7 @@ BURNBAR_METER_JOURNAL="$j" HOME="$fake_home" GROK_HOME="$fake_home/.grok" python
 jq -e '.local.available == true and .local.total == 124 and .local.turns == 3
   and .local.split.input == 68 and .local.split.output == 56 and .local.split.cacheRead == 0 and .local.split.cacheWrite == 0
   and .local.byModel["llama3.2:3b"] == 120 and .local.byModel["nomic-embed-text"] == 4
-  and .local.host == "nano" and .local.unit == "ollama-meter"' "$out" >/dev/null \
+  and .local.host == "localhost" and .local.unit == "ollama-meter"' "$out" >/dev/null \
   || fail "meter journal parse wrong: $(jq -c '.local | {available, total, turns, split, byModel}' "$out")"
 ct=$(jq -r '.claude.total' "$out"); xt=$(jq -r '.codex.total' "$out"); gt=$(jq -r '.grok.total' "$out")
 want=$(python3 -c "print(round(124 / (124 + $ct + $xt + $gt), 6))")
@@ -367,6 +378,29 @@ BURNBAR_METER_JOURNAL="$tmp/does-not-exist.txt" HOME="$fake_home" GROK_HOME="$fa
 jq -e '.local.available == false and (.local.reason | length) > 0' "$out" >/dev/null \
   || fail "unreadable journal not reported: $(jq -c '.local | {available, reason, total}' "$out")"
 ok "an unreadable journal reads as unavailable with a reason"
+
+# --no-local must not ssh and must mark local unavailable, even when a
+# journal override is sitting there.
+BURNBAR_METER_JOURNAL="$j" HOME="$fake_home" GROK_HOME="$fake_home/.grok" \
+  python3 bin/burnbar-collect --window 360 --buckets 12 --no-local
+jq -e '.local.available == false and (.local.reason | test("GPU"))' "$out" >/dev/null \
+  || fail "--no-local still counted local tokens: $(jq -c '.local | {available, reason, total}' "$out")"
+ok "--no-local skips the meter and reports no GPU"
+
+# A machine that only has Grok must not claim Claude or Codex are present.
+grok_only="$tmp/grok-only"
+mkdir -p "$grok_only/.grok/sessions/s1" "$grok_only/.grok/logs"
+printf '%s\n' \
+  '{"timestamp":'"$BURNBAR_NOW_MS"',"method":"session/update","params":{"_meta":{"totalTokens":1000,"promptId":"p1","turnStartMs":'"$BURNBAR_NOW_MS"'}}}' \
+  '{"timestamp":'"$BURNBAR_NOW_MS"',"method":"session/update","params":{"_meta":{"totalTokens":2500,"promptId":"p1","turnStartMs":'"$BURNBAR_NOW_MS"'}}}' \
+  > "$grok_only/.grok/sessions/s1/updates.jsonl"
+rm -rf "$tmp/state/omarchy/burnbar"
+HOME="$grok_only" GROK_HOME="$grok_only/.grok" BURNBAR_METER_JOURNAL="$tmp/journal-empty.txt" \
+  python3 bin/burnbar-collect --window 360 --buckets 12 --no-local
+jq -e '.presence.claude == false and .presence.codex == false and .presence.grok == true
+  and .grok.total == 1500 and .claude.total == 0 and .codex.total == 0' "$out" >/dev/null \
+  || fail "grok-only machine was not detected: $(jq -c '{presence, claude:(.claude.total), codex:(.codex.total), grok:(.grok.total)}' "$out")"
+ok "a Grok-only machine lights only the Grok lane"
 
 echo
 echo "ALL TESTS PASSED"

@@ -87,6 +87,17 @@ Item {
   // True once a collector run has actually failed, so the widget can show
   // a fault instead of an idle animation that looks healthy.
   property bool collectorBroken: false
+  // Presence is "this machine uses this agent", not "tokens in the window".
+  // The strip hides a lane whose agent is not installed here.
+  property bool claudePresent: false
+  property bool codexPresent: false
+  property bool grokPresent: false
+  // A compute GPU (NVIDIA, AMD, Jetson) on this machine. Intel iGPU is
+  // not one. No GPU → no local lane, no ssh, no Ollama poll.
+  // Named hasComputeGpu so it cannot collide with localGpu, the load %.
+  property bool hasComputeGpu: false
+  property bool hasComputeGpuChecked: false
+  property string computeGpuReason: ""
 
   // Bumped every time a fresh sample lands with more burn than the last one.
   // The widget listens for this to fire its impact animation.
@@ -188,8 +199,8 @@ Item {
   readonly property int localRefreshMs: boundedInt("localRefreshMs", 2500, 1000, 10000)
   // Where Ollama answers, the ssh alias of the box it runs on, and the
   // ollama-meter unit there whose journal carries one line per request.
-  readonly property string ollamaUrl: String(setting("ollamaUrl", "http://nano:11434") || "http://nano:11434").slice(0, 256)
-  readonly property string localHost: String(setting("localHost", "nano") || "nano").slice(0, 128)
+  readonly property string ollamaUrl: String(setting("ollamaUrl", "http://127.0.0.1:11434") || "http://127.0.0.1:11434").slice(0, 256)
+  readonly property string localHost: String(setting("localHost", "localhost") || "localhost").slice(0, 128)
   readonly property string meterUnit: String(setting("meterUnit", "ollama-meter") || "ollama-meter").slice(0, 64)
   // Same clamp as the manifest schema: load is capped at 100, so a threshold
   // above it would mean "never inferencing".
@@ -251,11 +262,16 @@ Item {
     if (collector.running) { root.collectPending = true; return }
     root.collectPending = false
     collector.launched = false
-    collector.command = ["python3", root.collectorPath,
-      "--window", String(root.windowMinutes),
-      "--buckets", String(root.bucketCount),
-      "--meter-host", root.localHost,
-      "--meter-unit", root.meterUnit]
+    collector.command = root.hasComputeGpu
+      ? ["python3", root.collectorPath,
+        "--window", String(root.windowMinutes),
+        "--buckets", String(root.bucketCount),
+        "--meter-host", root.localHost,
+        "--meter-unit", root.meterUnit]
+      : ["python3", root.collectorPath,
+        "--window", String(root.windowMinutes),
+        "--buckets", String(root.bucketCount),
+        "--no-local"]
     collector.running = true
     watchdog.restart()
   }
@@ -418,6 +434,19 @@ Item {
       root.localTokensSplit = l && l.split && typeof l.split === "object" ? l.split : ({})
       root.localTokensByModel = l && l.byModel && typeof l.byModel === "object" ? l.byModel : ({})
       root.offloadShare = Math.max(0, Math.min(1, num(parsed.offloadShare)))
+      var presence = parsed.presence && typeof parsed.presence === "object" ? parsed.presence : null
+      if (presence) {
+        root.claudePresent = presence.claude === true
+        root.codexPresent = presence.codex === true
+        root.grokPresent = presence.grok === true
+      } else {
+        // History written before presence existed: keep the old always-on lanes.
+        root.claudePresent = true
+        root.codexPresent = true
+        root.grokPresent = true
+      }
+      if (!root.limitsEverTried && (root.claudePresent || root.codexPresent))
+        root.refreshLimits()
     } catch (e) {
       fault("History file could not be applied")
       return
@@ -465,9 +494,22 @@ Item {
   // Claude and Codex via Omarchy collectors; Grok limits are parsed from
   // ~/.grok/logs/unified.jsonl inside burnbar-collect (no stock grok probe).
   property bool limitsRefreshUnavailable: false
+  property bool limitsEverTried: false
   function refreshLimits() {
     if (limitsRefresher.running || limitsRefreshUnavailable) return
+    var agents = []
+    if (root.claudePresent) agents.push("claude")
+    if (root.codexPresent) agents.push("codex")
+    if (agents.length === 0) {
+      if (root.ready) return
+      agents.push("claude")
+      agents.push("codex")
+    }
+    root.limitsEverTried = true
     limitsRefresher.launched = false
+    limitsRefresher.command = ["bash", "-c",
+      "setsid omarchy-agent-usage-update --limits-only " + agents.join(" ") + " & p=$!; "
+      + "trap 'kill -TERM -- -$p 2>/dev/null; exit 143' TERM INT; wait $p"]
     limitsRefresher.running = true
     limitsWatchdog.restart()
   }
@@ -479,9 +521,6 @@ Item {
     // a SIGTERM to the updater alone would orphan the actual probes. setsid
     // gives the updater its own process group and the trap tears that whole
     // group down; a missing updater still surfaces as exit 127 through wait.
-    command: ["bash", "-c",
-      "setsid omarchy-agent-usage-update --limits-only claude codex & p=$!; "
-      + "trap 'kill -TERM -- -$p 2>/dev/null; exit 143' TERM INT; wait $p"]
     onStarted: launched = true
     onRunningChanged: {
       if (running || launched) return
@@ -531,12 +570,69 @@ Item {
   // ── local runner probe ─────────────────────────────────────────────────────
   // burnbar-local-status holds an ssh session open ~200ms sampling the box's
   // CPU ticks, so it must never be re-entered; the running guard is
-  // load-bearing, not defensive.
+  // load-bearing, not defensive. A GPU-less machine never starts it.
   function pollLocal() {
+    if (!root.hasComputeGpu) return
     if (localProbe.running) return
     localProbe.launched = false
     localProbe.running = true
     localWatchdog.restart()
+  }
+
+  function discoverGpu() {
+    if (gpuDiscover.running) return
+    gpuDiscover.launched = false
+    gpuDiscover.command = ["python3", root.localStatusPath, "--discover",
+      "--url", root.ollamaUrl, "--host", root.localHost]
+    gpuDiscover.running = true
+  }
+
+  function applyGpuDiscover(raw) {
+    var data
+    try {
+      data = JSON.parse(String(raw || ""))
+      if (!data || typeof data !== "object") throw new Error("not an object")
+    } catch (e) {
+      root.hasComputeGpu = false
+      root.hasComputeGpuChecked = true
+      root.computeGpuReason = "Unreadable GPU discovery"
+      return
+    }
+    root.hasComputeGpu = data.hasGpu === true
+    root.computeGpuReason = String(data.reason || (root.hasComputeGpu ? "" : "no discrete GPU")).slice(0, 240)
+    if (data.gpuName) root.localGpuName = String(data.gpuName).slice(0, 64)
+    if (data.backend) root.localBackend = String(data.backend).slice(0, 32)
+    root.hasComputeGpuChecked = true
+    if (!root.hasComputeGpu) {
+      root.clearLocalTelemetry(root.computeGpuReason)
+      root.localReady = true
+    } else {
+      root.pollLocal()
+      root.collect()
+    }
+  }
+
+  Process {
+    id: gpuDiscover
+    property bool launched: false
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.applyGpuDiscover(text)
+    }
+    onStarted: launched = true
+    onRunningChanged: {
+      if (running || launched) return
+      root.hasComputeGpu = false
+      root.hasComputeGpuChecked = true
+      root.computeGpuReason = "python3 not found"
+    }
+    onExited: function(code) {
+      if (code !== 0 && !root.hasComputeGpuChecked) {
+        root.hasComputeGpu = false
+        root.hasComputeGpuChecked = true
+        root.computeGpuReason = "GPU discovery exited " + code
+      }
+    }
   }
 
   // A failed sample invalidates every current reading. Leaving yesterday's
@@ -609,6 +705,13 @@ Item {
     root.localGpuRailW = Math.max(0, Number(data.gpuRailW || 0))
     root.localTelemetryError = String(data.telemetryError || "").slice(0, 240)
     root.localHostName = String(data.host || "").slice(0, 128)
+    if (data.hasGpu === false) {
+      root.hasComputeGpu = false
+      root.computeGpuReason = String(data.error || data.reason || "no discrete GPU").slice(0, 240)
+    } else if (data.hasGpu === true) {
+      root.hasComputeGpu = true
+    }
+    root.hasComputeGpuChecked = true
     root.localReady = true
     root.localSampledAt = Date.now()
     root.pushLocalSample(root.localOnline ? root.localLoad : 0)
@@ -673,9 +776,19 @@ Item {
 
   Timer {
     interval: root.localRefreshMs
-    running: true
+    running: root.hasComputeGpu
     repeat: true
     triggeredOnStart: true
     onTriggered: root.pollLocal()
+  }
+
+  // Retry discovery slowly so plugging in a GPU can light the lane
+  // without a 2.5s poll on a box that has none.
+  Timer {
+    interval: 300000
+    running: true
+    repeat: true
+    triggeredOnStart: true
+    onTriggered: root.discoverGpu()
   }
 }

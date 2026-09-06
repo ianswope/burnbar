@@ -252,6 +252,62 @@ class ScriptTests(unittest.TestCase):
         self.assertEqual(self.meter.safe_token("bad model\nname"), "bad_model_name")
         self.assertEqual(self.meter.safe_token(""), "-")
 
+    # ── compute-GPU detection ─────────────────────────────────────────────
+    def test_intel_igpu_is_not_a_compute_gpu(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            intel = root / "0000:00:02.0"
+            intel.mkdir()
+            (intel / "class").write_text("0x030000\n")
+            (intel / "vendor").write_text("0x8086\n")
+            self.assertEqual(self.status.pci_compute_gpus(root), [])
+
+    def test_nvidia_display_adapter_counts_as_a_compute_gpu(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            nvidia = root / "0000:01:00.0"
+            nvidia.mkdir()
+            (nvidia / "class").write_text("0x030000\n")
+            (nvidia / "vendor").write_text("0x10de\n")
+            found = self.status.pci_compute_gpus(root)
+            self.assertEqual(len(found), 1)
+            self.assertEqual(found[0]["vendor"], "NVIDIA")
+
+    def test_amd_3d_controller_counts_as_a_compute_gpu(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            amd = root / "0000:03:00.0"
+            amd.mkdir()
+            (amd / "class").write_text("0x030200\n")
+            (amd / "vendor").write_text("0x1002\n")
+            found = self.status.pci_compute_gpus(root)
+            self.assertEqual(found[0]["vendor"], "AMD")
+
+    def test_localhost_is_this_machine(self):
+        self.assertTrue(self.status.is_local_host("localhost"))
+        self.assertTrue(self.status.is_local_host("127.0.0.1"))
+        self.assertFalse(self.status.is_local_host("nano"))
+        self.assertFalse(self.status.is_local_host("burnbar-no-such-host"))
+
+    def test_nvidia_smi_na_fields_become_zero(self):
+        completed = mock.Mock(
+            returncode=0,
+            stdout="NVIDIA GeForce RTX 4090, 12, 1024, 24576, 45, 120.50, 450.00, 2100, 2520, [N/A]\n",
+            stderr="",
+        )
+        with mock.patch.object(self.status.shutil, "which", return_value="/usr/bin/nvidia-smi"), \
+             mock.patch.object(self.status.subprocess, "run", return_value=completed), \
+             mock.patch.object(self.status, "local_ollama_cpu", return_value=4.0):
+            fields, error = self.status.nvidia_telemetry()
+        self.assertEqual(error, "")
+        self.assertEqual(fields["gpuName"], "NVIDIA GeForce RTX 4090")
+        self.assertEqual(fields["gpu"], 12.0)
+        self.assertEqual(fields["fanPct"], 0)
+        self.assertEqual(fields["cpu"], 4.0)
+
 
 if __name__ == "__main__":
     unittest.main()

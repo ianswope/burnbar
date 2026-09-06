@@ -1,9 +1,10 @@
 # Burn Bar
 
-An Omarchy bar widget that renders every model you run — Claude, Codex, Grok and
-the Ollama on your Jetson — as one live thermal instrument in a single bar
-slot, with a click-to-open cockpit that shows what, how much, how fast, how
-close to the plan limit, and what the GPU is doing about it.
+An Omarchy bar widget that renders every model **this machine actually uses** —
+Claude, Codex, Grok, and local Ollama when a compute GPU is present — as one
+live thermal instrument in a single bar slot, with a click-to-open cockpit
+that shows what, how much, how fast, how close to the plan limit, and what
+the GPU is doing about it.
 
 ![Burn Bar cockpit: cloud spend on the left, the Ollama box on the right](docs/cockpit.png)
 
@@ -25,12 +26,17 @@ omarchy plugin update nixfred.burnbar     # pull the latest
 omarchy plugin remove nixfred.burnbar     # take it out again
 ```
 
-Requirements: a stock Omarchy install. `python3` is already there. For the
-local lane: an Ollama box you can reach — by default `nano`, a Jetson Orin
-Nano on the tailnet — with `ssh nano` logging in without a prompt, and
-`./nano/install.sh` run once to put the token meter there (see below). Without
-it the lane reads OFFLINE. No Codex? That lane simply stays cold. Horizontal bars only: the strip lays its three lanes across the
-bar's length and does not rotate for a left or right bar.
+Requirements: a stock Omarchy install. `python3` is already there. Burn Bar
+detects which AIs you use from their transcripts (`~/.claude/projects`,
+`~/.codex/sessions`, `~/.grok/sessions`) and only draws those lanes. No
+Codex? That lane is omitted, not left cold. The local GPU lane appears only
+when a **compute GPU** is detected — NVIDIA, AMD, or a Jetson. Intel
+integrated graphics does not count. Default Ollama is this machine
+(`http://127.0.0.1:11434`). For a Jetson on the tailnet set `localHost` to
+`nano` and `ollamaUrl` to `http://nano:11434`, with `ssh nano` logging in
+without a prompt and `./nano/install.sh` run once for the token meter.
+Horizontal bars only: the strip lays its lanes across the bar's length and
+does not rotate for a left or right bar.
 
 Read [SECURITY.md](SECURITY.md) before installing. Burn Bar opens your Claude
 and Codex transcripts to count tokens. It keeps numbers, model names and
@@ -286,10 +292,11 @@ A wedged run is killed by a 30-second watchdog. It never fails silently.
 Burn Bar reads your Claude and Codex transcripts to count tokens. From them it
 keeps timestamps, token counts, model names and Claude's opaque message ids,
 plus the transcript paths it uses as cache keys — never prompt or reply text.
-Its own network traffic is to the Ollama box: HTTP to `ollamaUrl` (default
-`http://nano:11434`) to read and control models, and ssh to `localHost`
-(default `nano`) to read sysfs, the meter's journal and, on a load, to drop
-the page cache. The meter on that box logs one line per request — path,
+Its own network traffic is to the Ollama box, and only when a compute GPU
+was detected: HTTP to `ollamaUrl` (default `http://127.0.0.1:11434`) to read
+and control models, and ssh to `localHost` when that host is not this
+machine, to read sysfs, the meter's journal and, on a load, to drop the
+page cache. The meter on that box logs one line per request — path,
 model, status, two token counts, latency and the client address — and never
 the prompt or the reply.
 
@@ -315,12 +322,12 @@ Set from the Omarchy plugin settings UI, or in `shell.json`.
 | `refreshIntervalSec` | 5 | Collector cadence |
 | `limitsRefreshSec` | 300 | How often Omarchy's usage collectors are asked for fresh plan limits (60–3600) |
 | `showGauges` | true | Weekly quota columns bookending the cloud lanes |
-| `showLocal` | true | Show the local intelligence lane |
+| `showLocal` | true | Allow the local intelligence lane. It still stays hidden until a compute GPU is detected |
 | `localCells` | 9 | Cells in the local lane (= length of the sample ring) |
-| `localRefreshMs` | 2500 | Poll interval for the Ollama box: one HTTP call and one ssh round trip each (1000–10000) |
+| `localRefreshMs` | 2500 | Poll interval for the Ollama box (1000–10000). Ignored when no GPU is detected |
 | `localThreshold` | 8 | Load above this counts as actively inferencing |
-| `ollamaUrl` | `http://nano:11434` | Where Ollama answers — through the meter when it is installed |
-| `localHost` | `nano` | ssh alias of the Ollama box, from your ssh config; must log in without a prompt |
+| `ollamaUrl` | `http://127.0.0.1:11434` | Where Ollama answers. Set to `http://nano:11434` for a Jetson |
+| `localHost` | `localhost` | `localhost` for a GPU on this machine, or an ssh alias of another box |
 | `meterUnit` | `ollama-meter` | The unit on that box whose journal carries one line per request |
 | `emberFlicker` | true | Live flicker on hot cells |
 | `sparks` | true | Rising embers while anything is burning |
@@ -360,7 +367,7 @@ skipped, the offload share.
 
 ## Changes
 
-See [CHANGELOG.md](CHANGELOG.md). Current version: 1.5.0.
+See [CHANGELOG.md](CHANGELOG.md). Current version: 1.8.0.
 
 ## Credits
 

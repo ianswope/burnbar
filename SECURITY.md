@@ -18,9 +18,11 @@ files you worked on. There is no way to count per-turn tokens without reading
 them, because the token counts are interleaved with the conversation. If you
 are not comfortable with a bar widget opening those files, do not install this.
 
-**Burn Bar also logs in to another machine.** The local lane describes the
-box that runs Ollama — by default `nano`, over the ssh alias of that name in
-your ssh config — and it gets there by running `ssh` as you, non-interactively
+**Burn Bar also logs in to another machine — but only when a compute GPU
+exists and `localHost` is not this machine.** Intel integrated graphics does
+not count. On a GPU-less laptop there is no ssh, no Ollama poll, and no
+local lane. When the Ollama box is another host (a Jetson named `nano`, for
+example) it gets there by running `ssh` as you, non-interactively
 (`BatchMode=yes`), every poll. On that box it reads sysfs and `/proc`, reads
 the `ollama-meter` journal, and, when you press **Load & keep warm**, runs
 `sudo -n /usr/local/bin/ollama-prepare.sh` to drop the page cache. If your
@@ -64,9 +66,10 @@ own. Three things do generate network traffic, and you should know all three:
    Burn Bar never reads, holds or sends either credential. If you do not want
    this traffic, do not install Burn Bar — there is no setting that disables
    it, because without it the plan limits it shows would be hours stale.
-2. **The Ollama box** — HTTP to `ollamaUrl` (default `http://nano:11434`)
-   and ssh to `localHost` (default `nano`). Both go wherever your settings
-   and your ssh config point; by default that is a Jetson on your tailnet.
+2. **The Ollama box** — only when a compute GPU was detected. HTTP to
+   `ollamaUrl` (default `http://127.0.0.1:11434`) and, if `localHost` is
+   another machine, ssh to that host. Both go wherever your settings and
+   your ssh config point.
    The calls are:
 
    | Script | Channel | Purpose |

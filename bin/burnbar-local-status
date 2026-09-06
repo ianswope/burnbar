@@ -1,32 +1,34 @@
 #!/usr/bin/env python3
-"""Report the remote Ollama box — residency over HTTP, hardware over ssh — as
-one JSON object.
+"""Report the Ollama box — residency over HTTP, hardware locally or over ssh.
 
-Two channels, because the runner is on another machine:
+A compute GPU is NVIDIA, AMD, or a Jetson. Intel integrated graphics does
+not count: that is a display adapter, not a place models run. --discover
+answers that question without talking to Ollama, so the widget can hide
+the local lane on a GPU-less machine instead of polling a dead nano.
 
-  HTTP   /api/ps and /api/version at --url. What is resident, how much
-         memory it holds, when it evicts, which Ollama this is.
-  ssh    one shell snippet on --host that reads the Jetson's sysfs: GPU load
-         and clock from the nvgpu devfreq node, temperatures from the thermal
-         zones, power from the INA3221 rails, fan PWM, unified memory from
-         /proc/meminfo, and the ollama processes' CPU ticks sampled 200 ms
-         apart. nvidia-smi exists on a Jetson and answers [N/A] to every
-         query; tegrastats needs a second per sample. sysfs is instant and
-         needs no privilege.
+When the configured host is this machine, telemetry is local (nvidia-smi
+or Jetson sysfs). When it is another box, one ssh snippet reads the
+Jetson's sysfs: GPU load and clock from the nvgpu devfreq node,
+temperatures, INA3221 rails, fan PWM, unified memory, and the ollama
+processes' CPU ticks sampled 200 ms apart. nvidia-smi on a Jetson
+answers [N/A] to every query; sysfs is instant and needs no privilege.
 
-Either channel can fail on its own. No HTTP means OFFLINE. No ssh means the
-model list is still right but every hardware figure is withheld, with the
-reason in telemetryError — not zeros that look like an idle board.
+Either HTTP or hardware can fail on its own. No HTTP means OFFLINE. No
+hardware figures are withheld with the reason in telemetryError — not
+zeros that look like an idle board.
 """
 
 import argparse
 import json
 import math
 import os
+import shutil
+import socket
 import subprocess
 import urllib.error
 import urllib.parse
 import urllib.request
+from pathlib import Path
 
 
 MAX_HTTP_RESPONSE_BYTES = 1024 * 1024
@@ -35,6 +37,13 @@ MAX_TEXT_LENGTH = 256
 MAX_ERROR_LENGTH = 512
 HTTP_TIMEOUT = 2.0
 SSH_TIMEOUT = 8
+
+# PCI display/3D controllers that can actually run models. Intel (0x8086)
+# is the laptop iGPU; counting it made every Ultrabook look like a GPU box.
+COMPUTE_GPU_VENDORS = {
+    "0x10de": "NVIDIA",
+    "0x1002": "AMD",
+}
 
 # Runs on the Ollama box. Prints "key value…" lines; every read is a sysfs
 # or /proc file, so a missing one costs a blank line, never a hang. The
@@ -91,6 +100,144 @@ def ssh_host(value: str) -> str:
     if not text or len(text) > 128 or not text.isprintable() or any(c.isspace() for c in text) or text.startswith("-"):
         raise ValueError("ssh host must be one printable word not starting with '-'")
     return text
+
+
+def _read_text(path) -> str:
+    try:
+        return Path(path).read_text(errors="replace").strip()
+    except OSError:
+        return ""
+
+
+def is_local_host(host: str) -> bool:
+    """True when --host is this machine, so telemetry must not go over ssh."""
+    name = str(host or "").strip().split("@")[-1].rstrip(".").lower()
+    if not name or name in ("localhost", "127.0.0.1", "::1"):
+        return True
+    mine = {socket.gethostname().lower(), socket.getfqdn().lower()}
+    try:
+        mine.add(socket.gethostname().split(".")[0].lower())
+    except (OSError, IndexError, AttributeError):
+        pass
+    return name in mine
+
+
+def pci_compute_gpus(sys_pci=None) -> list:
+    """Display/3D adapters whose vendor is NVIDIA or AMD. Intel iGPUs skip."""
+    root = Path(sys_pci) if sys_pci else Path("/sys/bus/pci/devices")
+    found = []
+    if not root.is_dir():
+        return found
+    try:
+        devices = list(root.iterdir())
+    except OSError:
+        return found
+    for dev in devices:
+        cls = _read_text(dev / "class").lower()
+        if not cls.startswith("0x03"):
+            continue
+        vendor = _read_text(dev / "vendor").lower()
+        kind = COMPUTE_GPU_VENDORS.get(vendor)
+        if not kind:
+            continue
+        found.append({"vendor": kind, "class": cls, "id": dev.name})
+    return found
+
+
+def nvidia_smi_gpus() -> list:
+    """Names from `nvidia-smi -L`, or empty when the tool is missing/useless."""
+    if not shutil.which("nvidia-smi"):
+        return []
+    try:
+        run = subprocess.run(["nvidia-smi", "-L"], capture_output=True, text=True, timeout=4)
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if run.returncode != 0:
+        return []
+    names = []
+    for line in run.stdout.splitlines():
+        line = line.strip()
+        if not line.lower().startswith("gpu "):
+            continue
+        # GPU 0: NVIDIA GeForce RTX 4090 (UUID: ...)
+        name = line.split(":", 1)[-1]
+        name = name.split("(UUID", 1)[0].strip()
+        if name and "[N/A]" not in name:
+            names.append(bounded_text(name, 64))
+    return names
+
+
+def this_machine_gpu() -> dict:
+    """A compute GPU on *this* box. Intel iGPU is not one."""
+    if Path("/etc/nv_tegra_release").exists():
+        name = _read_text("/proc/device-tree/model").replace("\x00", "")
+        for noise in ("NVIDIA ", " Engineering Reference Developer Kit"):
+            name = name.replace(noise, "")
+        return {"hasGpu": True, "gpuName": bounded_text(name or "Jetson", 64),
+                "backend": "tegra", "where": "local", "reason": ""}
+    names = nvidia_smi_gpus()
+    if names:
+        return {"hasGpu": True, "gpuName": names[0], "backend": "nvidia",
+                "where": "local", "reason": ""}
+    pci = pci_compute_gpus()
+    if pci:
+        kind = pci[0]["vendor"]
+        return {"hasGpu": True, "gpuName": kind, "backend": kind.lower(),
+                "where": "local", "reason": ""}
+    return {"hasGpu": False, "gpuName": "", "backend": "none",
+            "where": "none", "reason": "no discrete GPU"}
+
+
+def probe_remote_gpu(host: str) -> dict:
+    """One cheap ssh: is there a Jetson or nvidia-smi on that box?"""
+    try:
+        dest = ssh_host(host)
+    except ValueError as error:
+        return {"hasGpu": False, "gpuName": "", "backend": "none",
+                "where": "none", "reason": bounded_text(error, MAX_ERROR_LENGTH)}
+    snippet = (
+        "if [ -f /etc/nv_tegra_release ]; then echo tegra; "
+        "tr -d '\\0' < /proc/device-tree/model 2>/dev/null; "
+        "elif command -v nvidia-smi >/dev/null 2>&1; then echo nvidia; "
+        "nvidia-smi -L 2>/dev/null | head -1; "
+        "else echo none; fi"
+    )
+    command = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=3",
+               "-o", "LogLevel=ERROR", "--", dest, "sh", "-c", snippet]
+    try:
+        run = subprocess.run(command, capture_output=True, text=True, timeout=8)
+    except FileNotFoundError:
+        return {"hasGpu": False, "gpuName": "", "backend": "none",
+                "where": "none", "reason": "ssh not found"}
+    except subprocess.SubprocessError as error:
+        return {"hasGpu": False, "gpuName": "", "backend": "none",
+                "where": "none", "reason": bounded_text("ssh %s: %s" % (dest, error), MAX_ERROR_LENGTH)}
+    if run.returncode != 0:
+        reason = (run.stderr.strip().splitlines() or ["ssh exited %d" % run.returncode])[-1]
+        return {"hasGpu": False, "gpuName": "", "backend": "none",
+                "where": "none", "reason": bounded_text("ssh %s: %s" % (dest, reason), MAX_ERROR_LENGTH)}
+    lines = [ln.strip() for ln in run.stdout.splitlines() if ln.strip()]
+    kind = lines[0].lower() if lines else "none"
+    name = " ".join(lines[1:]) if len(lines) > 1 else ""
+    if kind == "tegra":
+        for noise in ("NVIDIA ", " Engineering Reference Developer Kit"):
+            name = name.replace(noise, "")
+        return {"hasGpu": True, "gpuName": bounded_text(name or "Jetson", 64),
+                "backend": "tegra", "where": "remote", "reason": ""}
+    if kind == "nvidia":
+        if ":" in name:
+            name = name.split(":", 1)[-1]
+        name = name.split("(UUID", 1)[0].strip()
+        return {"hasGpu": True, "gpuName": bounded_text(name or "NVIDIA", 64),
+                "backend": "nvidia", "where": "remote", "reason": ""}
+    return {"hasGpu": False, "gpuName": "", "backend": "none",
+            "where": "none", "reason": "no discrete GPU on %s" % dest}
+
+
+def discover_gpu(host: str) -> dict:
+    """Compute GPU on *this* machine only. A Jetson down the hall is not
+    this laptop's GPU; Intel iGPU is not one either."""
+    return this_machine_gpu()
 
 
 def reject_nonfinite(value: str):
@@ -217,7 +364,85 @@ def parse_telemetry(text: str) -> dict:
     return fields
 
 
-def telemetry(host: str) -> tuple[dict, str]:
+def local_ollama_cpu() -> float:
+    """Share of CPU used by processes named ollama, sampled 200 ms apart."""
+    snippet = r'''
+ticks() { t=0; for p in /proc/[0-9]*; do [ "$(cat $p/comm 2>/dev/null)" = ollama ] || continue; set -- $(cat $p/stat 2>/dev/null); t=$((t + ${14:-0} + ${15:-0})); done; echo $t; }
+total() { set -- $(grep "^cpu " /proc/stat); echo $(($2+$3+$4+$5+$6+$7+$8)); }
+t1=$(ticks); c1=$(total); sleep 0.2; t2=$(ticks); c2=$(total)
+echo "cpu_ticks $((t2-t1)) $((c2-c1))"
+'''
+    try:
+        run = subprocess.run(["sh", "-c", snippet], capture_output=True, text=True, timeout=4)
+    except (OSError, subprocess.SubprocessError):
+        return 0.0
+    fields = parse_telemetry(run.stdout)
+    return float(fields.get("cpu") or 0.0)
+
+
+def nvidia_telemetry() -> tuple[dict, str]:
+    """nvidia-smi on this machine. [N/A] fields (typical on a Jetson) are 0."""
+    if not shutil.which("nvidia-smi"):
+        return {}, "nvidia-smi not found"
+    query = ("name,utilization.gpu,memory.used,memory.total,temperature.gpu,"
+             "power.draw,power.limit,clocks.sm,clocks.max.sm,fan.speed")
+    command = ["nvidia-smi", "--query-gpu=" + query, "--format=csv,noheader,nounits"]
+    try:
+        run = subprocess.run(command, capture_output=True, text=True, timeout=4)
+    except (OSError, subprocess.SubprocessError) as error:
+        return {}, bounded_text(error, MAX_ERROR_LENGTH)
+    if run.returncode != 0:
+        reason = (run.stderr.strip().splitlines() or ["nvidia-smi exited %d" % run.returncode])[-1]
+        return {}, bounded_text(reason, MAX_ERROR_LENGTH)
+    line = ""
+    for raw in run.stdout.splitlines():
+        if raw.strip():
+            line = raw
+            break
+    if not line:
+        return {}, "nvidia-smi listed no GPUs"
+    parts = [p.strip() for p in line.split(",")]
+    if len(parts) < 10:
+        return {}, "nvidia-smi output was short"
+    def smi_num(text, scale=1.0):
+        t = str(text).strip()
+        if t in ("[N/A]", "N/A", "Not Supported", ""):
+            return 0.0
+        return num(t, scale)
+    name = parts[0]
+    if name in ("[N/A]", "N/A", ""):
+        name = "NVIDIA"
+    fields = {
+        "gpuName": bounded_text(name, 64),
+        "gpu": round(min(100.0, smi_num(parts[1])), 1),
+        "vramUsedMb": round(smi_num(parts[2])),
+        "vramTotalMb": round(smi_num(parts[3])),
+        "tempC": round(smi_num(parts[4])),
+        "powerW": round(smi_num(parts[5]), 1),
+        "powerLimitW": round(smi_num(parts[6]), 1),
+        "clockMhz": round(smi_num(parts[7])),
+        "clockMaxMhz": round(smi_num(parts[8])),
+        "fanPct": round(min(100.0, smi_num(parts[9]))),
+        "cpu": local_ollama_cpu(),
+    }
+    return fields, ""
+
+
+def tegra_telemetry_local() -> tuple[dict, str]:
+    try:
+        run = subprocess.run(["sh", "-c", TELEMETRY_SNIPPET], capture_output=True, text=True, timeout=SSH_TIMEOUT)
+    except (OSError, subprocess.SubprocessError) as error:
+        return {}, bounded_text(error, MAX_ERROR_LENGTH)
+    if run.returncode != 0:
+        reason = (run.stderr.strip().splitlines() or ["tegra snippet exited %d" % run.returncode])[-1]
+        return {}, bounded_text(reason, MAX_ERROR_LENGTH)
+    fields = parse_telemetry(run.stdout)
+    if "gpu" not in fields:
+        return fields, "no GPU load reading"
+    return fields, ""
+
+
+def telemetry_ssh(host: str) -> tuple[dict, str]:
     """(fields, error). BatchMode so a missing key fails now rather than
     prompting a process nobody can see; the ConnectTimeout bounds a box that
     is off, and the subprocess timeout bounds one that answers and stalls."""
@@ -238,38 +463,84 @@ def telemetry(host: str) -> tuple[dict, str]:
     return fields, ""
 
 
+def telemetry(host: str, gpu_info=None) -> tuple[dict, str]:
+    """Hardware figures for the Ollama box. Local NVIDIA/Jetson never ssh."""
+    info = gpu_info if isinstance(gpu_info, dict) else this_machine_gpu()
+    if is_local_host(host):
+        backend = info.get("backend") or ""
+        if backend == "nvidia":
+            return nvidia_telemetry()
+        if backend == "tegra":
+            return tegra_telemetry_local()
+        return {}, info.get("reason") or "no discrete GPU"
+    return telemetry_ssh(host)
+
+
+# Keep the old name so existing unit tests that patch telemetry() still hit
+# the ssh path they were written against.
+def telemetry_remote(host: str) -> tuple[dict, str]:
+    return telemetry_ssh(host)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--threshold", type=float, default=8.0)
-    parser.add_argument("--url", default=os.environ.get("OLLAMA_HOST", "http://nano:11434"))
-    parser.add_argument("--host", default=os.environ.get("BURNBAR_LOCAL_HOST", "nano"))
+    parser.add_argument("--url", default=os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434"))
+    parser.add_argument("--host", default=os.environ.get("BURNBAR_LOCAL_HOST", "localhost"))
+    parser.add_argument("--discover", action="store_true",
+                        help="Print whether a compute GPU exists and exit. No Ollama call.")
     args = parser.parse_args()
     try:
         host = ssh_host(args.host)
+    except ValueError as error:
+        print(json.dumps({"hasGpu": False, "online": False, "active": False, "load": 0,
+                          "modelCount": 0, "model": "", "backend": "none",
+                          "error": bounded_text(error, MAX_ERROR_LENGTH)}))
+        return 0
+
+    gpu_info = discover_gpu(host)
+    if args.discover:
+        print(json.dumps(gpu_info))
+        return 0
+
+    if not gpu_info.get("hasGpu"):
+        print(json.dumps({"online": False, "active": False, "load": 0, "modelCount": 0,
+                          "model": "", "backend": "none", "hasGpu": False,
+                          "host": host, "where": gpu_info.get("where") or "none",
+                          "error": gpu_info.get("reason") or "no discrete GPU"}))
+        return 0
+
+    try:
         models = ollama_models(args.url)
     except (OSError, urllib.error.URLError, json.JSONDecodeError, UnicodeDecodeError, ValueError) as error:
         print(json.dumps({"online": False, "active": False, "load": 0, "modelCount": 0,
-                          "model": "", "backend": "none",
+                          "model": "", "backend": gpu_info.get("backend") or "none",
+                          "hasGpu": True, "gpuName": gpu_info.get("gpuName") or "",
+                          "host": host, "where": gpu_info.get("where") or "none",
                           "error": bounded_text(error, MAX_ERROR_LENGTH)}))
         return 0
 
     names = [model["name"] for model in models]
-    fields, telemetry_error = telemetry(host)
+    fields, telemetry_error = telemetry(host, gpu_info)
     gpu = fields.get("gpu", 0.0)
     cpu = fields.get("cpu", 0.0)
     # Device-wide GPU utilisation belongs to whatever is using the GPU. With
     # no model resident none of it is inference: the lane then reads the
     # runner's own CPU only, and "active" needs a resident model.
     load = round(max(cpu, gpu) if models else cpu, 1)
+    backend = gpu_info.get("backend") or ("nvidia" if fields.get("gpuName") else "tegra")
     payload = {"online": True, "active": bool(models) and load >= args.threshold,
-               "load": load, "remote": True, "host": host,
+               "load": load, "remote": not is_local_host(host), "host": host,
+               "hasGpu": True, "where": gpu_info.get("where") or "none",
                "modelCount": len(models), "model": names[0] if names else "",
-               "models": names, "modelDetails": models, "backend": "tegra",
+               "models": names, "modelDetails": models, "backend": backend,
                "cpu": round(cpu, 1), "gpu": round(gpu, 1),
                "version": ollama_version(args.url),
                "vramModelsMb": round(sum(m["sizeVram"] for m in models) / 1048576),
                "telemetryError": telemetry_error}
     payload.update({k: v for k, v in fields.items() if k not in ("gpu", "cpu")})
+    if not payload.get("gpuName"):
+        payload["gpuName"] = gpu_info.get("gpuName") or ""
     print(json.dumps(payload))
     return 0
 
