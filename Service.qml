@@ -2,7 +2,7 @@ import QtQuick
 import Quickshell
 import Quickshell.Io
 
-// Burn Bar service. Owns three jobs: run the cloud-agent collector on a cadence,
+// Burn Bar service. Owns three jobs: run the cloud-agent collector (Claude, Codex, Grok) on a cadence,
 // republish whatever history.json currently says, and poll the Ollama box
 // (nano, a Jetson on the tailnet) for live inference load. All extraction
 // logic lives in bin/ — this file never parses a transcript and never talks
@@ -47,6 +47,20 @@ Item {
   property real claudeTrailing60: 0
   property real codexTrailing5: 0
   property real codexTrailing60: 0
+  property real grokTotal: 0
+  property real grokPeak: 0
+  property int grokSessions: 0
+  property var grokLimits: []
+  property real grokLimitsMeasuredAt: 0
+  property string grokLimitsStatus: ""
+  property var grokByModel: ({})
+  property var grokSplit: ({})
+  property int grokTurns: 0
+  property real grokFirstAt: 0
+  property real grokLastAt: 0
+  property real grokPeakAt: 0
+  property real grokTrailing5: 0
+  property real grokTrailing60: 0
   // Tokens burned on the Ollama box over the same exact window, read from
   // the ollama-meter journal there, and the share of all burn that stayed
   // off the frontier models. available=false carries the reason (ssh
@@ -78,8 +92,10 @@ Item {
   // The widget listens for this to fire its impact animation.
   property int claudePulse: 0
   property int codexPulse: 0
+  property int grokPulse: 0
   property real lastClaudeLatest: 0
   property real lastCodexLatest: 0
+  property real lastGrokLatest: 0
   property real lastBucketT: 0
 
   readonly property string stateDir: (Quickshell.env("XDG_STATE_HOME")
@@ -185,6 +201,7 @@ Item {
   // Latest (right-most in time) bucket per agent — what "now" is burning.
   readonly property real claudeLatest: buckets.length ? Number(buckets[buckets.length - 1].claude || 0) : 0
   readonly property real codexLatest: buckets.length ? Number(buckets[buckets.length - 1].codex || 0) : 0
+  readonly property real grokLatest: buckets.length ? Number(buckets[buckets.length - 1].grok || 0) : 0
 
   // Re-evaluated every 30s so a record ages into "stale" and a window rolls
   // into "expired" without waiting for a new sample to arrive.
@@ -223,6 +240,7 @@ Item {
   // Weekly is the limit that actually bites on both plans.
   readonly property real claudeWeekly: limitPercent(claudeLimits, "weekly", claudeLimitsMeasuredAt)
   readonly property real codexWeekly: limitPercent(codexLimits, "weekly", codexLimitsMeasuredAt)
+  readonly property real grokWeekly: limitPercent(grokLimits, "weekly", grokLimitsMeasuredAt)
 
   // A collect() asked for while one is running is not dropped: the limits
   // refresh asks for one the moment it lands, and that ask must survive an
@@ -328,13 +346,15 @@ Item {
     for (var i = 0; i < parsed.buckets.length; i++) {
       var bk = parsed.buckets[i]
       if (!bk || typeof bk !== "object" || !isFinite(Number(bk.t))
-          || !isFinite(Number(bk.claude)) || !isFinite(Number(bk.codex))) {
+          || !isFinite(Number(bk.claude)) || !isFinite(Number(bk.codex))
+          || (bk.grok !== undefined && bk.grok !== null && !isFinite(Number(bk.grok)))) {
         fault("History file has a malformed bucket")
         return
       }
     }
     var c = parsed.claude
     var x = parsed.codex
+    var g = parsed.grok && typeof parsed.grok === "object" ? parsed.grok : ({})
     if (!c || typeof c !== "object" || !x || typeof x !== "object") {
       fault("History file is missing an agent")
       return
@@ -371,6 +391,20 @@ Item {
       root.claudeTrailing60 = num(c.trailing ? c.trailing.m60 : 0)
       root.codexTrailing5 = num(x.trailing ? x.trailing.m5 : 0)
       root.codexTrailing60 = num(x.trailing ? x.trailing.m60 : 0)
+      root.grokTotal = num(g.total)
+      root.grokPeak = num(g.peak)
+      root.grokSessions = num(g.sessions)
+      root.grokLimits = Array.isArray(g.limits) ? g.limits : []
+      root.grokLimitsMeasuredAt = num(g.limitsMeasuredAt)
+      root.grokLimitsStatus = String(g.limitsStatus || "")
+      root.grokByModel = g.byModel && typeof g.byModel === "object" ? g.byModel : ({})
+      root.grokSplit = g.split && typeof g.split === "object" ? g.split : ({})
+      root.grokTurns = num(g.turns)
+      root.grokFirstAt = num(g.firstAt)
+      root.grokLastAt = num(g.lastAt)
+      root.grokPeakAt = num(g.peakAt)
+      root.grokTrailing5 = num(g.trailing ? g.trailing.m5 : 0)
+      root.grokTrailing60 = num(g.trailing ? g.trailing.m60 : 0)
       var l = parsed.local && typeof parsed.local === "object" ? parsed.local : null
       root.localTokensAvailable = !!l && l.available === true
       root.localTokensReason = l ? String(l.reason || "") : "collector predates local token counting"
@@ -404,12 +438,15 @@ Item {
     if (rolled) {
       root.lastClaudeLatest = 0
       root.lastCodexLatest = 0
+      root.lastGrokLatest = 0
       root.lastBucketT = latestT
     }
     if (root.claudeLatest > root.lastClaudeLatest) root.claudePulse++
     if (root.codexLatest > root.lastCodexLatest) root.codexPulse++
+    if (root.grokLatest > root.lastGrokLatest) root.grokPulse++
     root.lastClaudeLatest = root.claudeLatest
     root.lastCodexLatest = root.codexLatest
+    root.lastGrokLatest = root.grokLatest
   }
 
   Timer {
@@ -425,7 +462,8 @@ Item {
   // omarchy-agent-usage-update maintains; this is what keeps those records
   // fresh. --limits-only reuses any transcript scan under 15 minutes old and
   // the Claude collector keeps a 15s probe cache, so repeated asks are cheap.
-  // Only the two agents Burn Bar draws are requested.
+  // Claude and Codex via Omarchy collectors; Grok limits are parsed from
+  // ~/.grok/logs/unified.jsonl inside burnbar-collect (no stock grok probe).
   property bool limitsRefreshUnavailable: false
   function refreshLimits() {
     if (limitsRefresher.running || limitsRefreshUnavailable) return

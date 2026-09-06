@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""burnbar-collect — buckets Claude + Codex token burn into a rolling window.
+"""burnbar-collect — buckets Claude + Codex + Grok token burn into a rolling window.
 
 Reads the raw agent transcripts (the only place per-turn token deltas carry
 timestamps) and writes one small JSON the QML widget watches.
@@ -21,6 +21,14 @@ Codex:   ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl   event_msg lines with
          gets counted: a rate-limit refresh re-emits the same last_token_usage
          with an unchanged total (13 times across 130 rollouts on the machine
          this was built on), and counting last_token_usage would count it twice.
+
+Grok:    ~/.grok/sessions/**/updates.jsonl   _meta.totalTokens is the running
+         context size for a promptId (Grok Build / Grok CLI — the local
+         transcript store beside Grok Bot). Per-prompt burn is estimated as
+         max(totalTokens)-min(totalTokens) within that prompt; flat prompts
+         contribute nothing. Plan limits come from the latest
+         "billing: fetched credits config" line in ~/.grok/logs/unified.jsonl
+         (same source pi.agents uses), falling back to agents/usage/grok.json.
 
 Local:   the ollama-meter journal on the box that runs Ollama (nano, a
          Jetson), read over ssh. Ollama persists no per-request token counts
@@ -60,6 +68,9 @@ USAGE_DIR = STATE / "omarchy" / "agents" / "usage"
 
 CLAUDE_ROOT = HOME / ".claude" / "projects"
 CODEX_ROOT = HOME / ".codex" / "sessions"
+GROK_HOME = Path(os.environ.get("GROK_HOME") or HOME / ".grok")
+GROK_ROOT = GROK_HOME / "sessions"
+GROK_LOG = GROK_HOME / "logs" / "unified.jsonl"
 
 CACHE_VERSION = 2
 # A token count larger than this is not a token count.
@@ -121,7 +132,7 @@ latest_ok = now_ms + FUTURE_SLACK_MS
 t5 = now_ms - 5 * 60_000
 t60 = now_ms - 60 * 60_000
 
-buckets = [{"t": grid_start + i * BUCKET_MS, "claude": 0, "codex": 0, "local": 0}
+buckets = [{"t": grid_start + i * BUCKET_MS, "claude": 0, "codex": 0, "grok": 0, "local": 0}
            for i in range(BUCKETS)]
 
 
@@ -500,6 +511,171 @@ for f in walk(CODEX_ROOT, lambda n: n.startswith("rollout-") and n.endswith(".js
 codex.files = len(touched)
 
 
+# ── Grok (Grok Build / CLI sessions under ~/.grok) ───────────────────────────
+# updates.jsonl carries _meta.totalTokens per streamed chunk, keyed by
+# promptId. That figure is context size, not an API ledger; the rise within a
+# single prompt is the closest durable per-turn signal Grok leaves on disk.
+# summary.json supplies the model id for by-model when present.
+
+def grok_model_for(session_dir):
+    try:
+        summary = json.loads((session_dir / "summary.json").read_text())
+    except (OSError, ValueError, TypeError):
+        return "grok"
+    if not isinstance(summary, dict):
+        return "grok"
+    model = str(summary.get("current_model_id") or "")
+    if not model:
+        info = summary.get("info") if isinstance(summary.get("info"), dict) else {}
+        model = str(info.get("model_id") or info.get("model") or "")
+    return (model or "grok")[:64]
+
+
+def grok_points_from_updates(path):
+    """One point per promptId whose totalTokens rose during the prompt."""
+    by = {}
+    try:
+        with path.open("rb") as fh:
+            data = fh.read()
+    except OSError:
+        return []
+    cut = data.rfind(b"\n")
+    if cut == -1:
+        return []
+    model = grok_model_for(path.parent)
+    for raw in data[:cut].split(b"\n"):
+        if not raw or b"totalTokens" not in raw:
+            continue
+        try:
+            d = json.loads(raw.decode("utf-8", "replace"))
+        except MALFORMED:
+            continue
+        if not isinstance(d, dict):
+            continue
+        # _meta rides on params for session/update records (not the top level).
+        params = d.get("params") if isinstance(d.get("params"), dict) else {}
+        meta = params.get("_meta") if isinstance(params.get("_meta"), dict) else {}
+        if not meta and isinstance(d.get("_meta"), dict):
+            meta = d.get("_meta")
+        tt = count(meta.get("totalTokens"))
+        if tt is None:
+            continue
+        pid = str(meta.get("promptId") or "")[:64]
+        if not pid:
+            continue
+        ts = meta.get("turnStartMs")
+        if not isinstance(ts, (int, float)) or isinstance(ts, bool):
+            ts = meta.get("agentTimestampMs")
+        if not isinstance(ts, (int, float)) or isinstance(ts, bool):
+            ts = d.get("timestamp")
+            if isinstance(ts, (int, float)) and not isinstance(ts, bool) and ts < 10**12:
+                ts = ts * 1000
+        if not isinstance(ts, (int, float)) or isinstance(ts, bool):
+            continue
+        ts = int(ts)
+        held = by.get(pid)
+        if held is None:
+            by[pid] = {"ts": ts, "min": tt, "max": tt}
+        else:
+            held["min"] = min(held["min"], tt)
+            held["max"] = max(held["max"], tt)
+            if ts < held["ts"]:
+                held["ts"] = ts
+    points = []
+    for pid, info in by.items():
+        delta = info["max"] - info["min"]
+        if delta <= 0:
+            continue
+        points.append([info["ts"], delta, pid, model, [delta, 0, 0, 0]])
+    return prune(points)
+
+
+def scan_grok(path):
+    """Cache-aware Grok updates.jsonl reader (full reparse when the file moves)."""
+    try:
+        st = path.stat()
+    except OSError:
+        return []
+    if st.st_mtime * 1000 < scan_floor:
+        return []
+    key = str(path)
+    hit = valid_entry(cache.get(key))
+    if hit and hit["size"] == st.st_size and hit["mtime"] == st.st_mtime:
+        hit = dict(hit, points=prune(hit["points"]))
+        next_cache[key] = hit
+        return hit["points"]
+    try:
+        points = grok_points_from_updates(path)
+        tail = read_tail(path, st.st_size)
+    except Exception:
+        next_cache.pop(key, None)
+        return []
+    next_cache[key] = {"size": st.st_size, "mtime": st.st_mtime, "offset": st.st_size,
+                       "tail": tail, "points": points, "state": {}}
+    return points
+
+
+grok = Agent("grok")
+touched = set()
+for f in walk(GROK_ROOT, lambda n: n == "updates.jsonl"):
+    for pt in scan_grok(f):
+        try:
+            if grok.add(pt):
+                touched.add(f)
+        except Exception:
+            continue
+grok.files = len(touched)
+
+
+def grok_limits_from_log():
+    """Weekly credit %% from the newest billing snapshot in unified.jsonl."""
+    latest = None
+    measured = 0
+    try:
+        with GROK_LOG.open("rb") as fh:
+            data = fh.read()
+    except OSError:
+        return [], 0, ""
+    for raw in data.split(b"\n"):
+        if b"billing: fetched credits config" not in raw:
+            continue
+        try:
+            entry = json.loads(raw.decode("utf-8", "replace"))
+        except MALFORMED:
+            continue
+        if not isinstance(entry, dict) or entry.get("msg") != "billing: fetched credits config":
+            continue
+        ctx = entry.get("ctx") if isinstance(entry.get("ctx"), dict) else {}
+        config = ctx.get("config") if isinstance(ctx.get("config"), dict) else {}
+        if not config:
+            continue
+        latest = dict(config)
+        if ctx.get("subscriptionTier"):
+            latest["subscriptionTier"] = ctx.get("subscriptionTier")
+        measured = parse_ts(entry.get("ts")) or 0
+    if not latest:
+        return [], 0, "Grok billing data unavailable"
+    period = latest.get("currentPeriod") if isinstance(latest.get("currentPeriod"), dict) else {}
+    reset_at = str(period.get("end") or latest.get("billingPeriodEnd") or "")[:40]
+    try:
+        # Grok logs creditUsagePercent on a 0..100 scale; Burn Bar stores 0..1.
+        percent = norm_percent(float(latest.get("creditUsagePercent", 0)) / 100.0)
+    except (TypeError, ValueError, OverflowError):
+        percent = -1.0
+    limits = [{"label": "Weekly (7-day)", "percent": percent, "resetsAt": reset_at}]
+    return limits, measured, ""
+
+
+def with_grok_limits(agent_payload):
+    limits, measured, status = limits_for("grok")
+    if not limits:
+        limits, measured, status = grok_limits_from_log()
+    agent_payload["limits"] = limits
+    agent_payload["limitsMeasuredAt"] = measured
+    agent_payload["limitsStatus"] = status
+    return agent_payload
+
+
 # ── local (Ollama) tokens, from the ollama-meter journal on the Ollama box ───
 # One line per request, written by nano/ollama-meter.py (journalctl -o short-unix):
 #   1788649667.804220 nano python3[9143]: meter ts=1788649667803 path=/api/generate \
@@ -710,7 +886,7 @@ def with_limits(agent_payload, agent_name):
     return agent_payload
 
 
-all_burn = claude.total + codex.total + local.total
+all_burn = claude.total + codex.total + grok.total + local.total
 payload = {
     "generatedAt": now_ms,
     "windowMinutes": WINDOW_MIN,
@@ -719,6 +895,7 @@ payload = {
     "buckets": buckets,
     "claude": with_limits(claude.payload(), "claude"),
     "codex": with_limits(codex.payload(), "codex"),
+    "grok": with_grok_limits(grok.payload()),
     # Local tokens over the same exact window, and the share of everything
     # that burned on this machine which never went to a frontier model.
     "local": dict(local.payload(), available=local_available, reason=local_reason,

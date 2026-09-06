@@ -5,16 +5,15 @@ import qs.Ui
 
 // Burn Bar — one live thermal instrument for every model you run.
 //
-//   CLAUDE ◄── time ──┤ now ├── time ──► CODEX  ║  NANO ──► seconds
+//   CLAUDE ◄── time ──┤ now ├── time ──► CODEX  │  GROK ──►  ║  NANO ──► seconds
 //
 // Claude burns on the left and Codex on the right, both with their newest
-// bucket against the shared centre line, so the divider is always "now" and the
-// two cloud agents read as one instrument instead of two adjacent widgets.
-// Local intelligence — the Ollama on nano, a Jetson on the tailnet — is
-// bolted on the right behind a hard rule, in a deliberately narrower lane: it
-// measures something else entirely — live load per second on another box, not
-// tokens per quarter hour — and must never be mistaken for a third column of
-// the same scale.
+// bucket against the shared centre line, so the divider is always "now".
+// Grok (Grok Build / CLI under ~/.grok, beside Grok Bot) rides after Codex as
+// a third cloud lane on the same token scale, before the hard rule. Local
+// intelligence — the Ollama on nano — stays bolted on the right behind that
+// rule: live load per second on another box, never another column of the same
+// scale.
 //
 // This is a heat map first: COLOUR carries the magnitude, on a per-agent ramp
 // that runs cold ember → agent identity → amber → white-hot. Height is only a
@@ -52,7 +51,9 @@ BarWidget {
   // A configured width below it is raised rather than honoured: overlapping
   // cells are a heat map of nothing.
   readonly property int minWidthForCells: {
-    var cloudNeed = (4 * cellCount + 3 + (showGauges ? 12 : 0) + (showLocal ? 4 : 0)) / (showLocal ? 0.75 : 1)
+    // Claude+Codex mirrored pair + Grok lane (~16%) + gauges/seps.
+    var cloudNeed = (4 * cellCount + 3 + Math.ceil(0.4 * cellCount)
+      + (showGauges ? 18 : 0) + (showLocal ? 4 : 0)) / (showLocal ? 0.75 : 1)
     var localNeed = showLocal ? (2 * localCells + 6) * 4 : 0
     return Math.max(110, Math.ceil(Math.max(cloudNeed, localNeed)) + 6)
   }
@@ -247,7 +248,8 @@ BarWidget {
   readonly property int zoneNone: -1
   readonly property int zoneClaude: 0
   readonly property int zoneCodex: 1
-  readonly property int zoneLocal: 2
+  readonly property int zoneGrok: 2
+  readonly property int zoneLocal: 3
 
   property int hoverZone: zoneNone
   // The bar only offers a tooltip to a target that reports itself hovered, and
@@ -257,6 +259,7 @@ BarWidget {
 
   function zoneAccent(zone) {
     if (zone === zoneCodex) return codexHot
+    if (zone === zoneGrok) return grokHot
     if (zone === zoneLocal) return showLocal && !localOnline ? urgent : localHot
     return claudeHot
   }
@@ -291,6 +294,11 @@ BarWidget {
       return "CODEX  ·  " + compact(svc.codexTotal) + " tokens / last " + span
         + "\nnow " + compact(svc.codexLatest) + " this bucket  ·  " + svc.codexSessions + " sessions"
         + "\nweekly quota " + quotaText(svc.codexWeekly, svc.codexLimitsMeasuredAt)
+    if (zone === zoneGrok)
+      return "GROK  ·  " + compact(svc.grokTotal) + " tokens / last " + span
+        + "\nnow " + compact(svc.grokLatest) + " this bucket  ·  " + svc.grokSessions + " sessions"
+        + "\nweekly quota " + quotaText(svc.grokWeekly, svc.grokLimitsMeasuredAt)
+        + (svc.grokLimitsStatus !== "" ? "\n" + svc.grokLimitsStatus : "")
     if (zone === zoneLocal)
       return svc.localHost.toUpperCase() + "  ·  " + (!svc.localOnline
           ? "Ollama offline" + (svc.localError !== "" ? "\n" + svc.localError : "")
@@ -329,11 +337,9 @@ BarWidget {
   onSettingsChanged: syncServiceSettings()
 
   // ── heat ramps ────────────────────────────────────────────────────────────
-  // All three agents converge on the same amber/white at the top end, because
-  // hot is hot — a maxed-out local runner and a maxed-out Claude burst should
-  // look equally alarming. Identity lives in the cold and mid stops: Claude
-  // burns orange, Codex burns teal, local burns violet. Three hues that stay
-  // separable at 3px wide and in every Omarchy theme.
+  // Cloud + local converge on the same amber/white at the top end, because
+  // hot is hot. Identity lives in the cold and mid stops: Claude orange,
+  // Codex teal, Grok rose, local violet — separable at 3px in every theme.
   readonly property color claudeCold: "#4A2113"
   readonly property color claudeWarm: "#C4542A"
   readonly property color claudeHot:  "#FF8A4B"
@@ -341,6 +347,10 @@ BarWidget {
   readonly property color codexCold: "#0C3E33"
   readonly property color codexWarm: "#12977A"
   readonly property color codexHot:  "#2BE8B0"
+
+  readonly property color grokCold:  "#3F1428"
+  readonly property color grokWarm:  "#C43B7A"
+  readonly property color grokHot:   "#FF6BB4"
 
   readonly property color localCold: "#241046"
   readonly property color localWarm: "#7A3BE0"
@@ -379,6 +389,7 @@ BarWidget {
   readonly property real scaleFloor: 150000
   readonly property real claudeRef: Math.max(svc ? svc.claudePeak : 0, scaleFloor)
   readonly property real codexRef: Math.max(svc ? svc.codexPeak : 0, scaleFloor)
+  readonly property real grokRef: Math.max(svc ? svc.grokPeak : 0, scaleFloor)
 
   function norm(tokens, reference) {
     if (!(tokens > 0)) return 0
@@ -399,6 +410,14 @@ BarWidget {
     if (!b || !b.length) return 0
     var idx = b.length - 1 - i
     return root.norm(idx >= 0 && idx < b.length ? Number(b[idx].codex || 0) : 0, root.codexRef)
+  }
+
+  // Grok rides after Codex: oldest→newest left to right, same token scale.
+  function grokLevel(i) {
+    var b = root.buckets
+    if (!b || !b.length) return 0
+    var idx = b.length - root.cellCount + i
+    return root.norm(idx >= 0 && idx < b.length ? Number(b[idx].grok || 0) : 0, root.grokRef)
   }
 
   // Local is already a percentage, so it needs no reference peak — but it does
@@ -437,18 +456,20 @@ BarWidget {
   // data. A fault must never animate like a calm idle strip — that is how a
   // total outage hides in plain sight.
   readonly property bool idle: !broken && (!ready
-    || ((svc ? svc.claudeLatest : 0) <= 0 && (svc ? svc.codexLatest : 0) <= 0))
+    || ((svc ? svc.claudeLatest : 0) <= 0 && (svc ? svc.codexLatest : 0) <= 0
+        && (svc ? svc.grokLatest : 0) <= 0))
 
   // One number for "how hard is this machine working right now", across all
   // three agents. Drives every global effect: under-glow, sparks, frame rate.
   readonly property real energy: Math.max(
       root.broken ? 0 : root.claudeLevel(root.cellCount - 1),
       root.broken ? 0 : root.codexLevel(0),
+      root.broken ? 0 : root.grokLevel(root.cellCount - 1),
       root.showLocal && root.localOnline ? root.localLevel(0) : 0)
 
   readonly property color energyColor: root.broken ? urgent
-    : root.mix(root.mix(root.claudeHot, root.codexHot, 0.5), root.localHot,
-               root.showLocal && root.localActive ? 0.45 : 0.12)
+    : root.mix(root.mix(root.mix(root.claudeHot, root.codexHot, 0.5), root.grokHot, 0.35),
+               root.localHot, root.showLocal && root.localActive ? 0.45 : 0.12)
 
   // ── ember motion ──────────────────────────────────────────────────────────
   // Driven by a 20fps timer rather than a frame-rate NumberAnimation: with up to
@@ -482,12 +503,14 @@ BarWidget {
 
   property real claudeFlash: 0
   property real codexFlash: 0
+  property real grokFlash: 0
   property real localFlash: 0
   // Wave position gets its own monotonic 0→1. The flash value (up in 90 ms,
   // down over 700) is brightness only; driving position from it sent the
   // band racing outward and then drifting back toward the divider as it faded.
   property real claudeWave: 0
   property real codexWave: 0
+  property real grokWave: 0
 
   ParallelAnimation {
     id: claudeImpact
@@ -505,6 +528,14 @@ BarWidget {
       NumberAnimation { target: root; property: "codexFlash"; to: 0; duration: 700; easing.type: Easing.OutCubic }
     }
   }
+  ParallelAnimation {
+    id: grokImpact
+    NumberAnimation { target: root; property: "grokWave"; from: 0; to: 1; duration: 790; easing.type: Easing.OutCubic }
+    SequentialAnimation {
+      NumberAnimation { target: root; property: "grokFlash"; to: 1; duration: 90; easing.type: Easing.OutQuad }
+      NumberAnimation { target: root; property: "grokFlash"; to: 0; duration: 700; easing.type: Easing.OutCubic }
+    }
+  }
   SequentialAnimation {
     id: localImpact
     NumberAnimation { target: root; property: "localFlash"; to: 1; duration: 80; easing.type: Easing.OutQuad }
@@ -515,6 +546,7 @@ BarWidget {
     target: root.svc
     function onClaudePulseChanged() { claudeImpact.restart() }
     function onCodexPulseChanged() { codexImpact.restart() }
+    function onGrokPulseChanged() { grokImpact.restart() }
     function onLocalPulseChanged() { localImpact.restart() }
   }
 
@@ -731,7 +763,7 @@ BarWidget {
       color: root.energyColor
       border.width: 0
       opacity: 0.05 + 0.20 * Math.pow(root.energy, 1.4)
-        + 0.12 * Math.max(root.claudeFlash, Math.max(root.codexFlash, root.localFlash))
+        + 0.12 * Math.max(root.claudeFlash, Math.max(root.codexFlash, Math.max(root.grokFlash, root.localFlash)))
       Behavior on opacity { NumberAnimation { duration: 300 } }
     }
 
@@ -748,8 +780,14 @@ BarWidget {
       // supporting instrument: the cloud agents are what costs money.
       readonly property real localWidth: root.showLocal ? Math.round(width * 0.25) : 0
       readonly property int ruleWidth: root.showLocal ? Style.space(4) : 0
+      // Grok takes a fixed share of the non-local strip so Claude/Codex keep
+      // their mirrored centre instrument and stay readable.
+      readonly property int grokSep: Style.space(2)
+      readonly property real grokLaneWidth: Math.max(Style.space(10),
+        Math.round((width - localWidth - ruleWidth) * 0.16))
       readonly property real cloudWidth:
-        width - localWidth - ruleWidth - 2 * (gaugeWidth + gaugeGap) - dividerWidth
+        width - localWidth - ruleWidth - grokLaneWidth - grokSep
+        - 3 * (gaugeWidth + gaugeGap) - dividerWidth
       readonly property real sideWidth: Math.max(1, cloudWidth / 2)
 
       // Zone spans, used for both the tinted plates and hit-testing. Derived
@@ -758,13 +796,17 @@ BarWidget {
       readonly property real claudeZoneWidth:
         gaugeWidth + gaugeGap + sideWidth + dividerWidth / 2
       readonly property real codexZoneWidth:
-        dividerWidth / 2 + sideWidth + gaugeGap + gaugeWidth + ruleWidth / 2
-      readonly property real localZoneStart: claudeZoneWidth + codexZoneWidth
+        dividerWidth / 2 + sideWidth + gaugeGap + gaugeWidth
+      readonly property real grokZoneStart: claudeZoneWidth + codexZoneWidth
+      readonly property real grokZoneWidth:
+        grokSep + grokLaneWidth + gaugeGap + gaugeWidth + ruleWidth / 2
+      readonly property real localZoneStart: grokZoneStart + grokZoneWidth
       readonly property real localZoneWidth: Math.max(0, width - localZoneStart)
 
       function zoneAt(x) {
         if (x < claudeZoneWidth) return root.zoneClaude
-        if (!root.showLocal || x < localZoneStart) return root.zoneCodex
+        if (x < grokZoneStart) return root.zoneCodex
+        if (!root.showLocal || x < localZoneStart) return root.zoneGrok
         return root.zoneLocal
       }
 
@@ -776,6 +818,7 @@ BarWidget {
         model: [
           { zone: root.zoneClaude, from: 0, span: graph.claudeZoneWidth, on: true },
           { zone: root.zoneCodex, from: graph.claudeZoneWidth, span: graph.codexZoneWidth, on: true },
+          { zone: root.zoneGrok, from: graph.grokZoneStart, span: graph.grokZoneWidth, on: true },
           { zone: root.zoneLocal, from: graph.localZoneStart, span: graph.localZoneWidth, on: root.showLocal }
         ]
         delegate: Item {
@@ -941,7 +984,7 @@ BarWidget {
         opacity: root.codexFlash * 0.55
       }
 
-      // Codex weekly fuel gauge — the right bookend of the cloud instrument.
+      // Codex weekly fuel gauge — the right bookend of the mirrored pair.
       QuotaGauge {
         id: codexGauge
         visible: root.showGauges
@@ -954,6 +997,62 @@ BarWidget {
         accent: root.codexHot
       }
 
+      // Soft sep before Grok so the mirrored Claude/Codex instrument stays whole.
+      Item {
+        id: grokSep
+        width: graph.grokSep
+        height: parent.height
+        anchors.left: root.showGauges ? codexGauge.right : codexLane.right
+        anchors.verticalCenter: parent.verticalCenter
+        Rectangle {
+          anchors.centerIn: parent
+          width: 1
+          height: parent.height * 0.7
+          color: root.grokHot
+          border.width: 0
+          opacity: 0.28
+        }
+      }
+
+      ThermalLane {
+        id: grokLane
+        width: graph.grokLaneWidth
+        height: parent.height
+        anchors.left: grokSep.right
+        anchors.verticalCenter: parent.verticalCenter
+        count: root.cellCount
+        cold: root.grokCold; warm: root.grokWarm; hot: root.grokHot
+        newestLast: true
+        flash: root.grokFlash
+        phaseSign: 1
+        levelAt: function(i) { return root.grokLevel(i) }
+      }
+
+      Rectangle {
+        id: grokWave
+        visible: root.grokFlash > 0.01
+        width: Style.spaceReal(3)
+        height: graph.height
+        radius: width / 2
+        color: root.grokHot
+        border.width: 0
+        anchors.verticalCenter: parent.verticalCenter
+        x: grokLane.x + grokLane.width * root.grokWave - width / 2
+        opacity: root.grokFlash * 0.55
+      }
+
+      QuotaGauge {
+        id: grokGauge
+        visible: root.showGauges
+        width: graph.gaugeWidth
+        height: parent.height
+        anchors.left: grokLane.right
+        anchors.leftMargin: graph.gaugeGap
+        anchors.verticalCenter: parent.verticalCenter
+        percent: root.svc ? Math.min(1, root.svc.grokWeekly) : -1
+        accent: root.grokHot
+      }
+
       // ── the hard rule ───────────────────────────────────────────────────────
       // Everything left of this line is metered cloud spend in tokens per
       // bucket. Everything right of it is free local compute in percent per
@@ -964,7 +1063,7 @@ BarWidget {
         visible: root.showLocal
         width: graph.ruleWidth
         height: parent.height
-        anchors.left: root.showGauges ? codexGauge.right : codexLane.right
+        anchors.left: root.showGauges ? grokGauge.right : grokLane.right
         anchors.verticalCenter: parent.verticalCenter
 
         Rectangle {
