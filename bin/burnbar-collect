@@ -24,7 +24,8 @@ Codex:   ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl   event_msg lines with
 
 Grok:    ~/.grok/sessions/**/updates.jsonl   _meta.totalTokens is the running
          context size for a promptId (Grok Bot / Build sessions — the local
-         transcript store beside the Grok Bot app process). Per-prompt burn is estimated as
+         transcript store beside the Grok Bot app process).
+         Per-prompt burn is estimated as
          max(totalTokens)-min(totalTokens) within that prompt; flat prompts
          contribute nothing. Plan limits come from the latest
          "billing: fetched credits config" line in ~/.grok/logs/unified.jsonl
@@ -511,7 +512,7 @@ for f in walk(CODEX_ROOT, lambda n: n.startswith("rollout-") and n.endswith(".js
 codex.files = len(touched)
 
 
-# ── Grok (Grok Build / CLI sessions under ~/.grok) ───────────────────────────
+# ── Grok (Grok Bot / Build sessions under ~/.grok) ───────────────────────────
 # updates.jsonl carries _meta.totalTokens per streamed chunk, keyed by
 # promptId. That figure is context size, not an API ledger; the rise within a
 # single prompt is the closest durable per-turn signal Grok leaves on disk.
