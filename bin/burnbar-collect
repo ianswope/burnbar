@@ -108,6 +108,35 @@ def str_arg(flag, fallback, limit=64):
     return fallback
 
 
+USAGE = """burnbar-collect — bucket Claude, Codex and Grok token burn into a rolling window.
+
+usage: burnbar-collect [--window MIN] [--buckets N] [--no-local]
+                       [--meter-host HOST] [--meter-unit UNIT] [--print]
+
+  --window MIN       minutes the strip reaches back (30..1440, default 360)
+  --buckets N        cells per cloud agent (6..32, default 12)
+  --no-local         skip the local lane and its ssh/HTTP probes entirely
+  --meter-host HOST  ssh alias of the Ollama box, or localhost (default localhost)
+  --meter-unit UNIT  systemd unit whose journal carries one line per request
+                     (default ollama-meter)
+  --print            also print the payload to stdout after writing it
+  -h, --help         show this and exit without collecting
+
+Writes history.json under $XDG_STATE_HOME/omarchy/burnbar. Out-of-range numbers
+clamp to the bounds above; an unrecognised flag is ignored rather than fatal,
+because a collector that exits leaves the widget with an empty strip.
+
+environment: BURNBAR_LOCAL_HOST, BURNBAR_METER_UNIT, BURNBAR_NO_LOCAL=1,
+             GROK_HOME, BURNBAR_NOW_MS (tests pin the clock)
+"""
+
+# Before any argument is read or any state directory is touched, so that asking
+# for help never collects.
+if {"-h", "--help"} & set(sys.argv[1:]):
+    print(USAGE, end="")
+    sys.exit(0)
+
+
 WINDOW_MIN = int_arg("--window", 360, 30, 1440)
 BUCKETS = int_arg("--buckets", 12, 6, 32)
 BUCKET_MS = round(WINDOW_MIN * 60_000 / BUCKETS)
@@ -955,10 +984,15 @@ def write_atomic(target, text):
         raise
 
 
-OUT_DIR.mkdir(parents=True, exist_ok=True)
-# One collector per state directory at a time. If another holds the lock it is
-# about to publish the same answer; leave quietly rather than race it.
-lock = open(LOCK_FILE, "w")
+# The state directory is the one thing that has to work. This runs as a widget
+# subprocess, where a traceback in the journal says less than one clear line.
+try:
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    # One collector per state directory at a time. If another holds the lock it
+    # is about to publish the same answer; leave quietly rather than race it.
+    lock = open(LOCK_FILE, "w")
+except OSError as e:
+    sys.exit("burnbar-collect: cannot use %s: %s" % (OUT_DIR, e.strerror or e))
 try:
     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
 except OSError:
@@ -966,7 +1000,10 @@ except OSError:
 
 # allow_nan=False: a NaN would serialise as a bare NaN token, which is not JSON
 # and would leave the widget holding whatever it parsed last.
-write_atomic(OUT_FILE, json.dumps(payload, allow_nan=False))
+try:
+    write_atomic(OUT_FILE, json.dumps(payload, allow_nan=False))
+except OSError as e:
+    sys.exit("burnbar-collect: cannot write %s: %s" % (OUT_FILE, e.strerror or e))
 try:
     write_atomic(CACHE_FILE, json.dumps({"v": CACHE_VERSION, "files": next_cache}, allow_nan=False))
 except (OSError, ValueError):

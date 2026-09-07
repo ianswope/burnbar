@@ -74,6 +74,31 @@ for script in bin/burnbar-collect bin/burnbar-local-status bin/burnbar-local-con
 done
 ok "all four scripts are stdlib-only and parse"
 
+# --help is a question, not a run: it must describe the flags and exit without
+# creating a state directory or touching history.json.
+help_state="$(mktemp -d)"
+help_out=$(XDG_STATE_HOME="$help_state" XDG_CACHE_HOME="$help_state/cache" \
+  python3 bin/burnbar-collect --help) || fail "--help exited non-zero"
+for flag in --window --buckets --no-local --meter-host --meter-unit --print; do
+  grep -q -- "$flag" <<<"$help_out" || fail "--help does not document $flag"
+done
+[ -z "$(find "$help_state" -type f 2>/dev/null)" ] || fail "--help collected instead of just printing"
+rm -rf "$help_state"
+ok "--help documents every flag and collects nothing"
+
+# A widget subprocess that cannot reach its state directory must say so in one
+# line and exit non-zero, never dump a traceback into the service journal.
+ro_state="$(mktemp -d)"; chmod 500 "$ro_state"
+set +e
+ro_err=$(XDG_STATE_HOME="$ro_state" XDG_CACHE_HOME="$ro_state/cache" \
+  python3 bin/burnbar-collect --no-local 2>&1 >/dev/null); ro_rc=$?
+set -e
+chmod 700 "$ro_state"; rm -rf "$ro_state"
+[ "$ro_rc" -ne 0 ] || fail "unwritable state dir exited 0"
+grep -q "^burnbar-collect: cannot" <<<"$ro_err" || fail "no clean message: $ro_err"
+! grep -q "Traceback" <<<"$ro_err" || fail "traceback leaked to the journal: $ro_err"
+ok "an unwritable state directory is one clear line, not a traceback"
+
 echo "== local intelligence unit tests =="
 python3 -m unittest discover -s tests -p 'test_local_scripts.py' -q >/dev/null \
   || fail "local script unit tests"
