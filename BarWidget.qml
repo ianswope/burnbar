@@ -45,7 +45,26 @@ BarWidget {
   // One clamp — the service's — so the strip can never draw a different
   // number of cells than the collector made buckets (bars: 0 used to read as
   // 12 here and 6 there). The fallback only matters before the service binds.
-  readonly property int cellCount: svc ? svc.bucketCount : boundedInt("bars", 12, 6, 32)
+  // `bars` is the FLOOR for granularity, not the whole story. A strip
+  // stretched across an ultrawide has room for far more, finer cells, and a
+  // lane of twelve 33px blocks reads as a bar chart rather than a heat map.
+  readonly property int baseBars: boundedInt("bars", 12, 6, 240)
+  readonly property int cellCount: svc ? svc.bucketCount : baseBars
+  // One cell plus its gap. Below this the lane smears; above it, it blocks up.
+  readonly property real cellPitch: Math.max(2, Style.spaceReal(6))
+  // Quantised to 4 so a pixel of drift does not re-run the collector. Reads
+  // lane width, never cellCount, so this cannot feed back into itself.
+  readonly property int adaptiveCells: {
+    var lane = graph ? graph.sideWidth : 0
+    if (!isFinite(lane) || lane <= 0) return baseBars
+    var want = Math.round(Math.round(lane / cellPitch) / 4) * 4
+    return Math.max(baseBars, Math.min(240, want))
+  }
+  onAdaptiveCellsChanged: pushBuckets()
+  function pushBuckets() {
+    if (svc && svc.requestedBuckets !== undefined && svc.requestedBuckets !== adaptiveCells)
+      svc.requestedBuckets = adaptiveCells
+  }
   readonly property int localCells: svc ? svc.localCells : boundedInt("localCells", 9, 4, 20)
   // Presence comes from the collector. Until the first snapshot lands the
   // strip stays empty rather than inventing Claude/Codex/Grok lanes that
@@ -62,7 +81,9 @@ BarWidget {
   // cells are a heat map of nothing.
   readonly property int minWidthForCells: {
     var n = Math.max(1, cloudAgents)
-    var cloudNeed = (2 * n * cellCount + 3 + (showGauges ? 6 * n : 0) + (showLocal ? 4 : 0)) / (showLocal ? 0.75 : 1)
+    // baseBars, not cellCount: cellCount is derived from the width this
+    // number helps decide, and reading it here would close the loop.
+    var cloudNeed = (2 * n * baseBars + 3 + (showGauges ? 6 * n : 0) + (showLocal ? 4 : 0)) / (showLocal ? 0.75 : 1)
     var localNeed = showLocal ? (2 * localCells + 6) * 4 : 0
     return Math.max(110, Math.ceil(Math.max(cloudNeed, localNeed)) + 6)
   }
@@ -243,7 +264,7 @@ BarWidget {
   onStretchGapChanged: measureStretch()
   onXChanged: measureStretch()
   onBarChanged: measureStretch()
-  Component.onCompleted: measureStretch()
+  Component.onCompleted: { measureStretch(); pushBuckets() }
 
   Connections {
     target: root.bar
@@ -819,7 +840,11 @@ BarWidget {
       readonly property int gaugeCount: root.showGauges ? root.cloudAgents : 0
       readonly property real gaugesSpace: gaugeCount * (gaugeWidth + gaugeGap)
       readonly property real dividerSpace: showDivider ? dividerWidth : 0
-      readonly property real grokSepSpace: root.grokExtra ? grokSep : 0
+      // `graph.grokSep`, qualified: the separator Item below is `id: grokSep`,
+      // and an id outranks a property of the same name in scope resolution.
+      // Unqualified, this bound an Item into a real and made the whole chain
+      // below (inner → sideWidth → every lane width) NaN.
+      readonly property real grokSepSpace: root.grokExtra ? graph.grokSep : 0
       readonly property real inner: Math.max(1, width - localWidth - ruleWidth
         - gaugesSpace - dividerSpace - grokSepSpace)
       readonly property real extraGrokW: root.grokExtra
@@ -1054,7 +1079,7 @@ BarWidget {
 
       // Soft sep before Grok so the mirrored Claude/Codex instrument stays whole.
       Item {
-        id: grokSep
+        id: grokSeparator
         visible: root.grokExtra
         width: root.grokExtra ? graph.grokSep : 0
         height: parent.height
@@ -1075,7 +1100,7 @@ BarWidget {
         visible: root.showGrok
         width: graph.grokLaneWidth
         height: parent.height
-        anchors.left: grokSep.right
+        anchors.left: grokSeparator.right
         anchors.verticalCenter: parent.verticalCenter
         count: root.cellCount
         cold: root.grokCold; warm: root.grokWarm; hot: root.grokHot

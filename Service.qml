@@ -194,7 +194,13 @@ Item {
   readonly property int windowMinutes: boundedInt("windowMinutes", 360, 30, 1440)
   // Must match BarWidget.cellCount exactly — the widget draws one cell per
   // bucket, so a mismatch makes the strip cover less time than it claims.
-  readonly property int bucketCount: boundedInt("bars", 12, 6, 32)
+  // The strip asks for one bucket per cell it can actually draw at its
+  // current width; 0 means nothing has asked yet, so honour the setting.
+  property int requestedBuckets: 0
+  readonly property int bucketCount: requestedBuckets > 0
+    ? Math.max(6, Math.min(240, requestedBuckets))
+    : boundedInt("bars", 12, 6, 240)
+  onBucketCountChanged: collect()
 
   readonly property int localRefreshMs: boundedInt("localRefreshMs", 2500, 1000, 10000)
   // Where Ollama answers, the ssh alias of the box it runs on, and the

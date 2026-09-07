@@ -74,6 +74,12 @@ for script in bin/burnbar-collect bin/burnbar-local-status bin/burnbar-local-con
 done
 ok "all four scripts are stdlib-only and parse"
 
+# A QML id outranks a same-named property in scope resolution, so an
+# unqualified reference silently binds the Item instead of the number. That is
+# how `grokSepSpace` became NaN and collapsed every lane width to nothing.
+python3 tests/test_qml_id_shadowing.py || fail "QML id/property shadowing"
+ok "no unqualified reference to a name that is both an id and a property"
+
 # --help is a question, not a run: it must describe the flags and exit without
 # creating a state directory or touching history.json.
 help_state="$(mktemp -d)"

@@ -16,7 +16,7 @@
   },
   "barWidget": {
     "displayName": "Burn Bar",
-    "description": "Token spend as a heat map \u2014 lanes appear for the AIs this machine uses. Claude burns left, Codex right, Grok after Codex, and a live GPU lane only when a discrete GPU is detected.",
+    "description": "Token spend as a heat map — lanes appear for the AIs this machine uses. Claude burns left, Codex right, Grok after Codex, and a live GPU lane only when a discrete GPU is detected.",
     "category": "AI",
     "aliases": [
       "tokens",
@@ -93,8 +93,9 @@
         "type": "integer",
         "label": "Cells per cloud agent",
         "min": 6,
-        "max": 32,
-        "defaultValue": 12
+        "max": 240,
+        "defaultValue": 12,
+        "description": "Minimum cells per cloud agent. A stretched strip adds more so a wide lane stays granular instead of blocky."
       },
       {
         "key": "windowMinutes",
