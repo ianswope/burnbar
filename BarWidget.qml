@@ -117,7 +117,7 @@ BarWidget {
   // Siblings in our own row are measured by implicitWidth, never by position:
   // their x moves when we grow, the space they need does not.
   readonly property bool stretch: setting("stretch", true) !== false
-  readonly property int maxWidth: Math.max(configuredWidth, boundedInt("maxWidth", 1200, 110, 4000))
+  readonly property int maxWidth: Math.max(configuredWidth, boundedInt("maxWidth", 2400, 110, 4000))
   readonly property int stretchGap: boundedInt("stretchGap", 14, 0, 200)
 
   // Device pixels. Seeded at the preferred width; measureStretch then
@@ -153,6 +153,14 @@ BarWidget {
     return typeof item.stretchedWidth === "number"
   }
 
+  // What a partner will actually take. Beatdeck publishes `stretchMaxWidth`
+  // and drops it to its minimum when nothing is playing; treating that as a
+  // fair half would leave the gap it gave up sitting empty.
+  function slotCap(item) {
+    var n = Number(item && item.stretchMaxWidth)
+    return isFinite(n) && n > 0 ? Style.spaceReal(n) : Infinity
+  }
+
   function slotMinWidth(item) {
     var n = Number(item && item.stretchMinWidth)
     if (isFinite(n) && n > 0) return n
@@ -181,6 +189,7 @@ BarWidget {
     var trailing = 0
     var partnerX = -1
     var partnerMin = 0
+    var partnerCap = Infinity
     var nPartners = 0
 
     for (var i = 0; i < bar.moduleSlots.length; i++) {
@@ -215,6 +224,7 @@ BarWidget {
             nPartners = 1
             partnerX = point.x
             partnerMin = slotMinWidth(slot.activeItem)
+            partnerCap = slotCap(slot.activeItem)
           }
         }
       }
@@ -244,8 +254,13 @@ BarWidget {
       var extra = hole - ourMin - partnerMin
       if (extra < 0)
         next = hole * ourMin / Math.max(1, ourMin + partnerMin)
-      else
+      else {
         next = ourMin + extra / n
+        // The partner has capped itself under its share — it is yielding.
+        // Take the room it will not use rather than leaving it blank.
+        if (partnerCap < Infinity && partnerCap < hole - next)
+          next = hole - partnerCap
+      }
       next = Math.min(next, hole - partnerMin)
     } else {
       next = hole

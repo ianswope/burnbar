@@ -36,7 +36,7 @@
     "defaults": {
       "width": 158,
       "stretch": true,
-      "maxWidth": 1200,
+      "maxWidth": 2400,
       "stretchGap": 14,
       "bars": 12,
       "windowMinutes": 360,
@@ -77,7 +77,7 @@
         "description": "Ceiling for the fill. Never below the minimum.",
         "min": 110,
         "max": 4000,
-        "defaultValue": 1200
+        "defaultValue": 2400
       },
       {
         "key": "stretchGap",
