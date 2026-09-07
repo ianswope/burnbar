@@ -189,15 +189,9 @@ live:
   rate-limit refresh re-emits the same `last_token_usage` with an unchanged
   total, and counting `last_token_usage` counted it twice (13 times across 130
   rollouts on the development machine).
-
-Two clocks. The strip and chart use grid-aligned buckets so cells march
-instead of jittering; the grid holds `bars - 1` whole buckets plus the partial
-newest one, so it reaches back a little less than the window. Every headline
-number — totals, rates, turns, activity, split, by-model — is computed over
-the exact trailing window from the timestamped points, and the 5-minute and
-1-hour rates are exact trailing sums too.
-- **Grok** — `~/.grok/sessions/**/updates.jsonl`, `_meta.totalTokens` rise per `promptId` (estimate; Grok leaves no full API ledger). Weekly credits from `~/.grok/logs/unified.jsonl` billing snapshots.
-
+- **Grok** — `~/.grok/sessions/**/updates.jsonl`, `_meta.totalTokens` rise per
+  `promptId` (estimate; Grok leaves no full API ledger). Weekly credits from
+  `~/.grok/logs/unified.jsonl` billing snapshots.
 - **Limits** — read straight off the records `omarchy-agent-usage-update` keeps
   in `~/.local/state/omarchy/agents/usage/`. Burn Bar keeps those records
   fresh itself by running `omarchy-agent-usage-update --limits-only claude
@@ -211,6 +205,13 @@ the exact trailing window from the timestamped points, and the 5-minute and
   reset time has passed, a value it could not read — is withheld and
   labelled, never shown as 0%.
 
+Two clocks. The strip and chart use grid-aligned buckets so cells march
+instead of jittering; the grid holds `bars - 1` whole buckets plus the partial
+newest one, so it reaches back a little less than the window. Every headline
+number — totals, rates, turns, activity, split, by-model — is computed over
+the exact trailing window from the timestamped points, and the 5-minute and
+1-hour rates are exact trailing sums too.
+
 Every point carries the input / cache-write / output / cache-read split, and the
 collector reports turns, first and last activity and the peak bucket per
 agent, which is what the cockpit's tiles and token-mix lines are built from.
@@ -218,6 +219,11 @@ agent, which is what the cockpit's tiles and token-mix lines are built from.
 Output goes to `~/.local/state/omarchy/burnbar/history.json`. State deliberately
 never lives inside the plugin directory: a plugin writing in its own dir makes
 Omarchy rebuild every plugin service.
+
+Run it by hand to check what the widget is seeing: `burnbar-collect --help`
+lists the flags the service passes, and `--print` echoes the payload it just
+wrote. If it cannot reach its state directory it says so in one line and exits
+non-zero rather than dumping a traceback into the service journal.
 
 Scanning is incremental twice over: a file whose size and mtime are unchanged
 replays its cached contribution, and a file that merely grew is read from the

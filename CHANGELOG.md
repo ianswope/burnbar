@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- `burnbar-collect --help` prints the flags and exits without collecting.
+  Asking for help used to run a full collection and print nothing.
+
+### Fixed
+- A state directory the collector cannot write is now one clear line on stderr
+  and a non-zero exit, instead of a Python traceback in the service journal.
+
+### Docs
+- The Grok source bullet sat after the "Two clocks" paragraph rather than with
+  the other sources; the list reads Claude, Codex, Grok, Limits again.
+
 ## 1.8.0 — 2026-09-06
 
 ### Added
