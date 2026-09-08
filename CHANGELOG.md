@@ -1,6 +1,29 @@
 # Changelog
 
-## Unreleased
+## 1.9.0 — 2026-09-07
+
+### Added
+- **About line in the cockpit.** Version, source repo and nixfred.com at the
+  foot of the panel. The manifest carries all three (`version`, `repository`,
+  `homepage`) and the panel reads them, so there is one place to edit.
+- **Cells follow the width.** `bars` is now the floor, not a fixed count: a
+  stretched strip asks the collector for one bucket per cell it can draw at
+  ~6px pitch, up to 240. On a 5120px screen that is 52 buckets and 7.5-minute
+  resolution instead of twelve 33px blocks.
+- The strip takes the gap when Now Playing yields it (nothing playing), rather
+  than splitting evenly against a share the neighbour has disclaimed.
+
+### Fixed
+- **Every lane width was NaN when all three cloud agents were present.** The
+  `graph.grokSep` property was shadowed by an Item with `id: grokSep`; a QML id
+  outranks a same-named property, so `grokSepSpace` bound an Item into a real.
+  That fed `inner`, `sideWidth` and every lane width. Qualified the binding and
+  renamed the id; `tests/test_qml_id_shadowing.py` guards it.
+
+### Changed
+- `maxWidth` default 1200 → 2400. 1200 never bound a 1920px bar and stopped a
+  5120px one 700px short of the gap.
+
 
 ### Added
 - `burnbar-collect --help` prints the flags and exits without collecting.

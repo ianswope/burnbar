@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "nixfred.burnbar",
   "name": "Burn Bar",
-  "version": "1.8.0",
+  "version": "1.9.0",
   "author": "nixfred",
   "license": "MIT",
   "description": "Live thermal heat map of the AIs this machine actually uses — Claude, Codex, Grok, and local Ollama when a GPU is present — with weekly quota gauges and the share of tokens kept off frontier models.",
@@ -198,5 +198,7 @@
         "defaultValue": true
       }
     ]
-  }
+  },
+  "repository": "https://github.com/nixfred/burnbar",
+  "homepage": "https://nixfred.com"
 }

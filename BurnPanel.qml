@@ -31,6 +31,20 @@ Panel {
   readonly property color faint: Util.alpha(foreground, 0.10)
   readonly property string fontFamily: widget.bar ? widget.bar.fontFamily : Style.font.family
 
+  // Identity for the About line. The manifest is the single source of truth
+  // for all three, so bumping a version or moving the repo is one edit there.
+  // Constants are a fallback for when the registry is not reachable.
+  readonly property var pluginManifest: {
+    var reg = widget && widget.bar && widget.bar.shell ? widget.bar.shell.pluginRegistry : null
+    return reg && reg.installedPlugins ? (reg.installedPlugins[panel.moduleName] || null) : null
+  }
+  readonly property string pluginVersion: pluginManifest && pluginManifest.version
+    ? String(pluginManifest.version) : ""
+  readonly property string repoUrl: pluginManifest && pluginManifest.repository
+    ? String(pluginManifest.repository) : "https://github.com/nixfred/burnbar"
+  readonly property string homeUrl: pluginManifest && pluginManifest.homepage
+    ? String(pluginManifest.homepage) : "https://nixfred.com"
+
   readonly property int panelWidth: Style.space(880)
   readonly property int columnGap: Style.space(20)
 
@@ -338,6 +352,25 @@ Panel {
     font.family: panel.fontFamily
     font.pixelSize: Style.font.caption
     elide: Text.ElideRight
+  }
+  // Dim like the rest of the footer, so it reads as provenance rather than a
+  // control; underlined on hover so it is still discoverably clickable.
+  component Link: Text {
+    id: linkText
+    property string url: ""
+    textFormat: Text.PlainText
+    color: linkArea.containsMouse ? panel.foreground : panel.dim
+    font.family: panel.fontFamily
+    font.pixelSize: Style.font.caption
+    font.underline: linkArea.containsMouse
+    elide: Text.ElideRight
+    MouseArea {
+      id: linkArea
+      anchors.fill: parent
+      hoverEnabled: true
+      cursorShape: Qt.PointingHandCursor
+      onClicked: if (linkText.url !== "") Quickshell.execDetached(["xdg-open", linkText.url])
+    }
   }
   component Body: Text {
     textFormat: Text.PlainText
@@ -1480,6 +1513,30 @@ Panel {
             text: "collected " + panel.agoText(panel.svc ? panel.svc.generatedAt : 0)
               + "  ·  R refresh  ·  Esc close"
           }
+        }
+
+        // About: version, source, site. Out of the way at the foot of the
+        // panel, but always there — you should never have to open a file to
+        // learn which Burn Bar you are looking at.
+        RowLayout {
+          Layout.fillWidth: true
+          spacing: Style.space(6)
+          Caption {
+            text: "Burn Bar" + (panel.pluginVersion !== "" ? "  v" + panel.pluginVersion : "")
+          }
+          Caption { text: "·"; visible: panel.repoUrl !== "" }
+          Link {
+            visible: panel.repoUrl !== ""
+            text: panel.repoUrl.replace(/^https?:\/\//, "")
+            url: panel.repoUrl
+          }
+          Caption { text: "·"; visible: panel.homeUrl !== "" }
+          Link {
+            visible: panel.homeUrl !== ""
+            text: panel.homeUrl.replace(/^https?:\/\//, "")
+            url: panel.homeUrl
+          }
+          Item { Layout.fillWidth: true }
         }
       }
     }
