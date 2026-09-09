@@ -890,118 +890,6 @@ Panel {
               }
             }
 
-            // Rates: tokens per minute, three horizons, both agents.
-            GridLayout {
-              Layout.fillWidth: true
-              columns: 4
-              columnSpacing: Style.space(8)
-              rowSpacing: 2
-              Caption { text: "RATE  ·  TOKENS / MIN"; font.bold: true; Layout.fillWidth: true }
-              Caption { text: "5 MIN"; font.bold: true; Layout.preferredWidth: Style.space(58); horizontalAlignment: Text.AlignRight }
-              Caption { text: "1 HOUR"; font.bold: true; Layout.preferredWidth: Style.space(58); horizontalAlignment: Text.AlignRight }
-              Caption { text: panel.widget.windowLabel(panel.windowMinutes).toUpperCase(); font.bold: true; Layout.preferredWidth: Style.space(58); horizontalAlignment: Text.AlignRight }
-
-              Body { visible: panel.showClaude; text: "Claude"; color: panel.widget.claudeHot; Layout.fillWidth: true }
-              Counter { visible: panel.showClaude; target: panel.rateNow("claude"); format: panel.widget.compact; color: panel.foreground; font.bold: true; font.pixelSize: Style.font.bodySmall; Layout.preferredWidth: Style.space(58); horizontalAlignment: Text.AlignRight }
-              Counter { visible: panel.showClaude; target: panel.rateHour("claude"); format: panel.widget.compact; color: panel.foreground; font.pixelSize: Style.font.bodySmall; Layout.preferredWidth: Style.space(58); horizontalAlignment: Text.AlignRight }
-              Counter { visible: panel.showClaude; target: panel.rateWindow("claude"); format: panel.widget.compact; color: panel.foreground; font.pixelSize: Style.font.bodySmall; Layout.preferredWidth: Style.space(58); horizontalAlignment: Text.AlignRight }
-
-              Body { visible: panel.showCodex; text: "Codex"; color: panel.widget.codexHot; Layout.fillWidth: true }
-              Counter { visible: panel.showCodex; target: panel.rateNow("codex"); format: panel.widget.compact; color: panel.foreground; font.bold: true; font.pixelSize: Style.font.bodySmall; Layout.preferredWidth: Style.space(58); horizontalAlignment: Text.AlignRight }
-              Counter { visible: panel.showCodex; target: panel.rateHour("codex"); format: panel.widget.compact; color: panel.foreground; font.pixelSize: Style.font.bodySmall; Layout.preferredWidth: Style.space(58); horizontalAlignment: Text.AlignRight }
-              Counter { visible: panel.showCodex; target: panel.rateWindow("codex"); format: panel.widget.compact; color: panel.foreground; font.pixelSize: Style.font.bodySmall; Layout.preferredWidth: Style.space(58); horizontalAlignment: Text.AlignRight }
-
-              Body { visible: panel.showGrok; text: "Grok"; color: panel.widget.grokHot; Layout.fillWidth: true }
-              Counter { visible: panel.showGrok; target: panel.rateNow("grok"); format: panel.widget.compact; color: panel.foreground; font.bold: true; font.pixelSize: Style.font.bodySmall; Layout.preferredWidth: Style.space(58); horizontalAlignment: Text.AlignRight }
-              Counter { visible: panel.showGrok; target: panel.rateHour("grok"); format: panel.widget.compact; color: panel.foreground; font.pixelSize: Style.font.bodySmall; Layout.preferredWidth: Style.space(58); horizontalAlignment: Text.AlignRight }
-              Counter { visible: panel.showGrok; target: panel.rateWindow("grok"); format: panel.widget.compact; color: panel.foreground; font.pixelSize: Style.font.bodySmall; Layout.preferredWidth: Style.space(58); horizontalAlignment: Text.AlignRight }
-
-              Body { visible: panel.showLocal && panel.localTokens; text: panel.boxName; color: panel.widget.localHot; Layout.fillWidth: true }
-              Counter { visible: panel.showLocal && panel.localTokens; target: panel.rateNow("local"); format: panel.widget.compact; color: panel.foreground; font.bold: true; font.pixelSize: Style.font.bodySmall; Layout.preferredWidth: Style.space(58); horizontalAlignment: Text.AlignRight }
-              Counter { visible: panel.showLocal && panel.localTokens; target: panel.rateHour("local"); format: panel.widget.compact; color: panel.foreground; font.pixelSize: Style.font.bodySmall; Layout.preferredWidth: Style.space(58); horizontalAlignment: Text.AlignRight }
-              Counter { visible: panel.showLocal && panel.localTokens; target: panel.rateWindow("local"); format: panel.widget.compact; color: panel.foreground; font.pixelSize: Style.font.bodySmall; Layout.preferredWidth: Style.space(58); horizontalAlignment: Text.AlignRight }
-            }
-
-            PanelSectionHeader {
-              Layout.fillWidth: true
-              text: "TOKEN MIX  ·  INPUT / CACHE WRITE / OUTPUT"
-              foreground: panel.foreground
-              fontFamily: panel.fontFamily
-              elide: Text.ElideRight
-            }
-
-            // What burned, by kind — and how much of everything the model
-            // touched came out of the cache instead. That second number is the
-            // one people never think to look at and always want once they
-            // have seen it. It is a token share; cache hits still cost money.
-            Repeater {
-              model: {
-                var rows = []
-                if (panel.showClaude)
-                  rows.push({ name: "Claude", accent: panel.widget.claudeHot, split: panel.svc ? panel.svc.claudeSplit : ({}) })
-                if (panel.showCodex)
-                  rows.push({ name: "Codex", accent: panel.widget.codexHot, split: panel.svc ? panel.svc.codexSplit : ({}) })
-                if (panel.showGrok)
-                  rows.push({ name: "Grok", accent: panel.widget.grokHot, split: panel.svc ? panel.svc.grokSplit : ({}) })
-                // Local: evaluated prompt as "in", generated as "out", the
-                // reused prefix as the cache read. There is no cache write.
-                if (panel.showLocal && panel.localTokens)
-                  rows.push({ name: panel.boxName, accent: panel.widget.localHot, split: panel.svc.localTokensSplit })
-                return rows
-              }
-              delegate: ColumnLayout {
-                required property var modelData
-                readonly property real total: Math.max(1, panel.splitTotal(modelData.split))
-                Layout.fillWidth: true
-                spacing: 2
-                RowLayout {
-                  Layout.fillWidth: true
-                  spacing: Style.space(6)
-                  Body { text: modelData.name; color: modelData.accent; Layout.preferredWidth: Style.space(48) }
-                  Caption {
-                    Layout.fillWidth: true
-                    text: "in " + panel.widget.compact(modelData.split.input || 0)
-                      + " · cache-w " + panel.widget.compact(modelData.split.cacheWrite || 0)
-                      + " · out " + panel.widget.compact(modelData.split.output || 0)
-                  }
-                  Caption {
-                    text: "cache read " + panel.widget.compact(modelData.split.cacheRead || 0)
-                      + " · " + Math.round(panel.cacheShare(modelData.split) * 100) + "% of all input"
-                    color: modelData.accent
-                    font.bold: true
-                  }
-                }
-                Item {
-                  Layout.fillWidth: true
-                  implicitHeight: Style.space(7)
-                  Rectangle { anchors.fill: parent; radius: height / 2; color: panel.faint }
-                  Row {
-                    id: mixRow
-                    anchors.fill: parent
-                    readonly property real grow: panel.reveal
-                    Rectangle {
-                      height: parent.height
-                      width: parent.width * Number(modelData.split.input || 0) / total * mixRow.grow
-                      color: Util.alpha(modelData.accent, 0.45)
-                      Behavior on width { NumberAnimation { duration: 500; easing.type: Easing.OutCubic } }
-                    }
-                    Rectangle {
-                      height: parent.height
-                      width: parent.width * Number(modelData.split.cacheWrite || 0) / total * mixRow.grow
-                      color: Util.alpha(modelData.accent, 0.75)
-                      Behavior on width { NumberAnimation { duration: 500; easing.type: Easing.OutCubic } }
-                    }
-                    Rectangle {
-                      height: parent.height
-                      width: parent.width * Number(modelData.split.output || 0) / total * mixRow.grow
-                      color: modelData.accent
-                      Behavior on width { NumberAnimation { duration: 500; easing.type: Easing.OutCubic } }
-                    }
-                  }
-                }
-              }
-            }
-
             PanelSectionHeader {
               Layout.fillWidth: true
               text: "PLAN LIMITS"
@@ -1121,6 +1009,118 @@ Panel {
                 Gauge {
                   fraction: limitRow.fraction
                   accent: limitRow.unknown ? panel.dim : panel.widget.gaugeColor(Number(modelData.limit.percent))
+                }
+              }
+            }
+
+            // Rates: tokens per minute, three horizons, both agents.
+            GridLayout {
+              Layout.fillWidth: true
+              columns: 4
+              columnSpacing: Style.space(8)
+              rowSpacing: 2
+              Caption { text: "RATE  ·  TOKENS / MIN"; font.bold: true; Layout.fillWidth: true }
+              Caption { text: "5 MIN"; font.bold: true; Layout.preferredWidth: Style.space(58); horizontalAlignment: Text.AlignRight }
+              Caption { text: "1 HOUR"; font.bold: true; Layout.preferredWidth: Style.space(58); horizontalAlignment: Text.AlignRight }
+              Caption { text: panel.widget.windowLabel(panel.windowMinutes).toUpperCase(); font.bold: true; Layout.preferredWidth: Style.space(58); horizontalAlignment: Text.AlignRight }
+
+              Body { visible: panel.showClaude; text: "Claude"; color: panel.widget.claudeHot; Layout.fillWidth: true }
+              Counter { visible: panel.showClaude; target: panel.rateNow("claude"); format: panel.widget.compact; color: panel.foreground; font.bold: true; font.pixelSize: Style.font.bodySmall; Layout.preferredWidth: Style.space(58); horizontalAlignment: Text.AlignRight }
+              Counter { visible: panel.showClaude; target: panel.rateHour("claude"); format: panel.widget.compact; color: panel.foreground; font.pixelSize: Style.font.bodySmall; Layout.preferredWidth: Style.space(58); horizontalAlignment: Text.AlignRight }
+              Counter { visible: panel.showClaude; target: panel.rateWindow("claude"); format: panel.widget.compact; color: panel.foreground; font.pixelSize: Style.font.bodySmall; Layout.preferredWidth: Style.space(58); horizontalAlignment: Text.AlignRight }
+
+              Body { visible: panel.showCodex; text: "Codex"; color: panel.widget.codexHot; Layout.fillWidth: true }
+              Counter { visible: panel.showCodex; target: panel.rateNow("codex"); format: panel.widget.compact; color: panel.foreground; font.bold: true; font.pixelSize: Style.font.bodySmall; Layout.preferredWidth: Style.space(58); horizontalAlignment: Text.AlignRight }
+              Counter { visible: panel.showCodex; target: panel.rateHour("codex"); format: panel.widget.compact; color: panel.foreground; font.pixelSize: Style.font.bodySmall; Layout.preferredWidth: Style.space(58); horizontalAlignment: Text.AlignRight }
+              Counter { visible: panel.showCodex; target: panel.rateWindow("codex"); format: panel.widget.compact; color: panel.foreground; font.pixelSize: Style.font.bodySmall; Layout.preferredWidth: Style.space(58); horizontalAlignment: Text.AlignRight }
+
+              Body { visible: panel.showGrok; text: "Grok"; color: panel.widget.grokHot; Layout.fillWidth: true }
+              Counter { visible: panel.showGrok; target: panel.rateNow("grok"); format: panel.widget.compact; color: panel.foreground; font.bold: true; font.pixelSize: Style.font.bodySmall; Layout.preferredWidth: Style.space(58); horizontalAlignment: Text.AlignRight }
+              Counter { visible: panel.showGrok; target: panel.rateHour("grok"); format: panel.widget.compact; color: panel.foreground; font.pixelSize: Style.font.bodySmall; Layout.preferredWidth: Style.space(58); horizontalAlignment: Text.AlignRight }
+              Counter { visible: panel.showGrok; target: panel.rateWindow("grok"); format: panel.widget.compact; color: panel.foreground; font.pixelSize: Style.font.bodySmall; Layout.preferredWidth: Style.space(58); horizontalAlignment: Text.AlignRight }
+
+              Body { visible: panel.showLocal && panel.localTokens; text: panel.boxName; color: panel.widget.localHot; Layout.fillWidth: true }
+              Counter { visible: panel.showLocal && panel.localTokens; target: panel.rateNow("local"); format: panel.widget.compact; color: panel.foreground; font.bold: true; font.pixelSize: Style.font.bodySmall; Layout.preferredWidth: Style.space(58); horizontalAlignment: Text.AlignRight }
+              Counter { visible: panel.showLocal && panel.localTokens; target: panel.rateHour("local"); format: panel.widget.compact; color: panel.foreground; font.pixelSize: Style.font.bodySmall; Layout.preferredWidth: Style.space(58); horizontalAlignment: Text.AlignRight }
+              Counter { visible: panel.showLocal && panel.localTokens; target: panel.rateWindow("local"); format: panel.widget.compact; color: panel.foreground; font.pixelSize: Style.font.bodySmall; Layout.preferredWidth: Style.space(58); horizontalAlignment: Text.AlignRight }
+            }
+
+            PanelSectionHeader {
+              Layout.fillWidth: true
+              text: "TOKEN MIX  ·  INPUT / CACHE WRITE / OUTPUT"
+              foreground: panel.foreground
+              fontFamily: panel.fontFamily
+              elide: Text.ElideRight
+            }
+
+            // What burned, by kind — and how much of everything the model
+            // touched came out of the cache instead. That second number is the
+            // one people never think to look at and always want once they
+            // have seen it. It is a token share; cache hits still cost money.
+            Repeater {
+              model: {
+                var rows = []
+                if (panel.showClaude)
+                  rows.push({ name: "Claude", accent: panel.widget.claudeHot, split: panel.svc ? panel.svc.claudeSplit : ({}) })
+                if (panel.showCodex)
+                  rows.push({ name: "Codex", accent: panel.widget.codexHot, split: panel.svc ? panel.svc.codexSplit : ({}) })
+                if (panel.showGrok)
+                  rows.push({ name: "Grok", accent: panel.widget.grokHot, split: panel.svc ? panel.svc.grokSplit : ({}) })
+                // Local: evaluated prompt as "in", generated as "out", the
+                // reused prefix as the cache read. There is no cache write.
+                if (panel.showLocal && panel.localTokens)
+                  rows.push({ name: panel.boxName, accent: panel.widget.localHot, split: panel.svc.localTokensSplit })
+                return rows
+              }
+              delegate: ColumnLayout {
+                required property var modelData
+                readonly property real total: Math.max(1, panel.splitTotal(modelData.split))
+                Layout.fillWidth: true
+                spacing: 2
+                RowLayout {
+                  Layout.fillWidth: true
+                  spacing: Style.space(6)
+                  Body { text: modelData.name; color: modelData.accent; Layout.preferredWidth: Style.space(48) }
+                  Caption {
+                    Layout.fillWidth: true
+                    text: "in " + panel.widget.compact(modelData.split.input || 0)
+                      + " · cache-w " + panel.widget.compact(modelData.split.cacheWrite || 0)
+                      + " · out " + panel.widget.compact(modelData.split.output || 0)
+                  }
+                  Caption {
+                    text: "cache read " + panel.widget.compact(modelData.split.cacheRead || 0)
+                      + " · " + Math.round(panel.cacheShare(modelData.split) * 100) + "% of all input"
+                    color: modelData.accent
+                    font.bold: true
+                  }
+                }
+                Item {
+                  Layout.fillWidth: true
+                  implicitHeight: Style.space(7)
+                  Rectangle { anchors.fill: parent; radius: height / 2; color: panel.faint }
+                  Row {
+                    id: mixRow
+                    anchors.fill: parent
+                    readonly property real grow: panel.reveal
+                    Rectangle {
+                      height: parent.height
+                      width: parent.width * Number(modelData.split.input || 0) / total * mixRow.grow
+                      color: Util.alpha(modelData.accent, 0.45)
+                      Behavior on width { NumberAnimation { duration: 500; easing.type: Easing.OutCubic } }
+                    }
+                    Rectangle {
+                      height: parent.height
+                      width: parent.width * Number(modelData.split.cacheWrite || 0) / total * mixRow.grow
+                      color: Util.alpha(modelData.accent, 0.75)
+                      Behavior on width { NumberAnimation { duration: 500; easing.type: Easing.OutCubic } }
+                    }
+                    Rectangle {
+                      height: parent.height
+                      width: parent.width * Number(modelData.split.output || 0) / total * mixRow.grow
+                      color: modelData.accent
+                      Behavior on width { NumberAnimation { duration: 500; easing.type: Easing.OutCubic } }
+                    }
+                  }
                 }
               }
             }
