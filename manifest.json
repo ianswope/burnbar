@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "nixfred.burnbar",
   "name": "Burn Bar",
-  "version": "1.9.0",
+  "version": "1.10.0",
   "author": "nixfred",
   "license": "MIT",
   "description": "Live thermal heat map of the AIs this machine actually uses — Claude, Codex, Grok, and local Ollama when a GPU is present — with weekly quota gauges and the share of tokens kept off frontier models.",
@@ -51,7 +51,8 @@
       "localHost": "localhost",
       "meterUnit": "ollama-meter",
       "emberFlicker": true,
-      "sparks": true
+      "sparks": true,
+      "themeColors": true
     },
     "schema": [
       {
@@ -182,6 +183,13 @@
         "label": "Meter systemd unit",
         "description": "The ollama-meter unit on that box whose journal carries one line per request. Local token counts and the offload share come from there.",
         "defaultValue": "ollama-meter"
+      },
+      {
+        "key": "themeColors",
+        "type": "boolean",
+        "label": "Follow theme colours",
+        "description": "Take each lane's hue from the active Omarchy theme, keeping the strip's own intensity so cells still read as embers. Off pins the built-in Claude orange / Codex teal / Grok rose / local violet on every theme.",
+        "defaultValue": true
       },
       {
         "key": "emberFlicker",

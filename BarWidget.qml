@@ -1,5 +1,6 @@
 import QtQuick
 import Quickshell
+import Quickshell.Io
 import qs.Commons
 import qs.Ui
 
@@ -405,28 +406,112 @@ BarWidget {
   onSvcChanged: syncServiceSettings()
   onSettingsChanged: syncServiceSettings()
 
+  // ── theme palette ─────────────────────────────────────────────────────────
+  // The shell's Color singleton keeps only five roles (foreground, background,
+  // accent, urgent, muted) and discards the rest of the theme, so read
+  // colors.toml directly for the named hues the heat ramps need. Five of the
+  // installed themes ship no colors.toml at all; those fall through to the
+  // built-in ramp below, which is why every stop keeps a literal base.
+  readonly property bool themeColors: setting("themeColors", true) !== false
+  readonly property string themePalettePath:
+    (Quickshell.env("XDG_STATE_HOME") || Quickshell.env("HOME") + "/.local/state")
+      + "/omarchy/current/theme/colors.toml"
+  property var themePalette: ({})
+
+  function parsePalette(raw) {
+    var out = {}
+    var lines = String(raw || "").split("\n")
+    for (var i = 0; i < lines.length; i++) {
+      var m = lines[i].match(/^\s*([A-Za-z0-9_]+)\s*=\s*["']?(#[0-9A-Fa-f]{6})/)
+      if (m) out[m[1]] = m[2]
+    }
+    return out
+  }
+
+  // 0..1, or -1 for a grey with no hue to borrow.
+  function hexHue(hex) {
+    var r = parseInt(hex.substr(1, 2), 16) / 255
+    var g = parseInt(hex.substr(3, 2), 16) / 255
+    var b = parseInt(hex.substr(5, 2), 16) / 255
+    var mx = Math.max(r, g, b), mn = Math.min(r, g, b), d = mx - mn
+    if (d === 0) return -1
+    var h
+    if (mx === r) h = ((g - b) / d) % 6
+    else if (mx === g) h = (b - r) / d + 2
+    else h = (r - g) / d + 4
+    h /= 6
+    return h < 0 ? h + 1 : h
+  }
+
+  // Hue from the theme, saturation and lightness from our own ramp. Taking the
+  // theme colour whole turns the strip pastel on the muted themes and it stops
+  // reading as heat; taking only the hue re-tints with the desktop while the
+  // embers keep their glow.
+  function themed(base, key, fallbackKey) {
+    if (!themeColors) return base
+    var hex = themePalette[key] || (fallbackKey ? themePalette[fallbackKey] : "")
+    if (!hex) return base
+    var h = hexHue(hex)
+    if (h < 0) return base
+    return Qt.hsla(h, base.hslSaturation, base.hslLightness, 1)
+  }
+
+  FileView {
+    path: root.themePalettePath
+    watchChanges: true
+    printErrors: false
+    onFileChanged: reload()
+    onLoaded: root.themePalette = root.parsePalette(text())
+    onLoadFailed: root.themePalette = ({})
+  }
+
   // ── heat ramps ────────────────────────────────────────────────────────────
   // Cloud + local converge on the same amber/white at the top end, because
   // hot is hot. Identity lives in the cold and mid stops: Claude orange,
   // Codex teal, Grok rose, local violet — separable at 3px in every theme.
-  readonly property color claudeCold: "#4A2113"
-  readonly property color claudeWarm: "#C4542A"
-  readonly property color claudeHot:  "#FF8A4B"
+  // Each stop keeps its literal as the base the theme hue is applied to.
+  readonly property color baseClaudeCold: "#4A2113"
+  readonly property color baseClaudeWarm: "#C4542A"
+  readonly property color baseClaudeHot:  "#FF8A4B"
+  readonly property color claudeCold: themed(baseClaudeCold, "orange", "yellow")
+  readonly property color claudeWarm: themed(baseClaudeWarm, "orange", "yellow")
+  readonly property color claudeHot:  themed(baseClaudeHot,  "orange", "yellow")
 
-  readonly property color codexCold: "#0C3E33"
-  readonly property color codexWarm: "#12977A"
-  readonly property color codexHot:  "#2BE8B0"
+  readonly property color baseCodexCold: "#0C3E33"
+  readonly property color baseCodexWarm: "#12977A"
+  readonly property color baseCodexHot:  "#2BE8B0"
+  readonly property color codexCold: themed(baseCodexCold, "green", "cyan")
+  readonly property color codexWarm: themed(baseCodexWarm, "green", "cyan")
+  readonly property color codexHot:  themed(baseCodexHot,  "green", "cyan")
 
-  readonly property color grokCold:  "#3F1428"
-  readonly property color grokWarm:  "#C43B7A"
-  readonly property color grokHot:   "#FF6BB4"
+  readonly property color baseGrokCold: "#3F1428"
+  readonly property color baseGrokWarm: "#C43B7A"
+  readonly property color baseGrokHot:  "#FF6BB4"
+  readonly property color grokCold: themed(baseGrokCold, "magenta", "red")
+  readonly property color grokWarm: themed(baseGrokWarm, "magenta", "red")
+  readonly property color grokHot:  themed(baseGrokHot,  "magenta", "red")
 
-  readonly property color localCold: "#241046"
-  readonly property color localWarm: "#7A3BE0"
-  readonly property color localHot:  "#C79BFF"
+  readonly property color baseLocalCold: "#241046"
+  readonly property color baseLocalWarm: "#7A3BE0"
+  readonly property color baseLocalHot:  "#C79BFF"
+  readonly property color localCold: themed(baseLocalCold, "blue", "accent")
+  readonly property color localWarm: themed(baseLocalWarm, "blue", "accent")
+  readonly property color localHot:  themed(baseLocalHot,  "blue", "accent")
 
-  readonly property color emberAmber: "#FFC46B"
-  readonly property color whiteHot:   "#FFF6EC"
+  readonly property color baseEmberAmber: "#FFC46B"
+  readonly property color emberAmber: themed(baseEmberAmber, "yellow", "orange")
+  // The convergence point is deliberately near-white; its saturation is low
+  // enough that borrowing a hue would not be visible, so it stays literal.
+  readonly property color whiteHot: "#FFF6EC"
+
+  // Quota and temperature ramps read literally: green/yellow/red mean the same
+  // thing in every theme, and there is no identity to preserve.
+  readonly property color gaugeGood: themeColors && themePalette["green"]
+    ? themePalette["green"] : "#22c55e"
+  readonly property color gaugeWarn: themeColors && themePalette["yellow"]
+    ? themePalette["yellow"] : "#facc15"
+  readonly property color okGreen: themeColors && themePalette["green"]
+    ? themePalette["green"] : "#35f28b"
 
   readonly property color urgent: Color.urgent
 
@@ -510,8 +595,8 @@ BarWidget {
 
   function gaugeColor(percent) {
     if (percent >= 0.9) return urgent
-    if (percent >= 0.75) return "#facc15"
-    return "#22c55e"
+    if (percent >= 0.75) return gaugeWarn
+    return gaugeGood
   }
 
   // ── state ─────────────────────────────────────────────────────────────────
@@ -1183,7 +1268,7 @@ BarWidget {
         anchors.verticalCenter: parent.verticalCenter
 
         readonly property color state: !root.localOnline ? root.urgent
-          : root.localActive ? root.localHot : "#35f28b"
+          : root.localActive ? root.localHot : root.okGreen
         readonly property real core: Math.max(Style.spaceReal(4),
           Math.min(width * 0.34, parent.height * 0.62))
 

@@ -1,5 +1,28 @@
 # Changelog
 
+## 1.10.0 — 2026-09-09
+
+### Added
+- **The strip follows the Omarchy theme.** Each lane takes its hue from the
+  active theme's `colors.toml` (Claude from `orange`, Codex `green`, Grok
+  `magenta`, local `blue`, each with a fallback key), while keeping Burn Bar's
+  own saturation and lightness. Taking the theme colour whole turns the strip
+  pastel on the muted themes and it stops reading as heat; taking only the hue
+  re-tints with the desktop and the embers keep their glow. Quota and
+  temperature ramps map literally, since green/yellow/red mean the same thing
+  in every theme. The palette is watched, so switching theme re-tints live.
+- `themeColors` bar setting, default on. Off pins the built-in Claude orange,
+  Codex teal, Grok rose and local violet on every theme.
+
+### Changed
+- PLAN LIMITS moved above RATE in the cockpit: how close you are to the wall is
+  more urgent than how fast you are burning.
+
+### Notes
+- The shell's own `Color` singleton keeps only foreground, background, accent,
+  urgent and muted, so the plugin reads `colors.toml` itself. Five of the
+  installed themes ship no such file; those fall through to the built-in ramp.
+
 ## 1.9.0 — 2026-09-07
 
 ### Added

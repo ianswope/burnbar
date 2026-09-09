@@ -80,6 +80,12 @@ ok "all four scripts are stdlib-only and parse"
 python3 tests/test_qml_id_shadowing.py || fail "QML id/property shadowing"
 ok "no unqualified reference to a name that is both an id and a property"
 
+# The theme palette parser and the hue transfer, against synthetic input.
+command -v node >/dev/null && {
+  node tests/test_theme_palette.cjs >/dev/null 2>&1 || fail "theme palette tests"
+  ok "theme palette parses, hues are in range, every lane has a fallback key"
+}
+
 # --help is a question, not a run: it must describe the flags and exit without
 # creating a state directory or touching history.json.
 help_state="$(mktemp -d)"

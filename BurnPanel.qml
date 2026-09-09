@@ -227,8 +227,8 @@ Panel {
   readonly property bool localOnline: svc ? svc.localOnline : false
   readonly property bool localActive: svc ? svc.localActive : false
   readonly property color localState: !localOnline ? Color.urgent
-    : localActive ? widget.localHot : "#35f28b"
-  readonly property color powerColor: "#FFC46B"
+    : localActive ? widget.localHot : widget.okGreen
+  readonly property color powerColor: widget.emberAmber
 
   function plainText(value, limit) {
     return String(value || "").slice(0, limit).replace(/[<>&]/g, function(character) {
@@ -1341,7 +1341,7 @@ Panel {
                     : panel.svc.localTempC >= 70 ? "warm" : "cool")
                 fraction: panel.svc && panel.svc.localTempC > 0 ? panel.svc.localTempC / 95 : -1
                 accent: panel.svc && panel.svc.localTempC >= 85 ? Color.urgent
-                  : panel.svc && panel.svc.localTempC >= 70 ? "#facc15" : panel.widget.localHot
+                  : panel.svc && panel.svc.localTempC >= 70 ? panel.widget.gaugeWarn : panel.widget.localHot
               }
               StatTile {
                 // Unified memory: the GPU and the OS draw from the same 8 GB.
