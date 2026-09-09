@@ -1,5 +1,28 @@
 # Changelog
 
+## 1.10.1 — 2026-09-09
+
+### Fixed
+- Transcript discovery skipped any session store symlinked in from another
+  disk. `os.walk` does not follow directory symlinks by default, so every
+  transcript under one contributed nothing and nothing was said about it.
+  It now follows them, with a device/inode guard so a symlink cycle cannot
+  walk forever. No store on this machine is symlinked, so no numbers change.
+
+### Notes
+- Found by auditing every input surface for that shape after the same class of
+  bug turned up in Beatdeck. The rest came back clean, measured against what is
+  actually on disk: Claude accepts 18081 of 18086 records carrying
+  `message.usage`, the five drops being genuinely empty; Codex accepts 1540 of
+  1561 `token_count` events, the 21 drops being the documented rate-limit
+  repeats with an unchanged cumulative total; Grok keeps 13 of 62 prompts with
+  a rise, the other 49 all older than the 25-hour prune cap against a 24-hour
+  maximum window, the newest of them by 0.2 hours.
+- Deliberately still ignored, each checked rather than assumed: Grok's
+  `events.jsonl` carries only `first_token` timing and no counts,
+  `~/.codex/history.jsonl` carries prompt text and no counts, and
+  `fireworks.json` is a stub with `ready: false` and every total zero.
+
 ## 1.10.0 — 2026-09-09
 
 ### Added

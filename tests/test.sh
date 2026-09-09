@@ -116,6 +116,12 @@ python3 -m unittest discover -s tests -p 'test_local_scripts.py' -q >/dev/null \
   || fail "local script unit tests"
 ok "ollama url/json/ssh/tegra/meter hardening tests"
 
+# Discovery must not lose a store that is symlinked in from another disk, and
+# must survive a symlink cycle without walking forever.
+python3 -m unittest discover -s tests -p 'test_walk_symlinks.py' -q >/dev/null \
+  || fail "walk symlink tests"
+ok "transcript discovery follows symlinked stores and survives a cycle"
+
 # GPU discovery is a JSON object with a boolean hasGpu. Intel iGPU must not
 # count; the unit tests cover that. This just proves the flag exists.
 discover=$(python3 bin/burnbar-local-status --discover --host localhost)

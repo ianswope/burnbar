@@ -443,7 +443,22 @@ def codex_extract(line, state):
 def walk(root, match):
     if not root.is_dir():
         return
-    for dirpath, _dirnames, filenames in os.walk(root):
+    # followlinks: a session store symlinked onto another disk is a real
+    # layout, and os.walk skips those by default — every transcript under one
+    # would go missing with nothing said about it. The visited set is what
+    # keeps a symlink cycle from walking forever.
+    seen = set()
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=True):
+        try:
+            info = os.stat(dirpath)
+            key = (info.st_dev, info.st_ino)
+        except OSError:
+            dirnames[:] = []
+            continue
+        if key in seen:
+            dirnames[:] = []
+            continue
+        seen.add(key)
         for name in filenames:
             if match(name):
                 yield Path(dirpath) / name
