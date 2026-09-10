@@ -34,9 +34,30 @@ Panel {
   // Identity for the About line. The manifest is the single source of truth
   // for all three, so bumping a version or moving the repo is one edit there.
   // Constants are a fallback for when the registry is not reachable.
+  // The registry is the nice path, but a widget hosted by a REPLACEMENT bar
+  // gets a service-less facade with no pluginRegistry hanging off it, and the
+  // version then vanished from the About line with nothing to say why — the
+  // repo and site only survived because they have literal fallbacks. The
+  // manifest sits next to this file and is always readable, so read that and
+  // treat the registry as a bonus rather than a requirement.
+  property var manifestFromDisk: ({})
   readonly property var pluginManifest: {
     var reg = widget && widget.bar && widget.bar.shell ? widget.bar.shell.pluginRegistry : null
-    return reg && reg.installedPlugins ? (reg.installedPlugins[panel.moduleName] || null) : null
+    var fromRegistry = reg && reg.installedPlugins
+      ? (reg.installedPlugins[panel.moduleName] || null) : null
+    return fromRegistry || manifestFromDisk
+  }
+
+  FileView {
+    path: String(Qt.resolvedUrl("manifest.json")).replace(/^file:\/\//, "")
+    watchChanges: true
+    printErrors: false
+    onFileChanged: reload()
+    onLoaded: {
+      try { panel.manifestFromDisk = JSON.parse(text()) || ({}) }
+      catch (e) { panel.manifestFromDisk = ({}) }
+    }
+    onLoadFailed: panel.manifestFromDisk = ({})
   }
   readonly property string pluginVersion: pluginManifest && pluginManifest.version
     ? String(pluginManifest.version) : ""
@@ -45,7 +66,9 @@ Panel {
   readonly property string homeUrl: pluginManifest && pluginManifest.homepage
     ? String(pluginManifest.homepage) : "https://nixfred.com"
 
-  readonly property int panelWidth: Style.space(880)
+  // Width is the remedy, never height: a panel that does not fit is clipped,
+  // not scrolled, so the data simply disappears with nothing to say it has.
+  readonly property int panelWidth: Style.space(1360)
   readonly property int columnGap: Style.space(20)
 
   // Relative times ("3m ago", "evicts in 4m") go stale the moment they are
@@ -728,11 +751,21 @@ Panel {
         Item {
           id: columns
           Layout.fillWidth: true
-          implicitHeight: Math.max(cloudCol.implicitHeight, panel.showLocal ? localCol.implicitHeight : 0)
+          implicitHeight: Math.max(cloudCol.implicitHeight, cloudDetailCol.implicitHeight,
+            panel.showLocal ? localCol.implicitHeight : 0)
+          // Three columns, so the cloud side stops being one tall stack. On a
+          // 1080p screen that stack ran off the bottom and took CLAUDE BY
+          // MODEL, the status line and the About row with it.
+          readonly property int gaps: panel.showLocal ? panel.columnGap * 2 : panel.columnGap
+          readonly property int usable: Math.max(1, width - gaps)
           readonly property int leftWidth: panel.showLocal
-            ? Math.round((width - panel.columnGap) * 0.55) : width
+            ? Math.round(usable * 0.37) : Math.round(usable * 0.52)
+          readonly property int midWidth: panel.showLocal
+            ? Math.round(usable * 0.35) : usable - leftWidth
           readonly property int rightWidth: panel.showLocal
-            ? width - panel.columnGap - leftWidth : 0
+            ? usable - leftWidth - midWidth : 0
+          readonly property int midX: leftWidth + panel.columnGap
+          readonly property int rightX: midX + midWidth + panel.columnGap
 
           // ════ CLOUD ═════════════════════════════════════════════════════════
           ColumnLayout {
@@ -1012,6 +1045,18 @@ Panel {
                 }
               }
             }
+          }
+
+          // ════ CLOUD DETAIL ══════════════════════════════════════════════════
+          // Rates, mix and per-model bars. Its own column purely so the cloud
+          // side is two short stacks instead of one that overruns the screen.
+          ColumnLayout {
+            id: cloudDetailCol
+            x: columns.midX
+            width: columns.midWidth
+            spacing: Style.space(8)
+            opacity: panel.reveal
+            transform: Translate { y: (1 - panel.reveal) * 10 }
 
             // Rates: tokens per minute, three horizons, both agents.
             GridLayout {
@@ -1192,7 +1237,7 @@ Panel {
           ColumnLayout {
             id: localCol
             visible: panel.showLocal
-            x: columns.leftWidth + panel.columnGap
+            x: columns.rightX
             width: columns.rightWidth
             spacing: Style.space(8)
             opacity: panel.reveal

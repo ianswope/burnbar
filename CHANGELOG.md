@@ -1,5 +1,25 @@
 # Changelog
 
+## 1.11.0 — 2026-09-10
+
+### Changed
+- **The cockpit fits the screen again — three columns, not two.** With the panel
+  height cap patched out, a panel that outgrows the screen does not scroll, it
+  clips: no scrollbar, no hint, the rows below the fold simply are not drawn. On
+  a 1080p screen the single tall cloud stack was silently losing CLAUDE BY MODEL,
+  the status line and the whole About row. The cloud side is now two short
+  columns (chart plus PLAN LIMITS, then RATE, TOKEN MIX and the by-model bars)
+  with the localhost GPU column third, and the panel widened from 880 to 1360.
+  Width is the remedy, never height.
+
+### Fixed
+- **The About line lost its version under a replacement bar.** It read the
+  version out of `pluginRegistry`, but a widget hosted by a replacement bar gets
+  a service-less facade with no registry on it, so the version silently vanished
+  while the repo and site survived only because they have literal fallbacks. The
+  panel now reads the `manifest.json` sitting next to it and treats the registry
+  as a bonus.
+
 ## 1.10.2 — 2026-09-10
 
 ### Fixed
