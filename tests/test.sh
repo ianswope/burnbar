@@ -122,6 +122,12 @@ python3 -m unittest discover -s tests -p 'test_walk_symlinks.py' -q >/dev/null \
   || fail "walk symlink tests"
 ok "transcript discovery follows symlinked stores and survives a cycle"
 
+# Grok has no stock probe, so its record freezes while its log keeps moving.
+# Picking between two sources has to go on evidence, not on argument order.
+python3 -m unittest discover -s tests -p 'test_limits_selection.py' -q >/dev/null \
+  || fail "limit source selection tests"
+ok "plan limits prefer an open window over a reset one, then the newer measurement"
+
 # GPU discovery is a JSON object with a boolean hasGpu. Intel iGPU must not
 # count; the unit tests cover that. This just proves the flag exists.
 discover=$(python3 bin/burnbar-local-status --discover --host localhost)

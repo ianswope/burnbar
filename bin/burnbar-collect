@@ -714,10 +714,48 @@ def grok_limits_from_log():
     return limits, measured, ""
 
 
+def window_open(limits, now):
+    """True when at least one window in the set has not already reset. A limit
+    with no reset time cannot be judged either way, so it counts as open."""
+    for l in limits or []:
+        end = parse_iso_ms(l.get("resetsAt"))
+        if not end or end > now:
+            return True
+    return False
+
+
+def pick_limits(candidates, now):
+    """Choose between limit sets from different sources. A window that is still
+    open always beats one that has already reset — a reset window is last
+    week's answer no matter how recently it was written down. Between two of
+    the same kind the more recently measured wins. None when nothing is usable."""
+    best = None
+    for limits, measured, status in candidates:
+        if not limits:
+            continue
+        rank = (1 if window_open(limits, now) else 0, measured)
+        if best is None or rank > best[0]:
+            best = (rank, (limits, measured, status))
+    return best[1] if best else None
+
+
 def with_grok_limits(agent_payload):
-    limits, measured, status = limits_for("grok")
-    if not limits:
-        limits, measured, status = grok_limits_from_log()
+    # Grok has no stock Omarchy probe, so nothing ever refreshes
+    # agents/usage/grok.json: once that record exists it is frozen at whatever
+    # it said the day it was written. Preferring it whenever it merely had a
+    # `limits` array pinned Grok's weekly figure to that day forever, and an
+    # expired window read as a confident 0%. ~/.grok/logs/unified.jsonl is the
+    # live source; choose between them on evidence rather than on order.
+    chosen = pick_limits([limits_for("grok"), grok_limits_from_log()], now_ms)
+    if chosen is None:
+        agent_payload["limits"] = []
+        agent_payload["limitsMeasuredAt"] = 0
+        agent_payload["limitsStatus"] = "Grok billing data unavailable"
+        return agent_payload
+    limits, measured, status = chosen
+    if not status and not window_open(limits, now_ms):
+        # Say so rather than presenting last week's window as this week's.
+        status = "Grok window has reset; run grok to refresh"
     agent_payload["limits"] = limits
     agent_payload["limitsMeasuredAt"] = measured
     agent_payload["limitsStatus"] = status

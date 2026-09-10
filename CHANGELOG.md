@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.10.2 — 2026-09-10
+
+### Fixed
+- **Grok plan limits froze and never refreshed.** Grok has no stock Omarchy
+  probe, so nothing ever rewrites `agents/usage/grok.json` — once that record
+  exists it is pinned to whatever it said the day it appeared. The collector
+  preferred it over the live `~/.grok/logs/unified.jsonl` whenever it merely
+  had a non-empty `limits` array, so a six-day-old record with an already-reset
+  window shadowed the log permanently and reported a confident `0%` with an
+  empty status, which the panel had no reason to question.
+- The two sources are now chosen between on evidence: a window that is still
+  open beats one that has already reset, and between two of the same kind the
+  more recently measured wins. A set whose window has reset now carries
+  "Grok window has reset; run grok to refresh" instead of an empty status, so
+  the panel says why the figure is withheld rather than just dimming it.
+
 ## 1.10.1 — 2026-09-09
 
 ### Fixed
