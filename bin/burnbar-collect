@@ -50,6 +50,7 @@ import json
 import os
 import re
 import shlex
+import socket
 import subprocess
 import sys
 import tempfile
@@ -790,8 +791,54 @@ if not grok_present and GROK_LOG.is_file():
 # carried the number (an error, a cut-off stream). Only status 200 counts.
 JOURNAL_KEY = "journal:" + METER_HOST + ":" + METER_UNIT
 JOURNAL_MATCH = "meter ts="
+# Ollama's own server journal is a per-request ledger when the dedicated meter
+# is not installed. One task logs a pair of lines:
+#   ... | task 8079 | prompt eval time =  218.53 ms /   15 tokens (...)
+#   ... | task 8079 |        eval time = 79998.83 ms / 1494 tokens (...)
+# The prompt line is absent when the whole prompt was already cached, so a task
+# is emitted on its eval line with whatever prompt was seen for it.
+OLLAMA_UNIT = str_arg("--ollama-unit", os.environ.get("BURNBAR_OLLAMA_UNIT") or "ollama")
+OLLAMA_MATCH = "print_timing"
+RE_OLLAMA_PROMPT = re.compile(
+    r"^(\d+(?:\.\d+)?)\s.*\btask\s+(\d+)\s*\|\s*prompt eval time\s*=\s*[\d.]+\s*ms\s*/\s*(\d+)\s*tokens")
+RE_OLLAMA_EVAL = re.compile(
+    r"^(\d+(?:\.\d+)?)\s.*\btask\s+(\d+)\s*\|\s*eval time\s*=\s*[\d.]+\s*ms\s*/\s*(\d+)\s*tokens")
 RE_METER = re.compile(r"^\d+\.\d+\s+\S+\s+\S+:\s+meter ts=(\d+) path=(\S+) model=(\S+) status=(\d+) "
                       r"prompt=(-?\d+) eval=(-?\d+)")
+
+
+_FQDN = None
+
+
+def fqdn_once():
+    """socket.getfqdn() does a reverse lookup that blocks for 5s on a host
+    whose name does not resolve, and the collector runs every few seconds. Ask
+    at most once per process, and only when the cheap names have already
+    missed."""
+    global _FQDN
+    if _FQDN is None:
+        try:
+            _FQDN = socket.getfqdn().strip().rstrip(".").lower()
+        except OSError:
+            _FQDN = ""
+    return _FQDN
+
+
+def is_local_host(host):
+    """True when the meter host is this machine, so nothing goes over ssh.
+
+    Same rule as burnbar-local-status.is_local_host; both scripts have to agree
+    or the lane discovers a GPU locally and then fails to read its journal."""
+    name = str(host or "").strip().split("@")[-1].rstrip(".").lower()
+    if not name or name in ("localhost", "127.0.0.1", "::1"):
+        return True
+    try:
+        short = socket.gethostname().strip().rstrip(".").lower()
+    except OSError:
+        return False
+    if name == short or name == short.split(".")[0]:
+        return True
+    return bool(name) and name == fqdn_once()
 
 
 def ssh_command(argv):
@@ -799,12 +846,19 @@ def ssh_command(argv):
     prompting a process nobody can see; the host is the user's own ssh alias
     and is passed after '--' so it can never read as an option. ssh joins
     the remote words with spaces and hands them to a shell, so each one is
-    quoted here — "-g 'meter ts='" used to arrive as two arguments."""
+    quoted here — "-g 'meter ts='" used to arrive as two arguments.
+
+    When the box IS this machine, run it directly. Wrapping a local command in
+    ssh needs a key and a trusted host key for localhost, and on a host without
+    them the GPU lane discovered a card and then reported zero tokens with
+    "Host key verification failed" as the only clue."""
+    if is_local_host(METER_HOST):
+        return list(argv)
     return ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=3", "-o", "LogLevel=ERROR",
             "--", METER_HOST, " ".join(shlex.quote(word) for word in argv)]
 
 
-def journal_lines(cursor):
+def journal_lines(cursor, unit=None, match=None):
     """(lines, new_cursor, error). The meter's journal after the saved cursor,
     or since the window opened when there is none. Tests point
     BURNBAR_METER_JOURNAL at a file in the same short-unix shape."""
@@ -816,9 +870,11 @@ def journal_lines(cursor):
             return [], "", ("journal unreadable: %s" % e)[:160]
     # No -q: it also silences journalctl's own error text, and a bare "exited 1"
     # helps nobody. The "-- No entries --" line it lets through matches nothing.
-    base = ["journalctl", "-u", METER_UNIT, "-o", "short-unix", "--no-pager", "--show-cursor"]
+    unit = unit or METER_UNIT
+    match = match or JOURNAL_MATCH
+    base = ["journalctl", "-u", unit, "-o", "short-unix", "--no-pager", "--show-cursor"]
     base += ["--after-cursor", cursor] if cursor else ["--since", "@%d" % (scan_floor // 1000)]
-    for cmd in (base + ["-g", JOURNAL_MATCH], base):
+    for cmd in (base + ["-g", match], base):
         try:
             run = subprocess.run(ssh_command(cmd), capture_output=True, text=True, timeout=20)
         except FileNotFoundError:
@@ -834,6 +890,11 @@ def journal_lines(cursor):
             new_cursor = ""
             if lines and lines[-1].startswith("-- cursor: "):
                 new_cursor = lines.pop().split(": ", 1)[1].strip()
+            # journalctl's own notes ("-- No entries --") are not data. Leaving
+            # them in made a unit that does not exist look like a unit that was
+            # merely quiet, which silenced the "is it installed?" probe below
+            # and published an available lane reading zero tokens.
+            lines = [l for l in lines if not (l.startswith("-- ") and l.endswith(" --"))]
             return lines, new_cursor, ""
         err = (stderr.splitlines() or ["journalctl exited %d" % run.returncode])[-1]
         # A systemd built without pattern matching: read unfiltered instead.
@@ -862,6 +923,45 @@ def parse_journal(lines, state):
     return points
 
 
+def parse_ollama_journal(lines, state):
+    """One point per completed Ollama request, read from the server's journal.
+
+    No model name: these lines carry only a task id, and the runner is named by
+    blob digest elsewhere, so attributing a friendly name would be a guess."""
+    pending = state.setdefault("ollamaPrompt", {})
+    points = []
+    for line in lines:
+        m = RE_OLLAMA_PROMPT.match(line)
+        if m:
+            pending[m.group(2)] = max(0, int(m.group(3)))
+            continue
+        m = RE_OLLAMA_EVAL.match(line)
+        if not m:
+            continue
+        generated = max(0, int(m.group(3)))
+        prompt = pending.pop(m.group(2), 0)
+        if prompt + generated <= 0:
+            continue
+        points.append([int(float(m.group(1)) * 1000), prompt + generated, "",
+                       "ollama", [prompt, 0, generated, 0]])
+    # A prompt whose eval line never arrived must not accumulate forever.
+    if len(pending) > 64:
+        pending.clear()
+    return points
+
+
+def unit_missing(unit):
+    """True only when systemd positively reports the unit as absent. If the
+    probe itself fails we cannot tell, and guessing 'missing' would blame the
+    wrong thing."""
+    try:
+        probe = subprocess.run(ssh_command(["systemctl", "show", "-p", "LoadState", "--value", unit]),
+                               capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return probe.returncode == 0 and probe.stdout.strip() == "not-found"
+
+
 def valid_journal_entry(hit):
     if not isinstance(hit, dict) or hit.get("journal") is not True:
         return None
@@ -877,6 +977,9 @@ local = Agent("local")
 local_available = True
 local_reason = ""
 jhit = valid_journal_entry(cache.get(JOURNAL_KEY))
+# Which journal the kept points came from. Two sources with different line
+# shapes share this cache, so a cursor from one is meaningless to the other.
+local_source = (jhit or {}).get("source") or "meter"
 cursor = jhit["cursor"] if jhit else ""
 state = dict(jhit["state"]) if jhit else {}
 kept = list(jhit["points"]) if jhit else []
@@ -896,16 +999,29 @@ else:
         local_available = False
         local_reason = err
     elif not cursor and not lines and os.environ.get("BURNBAR_METER_JOURNAL") is None:
-        # A cold read that found nothing: is the meter even installed, or just quiet?
-        try:
-            probe = subprocess.run(ssh_command(["systemctl", "show", "-p", "LoadState", "--value", METER_UNIT]),
-                                   capture_output=True, text=True, timeout=10)
-            if probe.returncode == 0 and probe.stdout.strip() == "not-found":
+        # A cold read that found nothing: is the meter even installed, or just
+        # quiet? If it is absent, Ollama's own journal is itself a per-request
+        # ledger — a GPU that is plainly busy must not report zero tokens just
+        # because the optional meter was never installed on this box.
+        if unit_missing(METER_UNIT):
+            olines, ocursor, oerr = journal_lines("", OLLAMA_UNIT, OLLAMA_MATCH)
+            if not oerr and olines:
+                local_source, lines, new_cursor, err = "ollama", olines, ocursor, ""
+                if jhit and (jhit.get("source") or "meter") != "ollama":
+                    state, kept = {}, []      # the other shape's leftovers
+            elif unit_missing(OLLAMA_UNIT):
                 local_available = False
-                local_reason = "%s has no %s unit — run nano/install.sh" % (METER_HOST, METER_UNIT)
-        except (OSError, subprocess.SubprocessError):
-            pass
-local_points = prune(kept + parse_journal(lines, state)) if not err else prune(kept)
+                local_reason = "%s runs neither %s nor %s" % (METER_HOST, METER_UNIT, OLLAMA_UNIT)
+            else:
+                local_available = False
+                local_reason = "%s has no %s unit and %s has logged no requests" % (
+                    METER_HOST, METER_UNIT, OLLAMA_UNIT)
+if err:
+    local_points = prune(kept)
+elif local_source == "ollama":
+    local_points = prune(kept + parse_ollama_journal(lines, state))
+else:
+    local_points = prune(kept + parse_journal(lines, state))
 for pt in local_points:
     try:
         local.add(pt)
@@ -913,7 +1029,7 @@ for pt in local_points:
         continue
 if not err:
     next_cache[JOURNAL_KEY] = {"journal": True, "cursor": new_cursor or cursor,
-                               "state": state, "points": local_points}
+                               "source": local_source, "state": state, "points": local_points}
 elif jhit:
     next_cache[JOURNAL_KEY] = jhit
 

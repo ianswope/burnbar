@@ -128,6 +128,19 @@ python3 -m unittest discover -s tests -p 'test_limits_selection.py' -q >/dev/nul
   || fail "limit source selection tests"
 ok "plan limits prefer an open window over a reset one, then the newer measurement"
 
+# The dedicated meter is optional. On a host without it, Ollama's own journal
+# is the ledger, and a busy GPU must never report zero tokens.
+python3 -m unittest discover -s tests -p 'test_ollama_journal.py' -q >/dev/null \
+  || fail "ollama journal tests"
+ok "local tokens parse from ollama's own journal; prompt is never counted as generated"
+
+# A GPU in this machine must be read directly. Wrapping a local command in ssh
+# needs a trusted host key for localhost, and without one the lane found the
+# card and then reported zero tokens.
+python3 -m unittest discover -s tests -p 'test_local_host_no_ssh.py' -q >/dev/null \
+  || fail "local host ssh bypass tests"
+ok "a meter host that is this machine runs directly, and never reaches DNS"
+
 # GPU discovery is a JSON object with a boolean hasGpu. Intel iGPU must not
 # count; the unit tests cover that. This just proves the flag exists.
 discover=$(python3 bin/burnbar-local-status --discover --host localhost)

@@ -109,17 +109,37 @@ def _read_text(path) -> str:
         return ""
 
 
+_FQDN = None
+
+
+def fqdn_once() -> str:
+    """socket.getfqdn() does a reverse lookup that blocks for 5s on a host
+    whose name does not resolve, and this probe runs every couple of seconds.
+    Ask at most once per process, and only after the cheap names have missed."""
+    global _FQDN
+    if _FQDN is None:
+        try:
+            _FQDN = socket.getfqdn().strip().rstrip(".").lower()
+        except OSError:
+            _FQDN = ""
+    return _FQDN
+
+
 def is_local_host(host: str) -> bool:
-    """True when --host is this machine, so telemetry must not go over ssh."""
+    """True when --host is this machine, so telemetry must not go over ssh.
+
+    Must answer exactly as burnbar-collect.is_local_host does, or the lane
+    discovers a GPU here and then tries to read its journal over ssh."""
     name = str(host or "").strip().split("@")[-1].rstrip(".").lower()
     if not name or name in ("localhost", "127.0.0.1", "::1"):
         return True
-    mine = {socket.gethostname().lower(), socket.getfqdn().lower()}
     try:
-        mine.add(socket.gethostname().split(".")[0].lower())
-    except (OSError, IndexError, AttributeError):
-        pass
-    return name in mine
+        short = socket.gethostname().strip().rstrip(".").lower()
+    except OSError:
+        return False
+    if name == short or name == short.split(".")[0]:
+        return True
+    return bool(name) and name == fqdn_once()
 
 
 def pci_compute_gpus(sys_pci=None) -> list:
