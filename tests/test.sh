@@ -148,6 +148,12 @@ python3 -m unittest discover -s tests -p 'test_journal_source_sticks.py' -q >/de
   || fail "journal source stickiness tests"
 ok "a cached ollama source keeps reading ollama, not the absent meter unit"
 
+# A crowded bar must get space back. The floor is what the strip needs at its
+# least detailed, and it stops bidding for a gap that cannot seat it anyway.
+python3 -m unittest discover -s tests -p 'test_crowded_bar_yield.py' -q >/dev/null \
+  || fail "crowded bar yield tests"
+ok "the strip sheds cells and drops to its floor instead of splitting a tight gap"
+
 # GPU discovery is a JSON object with a boolean hasGpu. Intel iGPU must not
 # count; the unit tests cover that. This just proves the flag exists.
 discover=$(python3 bin/burnbar-local-status --discover --host localhost)

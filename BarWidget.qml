@@ -50,6 +50,11 @@ BarWidget {
   // stretched across an ultrawide has room for far more, finer cells, and a
   // lane of twelve 33px blocks reads as a bar chart rather than a heat map.
   readonly property int baseBars: boundedInt("bars", 12, 6, 240)
+  // `bars` is what the strip asks for, not what it insists on. On a crowded bar
+  // it sheds cells down to this before it asks any neighbour for room: a
+  // shorter window is a smaller loss than a lane that will not fit. The strip
+  // is the glance; the cockpit still holds the whole window either way.
+  readonly property int minBars: 6
   readonly property int cellCount: svc ? svc.bucketCount : baseBars
   // One cell plus its gap. Below this the lane smears; above it, it blocks up.
   readonly property real cellPitch: Math.max(2, Style.spaceReal(6))
@@ -59,7 +64,7 @@ BarWidget {
     var lane = graph ? graph.sideWidth : 0
     if (!isFinite(lane) || lane <= 0) return baseBars
     var want = Math.round(Math.round(lane / cellPitch) / 4) * 4
-    return Math.max(baseBars, Math.min(240, want))
+    return Math.max(minBars, Math.min(240, want))
   }
   onAdaptiveCellsChanged: pushBuckets()
   function pushBuckets() {
@@ -82,11 +87,24 @@ BarWidget {
   // cells are a heat map of nothing.
   readonly property int minWidthForCells: {
     var n = Math.max(1, cloudAgents)
-    // baseBars, not cellCount: cellCount is derived from the width this
-    // number helps decide, and reading it here would close the loop.
-    var cloudNeed = (2 * n * baseBars + 3 + (showGauges ? 6 * n : 0) + (showLocal ? 4 : 0)) / (showLocal ? 0.75 : 1)
+    // minBars, not cellCount: cellCount is derived from the width this number
+    // helps decide, and reading it here would close the loop. It is minBars
+    // rather than baseBars because this is the floor — the narrowest the strip
+    // can be drawn, not the width it would like. Using baseBars held 136px on a
+    // crowded bar and refused to yield the last 26 of them, which is the whole
+    // complaint: it should shed cells before it hoards width.
+    var cloudNeed = (2 * n * minBars + 3 + (showGauges ? 6 * n : 0) + (showLocal ? 4 : 0)) / (showLocal ? 0.75 : 1)
     var localNeed = showLocal ? (2 * localCells + 6) * 4 : 0
     return Math.max(110, Math.ceil(Math.max(cloudNeed, localNeed)) + 6)
+  }
+  // What the strip would LIKE: `bars` cells at a readable pitch plus the
+  // furniture. minWidthForCells is what it can survive on. The gap between the
+  // two is the space it is willing to hand back when the bar is busy.
+  readonly property int comfortWidth: {
+    var n = Math.max(1, cloudAgents)
+    var cloudNeed = (2 * n * baseBars + 3 + (showGauges ? 6 * n : 0) + (showLocal ? 4 : 0)) / (showLocal ? 0.75 : 1)
+    var localNeed = showLocal ? (2 * localCells + 6) * 4 : 0
+    return Math.max(minWidthForCells, Math.ceil(Math.max(cloudNeed, localNeed)) + 6)
   }
   readonly property int configuredWidth: Math.max(minWidthForCells, boundedInt("width", 158, 110, 400))
   readonly property bool showGauges: setting("showGauges", true) !== false
@@ -255,7 +273,14 @@ BarWidget {
       var extra = hole - ourMin - partnerMin
       if (extra < 0)
         next = hole * ourMin / Math.max(1, ourMin + partnerMin)
-      else {
+      else if (hole < Style.spaceReal(comfortWidth) + partnerMin) {
+        // Crowded: the gap cannot seat this strip comfortably AND the partner,
+        // so stop bidding for it. Drop to the floor and let the neighbour have
+        // the rest. Splitting the leftover down the middle is only fair when
+        // there is enough of it to make both of us usable; below that it is
+        // just hoarding, and a shorter window costs less than a cramped bar.
+        next = ourMin
+      } else {
         next = ourMin + extra / n
         // The partner has capped itself under its share — it is yielding.
         // Take the room it will not use rather than leaving it blank.
