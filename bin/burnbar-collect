@@ -923,6 +923,19 @@ def parse_journal(lines, state):
     return points
 
 
+def journal_source_args(source):
+    """(unit, match) for the journal a cached read came from.
+
+    The two sources log different line shapes, so a warm read has to go back to
+    the one its kept points came from. Defaulting to METER_UNIT here is what
+    froze the lane on a box that runs only Ollama: the fallback picks the Ollama
+    unit on a cold read, but every read after that asked for a unit this host
+    does not run, got nothing, and never advanced."""
+    if source == "ollama":
+        return OLLAMA_UNIT, OLLAMA_MATCH
+    return METER_UNIT, JOURNAL_MATCH
+
+
 def parse_ollama_journal(lines, state):
     """One point per completed Ollama request, read from the server's journal.
 
@@ -988,13 +1001,19 @@ if NO_LOCAL:
     local_available = False
     local_reason = "no discrete GPU"
 else:
-    lines, new_cursor, err = journal_lines(cursor)
+    # Go back to the journal the kept points actually came from. The fallback
+    # to Ollama's own unit below only fires on a cold read, so once it had
+    # chosen that source every later run still asked METER_UNIT — a unit this
+    # box does not run — and got nothing, forever. The lane stayed
+    # "available" and simply stopped advancing at whatever its first read saw.
+    read_unit, read_match = journal_source_args(local_source)
+    lines, new_cursor, err = journal_lines(cursor, read_unit, read_match)
     # A cursor the journal can no longer seek to (a vacuumed file, or one it
     # simply refuses) fails the read. Re-read the window from scratch: that
     # returns the complete set for the window and replaces what was kept.
     if err and cursor:
         cursor, state, kept = "", {}, []
-        lines, new_cursor, err = journal_lines("")
+        lines, new_cursor, err = journal_lines("", read_unit, read_match)
     if err:
         local_available = False
         local_reason = err

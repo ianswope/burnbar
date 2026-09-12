@@ -141,6 +141,13 @@ python3 -m unittest discover -s tests -p 'test_local_host_no_ssh.py' -q >/dev/nu
   || fail "local host ssh bypass tests"
 ok "a meter host that is this machine runs directly, and never reaches DNS"
 
+# A warm read must return to the journal its kept points came from. Defaulting
+# back to the meter unit froze the lane at its first cold read: still
+# "available", still reporting the same token count hours later.
+python3 -m unittest discover -s tests -p 'test_journal_source_sticks.py' -q >/dev/null \
+  || fail "journal source stickiness tests"
+ok "a cached ollama source keeps reading ollama, not the absent meter unit"
+
 # GPU discovery is a JSON object with a boolean hasGpu. Intel iGPU must not
 # count; the unit tests cover that. This just proves the flag exists.
 discover=$(python3 bin/burnbar-local-status --discover --host localhost)
