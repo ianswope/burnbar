@@ -37,6 +37,9 @@ Local:   the ollama-meter journal on the box that runs Ollama (nano, a
          one line per request with the counts off the response. Read by
          journal cursor: one ssh round trip (~250 ms) per run, and only the
          lines since last time.
+         Local work that never reaches Ollama (local-ai on TabbyAPI, an NPU
+         embedder) is read from local-usage.jsonl beside history.json, where
+         the callers append one line per request.
 
 Two clocks. The strip and chart use grid-aligned buckets so cells march instead
 of jittering; every headline number (totals, rates, turns, activity, split,
@@ -128,7 +131,7 @@ clamp to the bounds above; an unrecognised flag is ignored rather than fatal,
 because a collector that exits leaves the widget with an empty strip.
 
 environment: BURNBAR_LOCAL_HOST, BURNBAR_METER_UNIT, BURNBAR_NO_LOCAL=1,
-             GROK_HOME, BURNBAR_NOW_MS (tests pin the clock)
+             BURNBAR_LOCAL_LEDGER, GROK_HOME, BURNBAR_NOW_MS (tests pin the clock)
 """
 
 # Before any argument is read or any state directory is touched, so that asking
@@ -1042,6 +1045,45 @@ elif local_source == "ollama":
 else:
     local_points = prune(kept + parse_journal(lines, state))
 for pt in local_points:
+    try:
+        local.add(pt)
+    except Exception:
+        continue
+
+
+# ── local tokens Ollama's journal never sees ─────────────────────────────────
+# local-ai (TabbyAPI) and an NPU embedder keep no per-request ledger, so the
+# callers that use them append one line each to this file:
+#   {"ts": 1789291801000, "source": "local-ai", "model": "Qwen3.5-9B-EXL3-4bpw",
+#    "prompt": 812, "output": 64, "estimated": true}
+# Calls that go to Ollama are never written here; the journal above already
+# counts them, and writing them twice would double the offload share. These
+# points are scanned (and cached) as a file, separately from the journal
+# cursor, so a journal failure never drops them and they never enter its cache.
+LOCAL_LEDGER = Path(os.environ.get("BURNBAR_LOCAL_LEDGER") or OUT_DIR / "local-usage.jsonl")
+
+
+def ledger_extract(line, _state):
+    try:
+        rec = json.loads(line)
+        # Not count(): an epoch in ms is past MAX_TOKENS, so it would read as junk.
+        ts = rec.get("ts")
+        if isinstance(ts, float) and ts.is_integer():
+            ts = int(ts)
+        if not isinstance(ts, int) or isinstance(ts, bool) or ts <= 0:
+            return None
+        prompt, output = count(rec.get("prompt")), count(rec.get("output"))
+        source = str(rec.get("source") or "").strip()[:24]
+        model = str(rec.get("model") or "").strip()[:40]
+    except MALFORMED:
+        return None
+    if prompt is None or output is None or not source or prompt + output <= 0:
+        return None
+    name = source + ":" + model if model else source
+    return [ts, prompt + output, "", name, [prompt, 0, output, 0]]
+
+
+for pt in scan(LOCAL_LEDGER, ledger_extract):
     try:
         local.add(pt)
     except Exception:

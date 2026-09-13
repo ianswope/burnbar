@@ -154,6 +154,12 @@ python3 -m unittest discover -s tests -p 'test_crowded_bar_yield.py' -q >/dev/nu
   || fail "crowded bar yield tests"
 ok "the strip sheds cells and drops to its floor instead of splitting a tight gap"
 
+# local-ai and an NPU embedder never write Ollama's journal. Their callers append
+# to local-usage.jsonl, and those points must reach the local lane and the share.
+python3 -m unittest discover -s tests -p 'test_local_ledger.py' -q >/dev/null \
+  || fail "local usage ledger tests"
+ok "local-ai and NPU ledger lines count as offloaded; junk and half lines are skipped"
+
 # GPU discovery is a JSON object with a boolean hasGpu. Intel iGPU must not
 # count; the unit tests cover that. This just proves the flag exists.
 discover=$(python3 bin/burnbar-local-status --discover --host localhost)

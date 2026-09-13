@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.14.0 — 2026-09-13
+
+### Fixed
+- **Moving work to a faster local backend lowered the offload share.** The share
+  counted only Ollama's journal. On gus the fast hooks moved to local-ai
+  (TabbyAPI) and recall embeddings moved to the Intel NPU. Neither writes a
+  journal line, so the gauge fell while more work ran locally. Those callers now
+  append one line per request to `local-usage.jsonl` beside `history.json`. The
+  collector adds those lines to the local lane, and by-model shows them as
+  `local-ai:<model>` and `npu:<model>`. Ollama calls are never written there, so
+  nothing is counted twice.
+
 ## 1.11.0 — 2026-09-10
 
 ### Changed

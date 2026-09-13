@@ -272,6 +272,22 @@ hits. Only status 200 counts. The offload share is local burn divided by all
 burn over the window. If ssh fails or the meter is not installed, the panel
 says so in red rather than showing a confident 0.
 
+**Local work Ollama never sees** — a local model served by something other
+than Ollama (local-ai on TabbyAPI) or an NPU embedder writes no journal line, so
+moving work onto it used to *lower* the offload share. Their callers append one
+line per request to `$XDG_STATE_HOME/omarchy/burnbar/local-usage.jsonl`
+(`BURNBAR_LOCAL_LEDGER` overrides the path):
+
+```
+{"ts": 1789308795051, "source": "local-ai", "model": "Qwen3.5-9B-EXL3-4bpw", "prompt": 18, "output": 1, "estimated": true}
+```
+
+The collector reads it incrementally, like a transcript, and adds each line to
+the local lane under `source:model`. Calls that go to Ollama must not be written
+there, because the journal already counts them. `estimated` marks counts derived
+from words ×1.3 when the server reports no usage. Writers rotate the file to
+`.1` at 4 MB.
+
 **On nano** — `./nano/install.sh [host]` installs, over ssh with passwordless
 sudo: the `ollama-meter` unit (DynamicUser, `0.0.0.0:11434` → `127.0.0.1:11435`);
 `ollama.service.d/zz-burnbar.conf`, which moves Ollama to loopback `:11435`
