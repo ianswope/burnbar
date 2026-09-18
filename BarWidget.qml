@@ -78,10 +78,16 @@ BarWidget {
   readonly property bool showClaude: svc ? svc.claudePresent : false
   readonly property bool showCodex: svc ? svc.codexPresent : false
   readonly property bool showGrok: svc ? svc.grokPresent : false
-  readonly property int cloudAgents: (showClaude ? 1 : 0) + (showCodex ? 1 : 0) + (showGrok ? 1 : 0)
+  readonly property int cloudAgents: (showClaude ? 1 : 0) + (showCodex ? 1 : 0) + (showGrok ? 1 : 0) + (showKimi ? 1 : 0)
   readonly property bool grokExtra: showGrok && showClaude && showCodex
   readonly property bool grokAsRight: showGrok && showClaude && !showCodex
   readonly property bool grokAsLeft: showGrok && !showClaude && showCodex
+  // Kimi Code has no transcript store of its own: it rides in Claude's, and the
+  // model id is the only thing that separates them. The lane stays hidden until
+  // a Kimi-model turn actually appears, so a machine that has never run it sees
+  // no change at all. It sits beside Grok as a second narrow band.
+  readonly property bool showKimi: svc ? svc.kimiPresent : false
+  readonly property bool kimiExtra: showKimi && showClaude && showCodex
   // The narrowest strip that still gives every cell a whole pixel and a gap.
   // A configured width below it is raised rather than honoured: overlapping
   // cells are a heat map of nothing.
@@ -345,6 +351,7 @@ BarWidget {
   readonly property int zoneCodex: 1
   readonly property int zoneGrok: 2
   readonly property int zoneLocal: 3
+  readonly property int zoneKimi: 4
 
   property int hoverZone: zoneNone
   // The bar only offers a tooltip to a target that reports itself hovered, and
@@ -354,6 +361,7 @@ BarWidget {
 
   function zoneAccent(zone) {
     if (zone === zoneCodex) return codexHot
+    if (zone === zoneKimi) return kimiHot
     if (zone === zoneGrok) return grokHot
     if (zone === zoneLocal) return showLocal && !localOnline ? urgent : localHot
     return claudeHot
@@ -389,6 +397,11 @@ BarWidget {
       return "CODEX  ·  " + compact(svc.codexTotal) + " tokens / last " + span
         + "\nnow " + compact(svc.codexLatest) + " this bucket  ·  " + svc.codexSessions + " sessions"
         + "\nweekly quota " + quotaText(svc.codexWeekly, svc.codexLimitsMeasuredAt)
+    if (zone === zoneKimi)
+      return "KIMI  ·  " + compact(svc.kimiTotal) + " tokens / last " + span
+        + "\nnow " + compact(svc.kimiLatest) + " this bucket  ·  " + svc.kimiSessions + " sessions"
+        + "\n" + (svc.kimiPlanTier !== "" ? svc.kimiPlanTier + " plan" : "plan unknown")
+        + "  ·  Kimi publishes no quota"
     if (zone === zoneGrok)
       return "GROK  ·  " + compact(svc.grokTotal) + " tokens / last " + span
         + "\nnow " + compact(svc.grokLatest) + " this bucket  ·  " + svc.grokSessions + " sessions"
@@ -516,6 +529,13 @@ BarWidget {
   readonly property color grokWarm: themed(baseGrokWarm, "magenta", "red")
   readonly property color grokHot:  themed(baseGrokHot,  "magenta", "red")
 
+  readonly property color baseKimiCold: "#0B2E3F"
+  readonly property color baseKimiWarm: "#1E7FA8"
+  readonly property color baseKimiHot:  "#4FD6FF"
+  readonly property color kimiCold: themed(baseKimiCold, "cyan", "blue")
+  readonly property color kimiWarm: themed(baseKimiWarm, "cyan", "blue")
+  readonly property color kimiHot:  themed(baseKimiHot,  "cyan", "blue")
+
   readonly property color baseLocalCold: "#241046"
   readonly property color baseLocalWarm: "#7A3BE0"
   readonly property color baseLocalHot:  "#C79BFF"
@@ -569,6 +589,7 @@ BarWidget {
   readonly property real claudeRef: Math.max(svc ? svc.claudePeak : 0, scaleFloor)
   readonly property real codexRef: Math.max(svc ? svc.codexPeak : 0, scaleFloor)
   readonly property real grokRef: Math.max(svc ? svc.grokPeak : 0, scaleFloor)
+  readonly property real kimiRef: Math.max(svc ? svc.kimiPeak : 0, scaleFloor)
 
   function norm(tokens, reference) {
     if (!(tokens > 0)) return 0
@@ -597,6 +618,14 @@ BarWidget {
     if (!b || !b.length) return 0
     var idx = b.length - root.cellCount + i
     return root.norm(idx >= 0 && idx < b.length ? Number(b[idx].grok || 0) : 0, root.grokRef)
+  }
+
+  // Kimi rides after Grok on the same token scale.
+  function kimiLevel(i) {
+    var b = root.buckets
+    if (!b || !b.length) return 0
+    var idx = b.length - root.cellCount + i
+    return root.norm(idx >= 0 && idx < b.length ? Number(b[idx].kimi || 0) : 0, root.kimiRef)
   }
 
   // Local is already a percentage, so it needs no reference peak — but it does
@@ -645,6 +674,7 @@ BarWidget {
       root.broken || !root.showClaude ? 0 : root.claudeLevel(root.cellCount - 1),
       root.broken || !root.showCodex ? 0 : root.codexLevel(0),
       root.broken || !root.showGrok ? 0 : root.grokLevel(root.cellCount - 1),
+      root.broken || !root.showKimi ? 0 : root.kimiLevel(root.cellCount - 1),
       root.showLocal && root.localOnline ? root.localLevel(0) : 0)
 
   readonly property color energyColor: root.broken ? urgent
@@ -684,6 +714,7 @@ BarWidget {
   property real claudeFlash: 0
   property real codexFlash: 0
   property real grokFlash: 0
+  property real kimiFlash: 0
   property real localFlash: 0
   // Wave position gets its own monotonic 0→1. The flash value (up in 90 ms,
   // down over 700) is brightness only; driving position from it sent the
@@ -970,11 +1001,16 @@ BarWidget {
       // Unqualified, this bound an Item into a real and made the whole chain
       // below (inner → sideWidth → every lane width) NaN.
       readonly property real grokSepSpace: root.grokExtra ? graph.grokSep : 0
+      readonly property real kimiSepSpace: root.kimiExtra ? graph.grokSep : 0
       readonly property real inner: Math.max(1, width - localWidth - ruleWidth
-        - gaugesSpace - dividerSpace - grokSepSpace)
+        - gaugesSpace - dividerSpace - grokSepSpace - kimiSepSpace)
       readonly property real extraGrokW: root.grokExtra
         ? Math.max(Style.space(10), Math.round(inner * 0.16)) : 0
-      readonly property real pairInner: Math.max(1, inner - extraGrokW)
+      // Kimi takes the same narrow band as Grok. Every term here is 0 while the
+      // lane is hidden, so a strip without Kimi lays out exactly as before.
+      readonly property real extraKimiW: root.kimiExtra
+        ? Math.max(Style.space(10), Math.round(inner * 0.16)) : 0
+      readonly property real pairInner: Math.max(1, inner - extraGrokW - extraKimiW)
       readonly property real sideWidth: root.cloudAgents <= 1 ? pairInner
         : Math.max(1, pairInner / 2)
       readonly property real claudeLaneWidth: !root.showClaude ? 0
@@ -985,6 +1021,10 @@ BarWidget {
         : root.cloudAgents === 1 ? pairInner
         : root.grokExtra ? extraGrokW
         : sideWidth
+      readonly property real kimiLaneWidth: !root.showKimi ? 0
+        : root.cloudAgents === 1 ? pairInner
+        : root.kimiExtra ? extraKimiW
+        : sideWidth
 
       // Zone spans, used for both the tinted plates and hit-testing. Derived
       // from the same numbers that lay the lanes out, so a plate can never
@@ -992,21 +1032,27 @@ BarWidget {
       readonly property real claudeGaugeSpace: root.showGauges && root.showClaude ? gaugeWidth + gaugeGap : 0
       readonly property real codexGaugeSpace: root.showGauges && root.showCodex ? gaugeGap + gaugeWidth : 0
       readonly property real grokGaugeSpace: root.showGauges && root.showGrok ? gaugeGap + gaugeWidth : 0
+      readonly property real kimiGaugeSpace: root.showGauges && root.showKimi ? gaugeGap + gaugeWidth : 0
       readonly property real claudeZoneWidth:
         claudeGaugeSpace + claudeLaneWidth + (showDivider ? dividerWidth / 2 : 0)
       readonly property real codexZoneWidth:
         (showDivider ? dividerWidth / 2 : 0) + codexLaneWidth + codexGaugeSpace
       readonly property real grokZoneStart: claudeZoneWidth + codexZoneWidth
       readonly property real grokZoneWidth:
-        grokSepSpace + grokLaneWidth + grokGaugeSpace + ruleWidth / 2
-      readonly property real localZoneStart: grokZoneStart + grokZoneWidth
+        grokSepSpace + grokLaneWidth + grokGaugeSpace
+      readonly property real kimiZoneStart: grokZoneStart + grokZoneWidth
+      readonly property real kimiZoneWidth:
+        kimiSepSpace + kimiLaneWidth + kimiGaugeSpace + ruleWidth / 2
+      readonly property real localZoneStart: kimiZoneStart + kimiZoneWidth
       readonly property real localZoneWidth: Math.max(0, width - localZoneStart)
 
       function zoneAt(x) {
         if (root.showClaude && x < claudeZoneWidth) return root.zoneClaude
         if (root.showCodex && x < grokZoneStart) return root.zoneCodex
-        if (root.showGrok && (!root.showLocal || x < localZoneStart)) return root.zoneGrok
+        if (root.showGrok && x < kimiZoneStart) return root.zoneGrok
+        if (root.showKimi && (!root.showLocal || x < localZoneStart)) return root.zoneKimi
         if (root.showLocal) return root.zoneLocal
+        if (root.showKimi) return root.zoneKimi
         if (root.showGrok) return root.zoneGrok
         if (root.showCodex) return root.zoneCodex
         return root.showClaude ? root.zoneClaude : root.zoneNone
@@ -1233,6 +1279,43 @@ BarWidget {
         flash: root.grokFlash
         phaseSign: 1
         levelAt: function(i) { return root.grokLevel(i) }
+      }
+
+      Item {
+        id: kimiSeparator
+        visible: root.kimiExtra
+        width: root.kimiExtra ? graph.grokSep : 0
+        height: parent.height
+        anchors.left: root.showGauges && root.showGrok ? grokGauge.right : grokLane.right
+        anchors.verticalCenter: parent.verticalCenter
+      }
+
+      ThermalLane {
+        id: kimiLane
+        visible: root.showKimi
+        width: graph.kimiLaneWidth
+        height: parent.height
+        anchors.left: kimiSeparator.right
+        anchors.verticalCenter: parent.verticalCenter
+        count: root.cellCount
+        cold: root.kimiCold; warm: root.kimiWarm; hot: root.kimiHot
+        newestLast: true
+        flash: root.kimiFlash
+        phaseSign: 1
+        levelAt: function(i) { return root.kimiLevel(i) }
+      }
+
+      QuotaGauge {
+        id: kimiGauge
+        // Kimi publishes no quota, so this reads as unknown rather than 0%.
+        visible: root.showGauges && root.showKimi
+        width: visible ? graph.gaugeWidth : 0
+        height: parent.height
+        anchors.left: kimiLane.right
+        anchors.leftMargin: visible ? graph.gaugeGap : 0
+        anchors.verticalCenter: parent.verticalCenter
+        percent: -1
+        accent: root.kimiHot
       }
 
       Rectangle {

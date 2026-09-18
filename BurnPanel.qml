@@ -188,6 +188,7 @@ Panel {
     return agent === "claude" ? svc.claudeTrailing5
       : agent === "codex" ? svc.codexTrailing5
       : agent === "grok" ? svc.grokTrailing5
+      : agent === "kimi" ? svc.kimiTrailing5
       : svc.localTokensTrailing5
   }
   function trailing60(agent) {
@@ -195,6 +196,7 @@ Panel {
     return agent === "claude" ? svc.claudeTrailing60
       : agent === "codex" ? svc.codexTrailing60
       : agent === "grok" ? svc.grokTrailing60
+      : agent === "kimi" ? svc.kimiTrailing60
       : svc.localTokensTrailing60
   }
   function windowTotal(agent) {
@@ -202,6 +204,7 @@ Panel {
     return agent === "claude" ? svc.claudeTotal
       : agent === "codex" ? svc.codexTotal
       : agent === "grok" ? svc.grokTotal
+      : agent === "kimi" ? svc.kimiTotal
       : svc.localTokensTotal
   }
   function rateNow(agent) { return trailing5(agent) / 5 }
@@ -211,6 +214,7 @@ Panel {
   readonly property bool showClaude: widget.showClaude
   readonly property bool showCodex: widget.showCodex
   readonly property bool showGrok: widget.showGrok
+  readonly property bool showKimi: widget.showKimi
   readonly property bool showLocal: widget.showLocal
   // The box's name, as the user configured it: what the panel calls the
   // lane wherever it used to say "local". Always known, even offline.
@@ -663,23 +667,26 @@ Panel {
           // the tiles — and a recreated Counter initialises straight to its
           // target, so the count-up never showed.
           Repeater {
-            model: ["claude", "codex", "grok", "local"]
+            model: ["claude", "codex", "grok", "kimi", "local"]
             delegate: Rectangle {
               id: tile
               required property string modelData
               readonly property bool isClaude: modelData === "claude"
               readonly property bool isCodex: modelData === "codex"
               readonly property bool isGrok: modelData === "grok"
-              readonly property bool isCloud: isClaude || isCodex || isGrok
+              readonly property bool isKimi: modelData === "kimi"
+              readonly property bool isCloud: isClaude || isCodex || isGrok || isKimi
               readonly property var s: panel.svc
               readonly property color accent: isClaude ? panel.widget.claudeHot
                 : isCodex ? panel.widget.codexHot
-                : isGrok ? panel.widget.grokHot : panel.localState
+                : isGrok ? panel.widget.grokHot
+                : isKimi ? panel.widget.kimiHot : panel.localState
               // Cloud tiles lead with tokens. Local leads with tokens when the
               // journal gives them; otherwise it falls back to live load.
               readonly property real value: !s ? 0 : isClaude ? s.claudeTotal
                 : isCodex ? s.codexTotal
                 : isGrok ? s.grokTotal
+                : isKimi ? s.kimiTotal
                 : panel.localTokens ? s.localTokensTotal : (panel.localOnline ? s.localLoad : 0)
               readonly property var format: (isCloud || panel.localTokens) ? panel.widget.compact
                 : function(v) { return panel.localOnline ? Math.round(v) + "%" : "off" }
@@ -692,6 +699,8 @@ Panel {
                   + panel.widget.compact(panel.rateNow("codex")) + "/min"
                 if (isGrok) return s.grokTurns + " turns · " + s.grokSessions + " sessions · "
                   + panel.widget.compact(panel.rateNow("grok")) + "/min"
+                if (isKimi) return s.kimiTurns + " turns · " + s.kimiSessions + " sessions · "
+                  + panel.widget.compact(panel.rateNow("kimi")) + "/min"
                 if (panel.localTokens) return Math.round(panel.offload * 100) + "% offloaded · "
                   + s.localTokensTurns + " turns · " + panel.widget.compact(panel.rateNow("local")) + "/min"
                 if (!panel.localOnline) return "ollama not answering"
@@ -707,6 +716,8 @@ Panel {
                   + " · active " + panel.agoText(s.codexLastAt)
                 if (isGrok) return "peak " + panel.widget.compact(s.grokPeak) + " at " + panel.clockText(s.grokPeakAt)
                   + " · active " + panel.agoText(s.grokLastAt)
+                if (isKimi) return "peak " + panel.widget.compact(s.kimiPeak) + " at " + panel.clockText(s.kimiPeakAt)
+                  + " · active " + panel.agoText(s.kimiLastAt)
                 if (!panel.localOnline) return s.localError
                 var live = (s.localActive ? "inferencing " : "idle ") + Math.round(s.localLoad) + "% · " + s.localModelCount + " warm"
                 if (panel.localTokens) return live + " · active " + panel.agoText(s.localTokensLastAt)
@@ -714,7 +725,8 @@ Panel {
               }
 
               visible: (isClaude && panel.showClaude) || (isCodex && panel.showCodex)
-                || (isGrok && panel.showGrok) || (!isCloud && panel.showLocal)
+                || (isGrok && panel.showGrok) || (isKimi && panel.showKimi)
+                || (!isCloud && panel.showLocal)
               Layout.fillWidth: visible
               Layout.preferredWidth: visible ? -1 : 0
               implicitHeight: visible ? Style.space(76) : 0
@@ -952,6 +964,13 @@ Panel {
                   rows.push({ agent: "Grok", accent: panel.widget.grokHot, limits: panel.svc.grokLimits,
                     updatedAt: panel.svc.grokLimitsMeasuredAt, status: panel.svc.grokLimitsStatus, help: panel.svc.grokLimitsHelp,
                     live: panel.svc.grokLimitsLive })
+                // Kimi has no limits array at all: the caption carries its tier
+                // and says plainly that Kimi publishes no quota, so the row
+                // exists without pretending to a percentage.
+                if (panel.showKimi)
+                  rows.push({ agent: "Kimi", accent: panel.widget.kimiHot, limits: panel.svc.kimiLimits,
+                    updatedAt: panel.svc.kimiLimitsMeasuredAt, status: panel.svc.kimiLimitsStatus, help: panel.svc.kimiLimitsHelp,
+                    live: panel.svc.kimiLimitsLive })
                 for (var i = 0; i < rows.length; i++) {
                   var r = rows[i]
                   // No record and nothing to say: this agent is simply not

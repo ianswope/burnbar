@@ -72,6 +72,27 @@ Item {
   property real grokPeakAt: 0
   property real grokTrailing5: 0
   property real grokTrailing60: 0
+
+  // Kimi Code runs through Claude Code, so its turns arrive in Claude's own
+  // transcripts and only the model id separates them. It has no quota to read:
+  // planTier is the tier name Kimi does publish, and limits stays empty.
+  property real kimiTotal: 0
+  property real kimiPeak: 0
+  property int kimiSessions: 0
+  property var kimiLimits: []
+  property real kimiLimitsMeasuredAt: 0
+  property bool kimiLimitsLive: false
+  property string kimiLimitsStatus: ""
+  property string kimiLimitsHelp: ""
+  property string kimiPlanTier: ""
+  property var kimiByModel: ({})
+  property var kimiSplit: ({})
+  property int kimiTurns: 0
+  property real kimiFirstAt: 0
+  property real kimiLastAt: 0
+  property real kimiPeakAt: 0
+  property real kimiTrailing5: 0
+  property real kimiTrailing60: 0
   // Tokens burned on the Ollama box over the same exact window, read from
   // the ollama-meter journal there, and the share of all burn that stayed
   // off the frontier models. available=false carries the reason (ssh
@@ -103,6 +124,7 @@ Item {
   property bool claudePresent: false
   property bool codexPresent: false
   property bool grokPresent: false
+  property bool kimiPresent: false
   // A compute GPU (NVIDIA, AMD, Jetson) on this machine. Intel iGPU is
   // not one. No GPU → no local lane, no ssh, no Ollama poll.
   // Named hasComputeGpu so it cannot collide with localGpu, the load %.
@@ -230,6 +252,7 @@ Item {
   readonly property real claudeLatest: buckets.length ? Number(buckets[buckets.length - 1].claude || 0) : 0
   readonly property real codexLatest: buckets.length ? Number(buckets[buckets.length - 1].codex || 0) : 0
   readonly property real grokLatest: buckets.length ? Number(buckets[buckets.length - 1].grok || 0) : 0
+  readonly property real kimiLatest: buckets.length ? Number(buckets[buckets.length - 1].kimi || 0) : 0
 
   // Re-evaluated every 30s so a record ages into "stale" and a window rolls
   // into "expired" without waiting for a new sample to arrive.
@@ -457,6 +480,24 @@ Item {
       root.grokPeakAt = num(g.peakAt)
       root.grokTrailing5 = num(g.trailing ? g.trailing.m5 : 0)
       root.grokTrailing60 = num(g.trailing ? g.trailing.m60 : 0)
+      var km = parsed.kimi && typeof parsed.kimi === "object" ? parsed.kimi : ({})
+      root.kimiTotal = num(km.total)
+      root.kimiPeak = num(km.peak)
+      root.kimiSessions = num(km.sessions)
+      root.kimiLimits = Array.isArray(km.limits) ? km.limits : []
+      root.kimiLimitsMeasuredAt = num(km.limitsMeasuredAt)
+      root.kimiLimitsLive = km.limitsLive === true
+      root.kimiLimitsStatus = String(km.limitsStatus || "")
+      root.kimiLimitsHelp = String(km.limitsHelp || "")
+      root.kimiPlanTier = String(km.planTier || "")
+      root.kimiByModel = km.byModel && typeof km.byModel === "object" ? km.byModel : ({})
+      root.kimiSplit = km.split && typeof km.split === "object" ? km.split : ({})
+      root.kimiTurns = num(km.turns)
+      root.kimiFirstAt = num(km.firstAt)
+      root.kimiLastAt = num(km.lastAt)
+      root.kimiPeakAt = num(km.peakAt)
+      root.kimiTrailing5 = num(km.trailing ? km.trailing.m5 : 0)
+      root.kimiTrailing60 = num(km.trailing ? km.trailing.m60 : 0)
       var l = parsed.local && typeof parsed.local === "object" ? parsed.local : null
       root.localTokensAvailable = !!l && l.available === true
       root.localTokensReason = l ? String(l.reason || "") : "collector predates local token counting"
@@ -475,11 +516,15 @@ Item {
         root.claudePresent = presence.claude === true
         root.codexPresent = presence.codex === true
         root.grokPresent = presence.grok === true
+        // Absent in history written before Kimi existed: stay off rather than
+        // inventing a lane this machine has never used.
+        root.kimiPresent = presence.kimi === true
       } else {
         // History written before presence existed: keep the old always-on lanes.
         root.claudePresent = true
         root.codexPresent = true
         root.grokPresent = true
+        root.kimiPresent = false
       }
       if (!root.limitsEverTried && (root.claudePresent || root.codexPresent))
         root.refreshLimits()

@@ -55,8 +55,8 @@ class LimitsHelpTests(unittest.TestCase):
                                  name + " must keep returning three values")
 
     def test_every_agent_payload_sets_limits_help(self):
-        self.assertEqual(SRC.count('agent_payload["limitsHelp"]'), 3,
-                         "claude/codex, grok-unavailable and grok-chosen paths")
+        self.assertEqual(SRC.count('agent_payload["limitsHelp"]'), 4,
+                         "claude/codex, grok-unavailable, grok-chosen and kimi")
 
 
 if __name__ == "__main__":
