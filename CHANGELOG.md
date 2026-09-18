@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.15.0 — 2026-09-18
+
+### Fixed
+- **Grok's weekly limit read "—" for days.** Plan limits were judged stale after
+  15 minutes, which is right for Claude and Codex because Burn Bar re-probes
+  those records itself every 5 minutes. Nothing re-probes Grok: its figure is
+  tailed from `~/.grok/logs/unified.jsonl`, and Grok Bot writes
+  `billing: fetched credits config` only when it starts (44 lines in six days).
+  So the row was blank within a quarter hour of Grok Bot launching and stayed
+  blank, while the billing window it described was still open. Limits now carry
+  `limitsLive`: a re-probed record is still condemned by age, a snapshot is
+  judged by its own window (`resetsAt`) and shown with a dim
+  "snapshot measured ..." caption instead of a red "stale" one. The strip gauge
+  and the tooltip come back with it.
+
 ## 1.14.0 — 2026-09-13
 
 ### Fixed

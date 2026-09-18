@@ -1170,6 +1170,9 @@ def with_limits(agent_payload, agent_name):
     agent_payload["limits"] = limits
     agent_payload["limitsMeasuredAt"] = measured
     agent_payload["limitsStatus"] = status
+    # Live: Burn Bar re-probes these records itself (limitsRefreshSec), so an old
+    # measurement really does mean something is wrong and the figure is withheld.
+    agent_payload["limitsLive"] = True
     return agent_payload
 
 
@@ -1182,7 +1185,12 @@ payload = {
     "buckets": buckets,
     "claude": with_limits(claude.payload(), "claude"),
     "codex": with_limits(codex.payload(), "codex"),
-    "grok": with_grok_limits(grok.payload()),
+    # Grok is a SNAPSHOT, not a live probe: nothing re-probes it, and Grok Bot
+    # writes "billing: fetched credits config" only when it starts (44 lines in
+    # six days on gus, 2026-09-18). Judging it by measurement age blanked the
+    # weekly row within 15 minutes and left it blank for days; its own billing
+    # window (resetsAt) is what says whether the figure still describes now.
+    "grok": dict(with_grok_limits(grok.payload()), limitsLive=False),
     # Local tokens over the same exact window, and the share of everything
     # that burned on this machine which never went to a frontier model.
     "local": dict(local.payload(), available=local_available, reason=local_reason,

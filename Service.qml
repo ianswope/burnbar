@@ -28,6 +28,11 @@ Item {
   // presented as live.
   property real claudeLimitsMeasuredAt: 0
   property real codexLimitsMeasuredAt: 0
+  // Live means Burn Bar re-probes the record itself, so age is meaningful. A
+  // snapshot (Grok) is only rewritten when its app happens to log; age says
+  // nothing there, and its billing window decides instead.
+  property bool claudeLimitsLive: true
+  property bool codexLimitsLive: true
   property string claudeLimitsStatus: ""
   property string codexLimitsStatus: ""
   property var claudeByModel: ({})
@@ -52,6 +57,7 @@ Item {
   property int grokSessions: 0
   property var grokLimits: []
   property real grokLimitsMeasuredAt: 0
+  property bool grokLimitsLive: false
   property string grokLimitsStatus: ""
   property var grokByModel: ({})
   property var grokSplit: ({})
@@ -232,18 +238,31 @@ Item {
     var t = Date.parse(String((limit && limit.resetsAt) || ""))
     return isFinite(t) && t <= Date.now()
   }
-  function limitsStale(updatedAt) {
+  // Age only condemns a figure Burn Bar itself keeps refreshing. A snapshot
+  // (live === false) is never stale by age: Grok Bot logs its credits config
+  // only at startup, so a 15-minute bound blanked Grok's weekly row for days
+  // while the window it describes was still open. limitExpired() judges those.
+  function limitsStale(updatedAt, live) {
     void root.limitsTick
+    if (live === false) return false
     var t = Number(updatedAt) || 0
     return t <= 0 || Date.now() - t > root.limitsStaleMs
+  }
+  // True only for a snapshot whose figure is older than the staleness bound:
+  // still shown, but the panel says when it was measured.
+  function limitsSnapshotAged(updatedAt, live) {
+    void root.limitsTick
+    if (live !== false) return false
+    var t = Number(updatedAt) || 0
+    return t > 0 && Date.now() - t > root.limitsStaleMs
   }
 
   // -1 means "unknown": the record is stale, the matching window has rolled
   // over, the collector could not read the figure, or there is no window by
   // that name at all. A gauge must show nothing rather than a confident 0%,
   // and a session figure must never stand in for a weekly one.
-  function limitPercent(limits, needle, measuredAt) {
-    if (limitsStale(measuredAt)) return -1
+  function limitPercent(limits, needle, measuredAt, live) {
+    if (limitsStale(measuredAt, live)) return -1
     for (var i = 0; i < limits.length; i++) {
       var label = String(limits[i].label || "")
       if (label.toLowerCase().indexOf(needle) < 0) continue
@@ -255,9 +274,9 @@ Item {
   }
 
   // Weekly is the limit that actually bites on both plans.
-  readonly property real claudeWeekly: limitPercent(claudeLimits, "weekly", claudeLimitsMeasuredAt)
-  readonly property real codexWeekly: limitPercent(codexLimits, "weekly", codexLimitsMeasuredAt)
-  readonly property real grokWeekly: limitPercent(grokLimits, "weekly", grokLimitsMeasuredAt)
+  readonly property real claudeWeekly: limitPercent(claudeLimits, "weekly", claudeLimitsMeasuredAt, claudeLimitsLive)
+  readonly property real codexWeekly: limitPercent(codexLimits, "weekly", codexLimitsMeasuredAt, codexLimitsLive)
+  readonly property real grokWeekly: limitPercent(grokLimits, "weekly", grokLimitsMeasuredAt, grokLimitsLive)
 
   // A collect() asked for while one is running is not dropped: the limits
   // refresh asks for one the moment it lands, and that ask must survive an
@@ -396,6 +415,8 @@ Item {
       root.codexLimits = Array.isArray(x.limits) ? x.limits : []
       root.claudeLimitsMeasuredAt = num(c.limitsMeasuredAt)
       root.codexLimitsMeasuredAt = num(x.limitsMeasuredAt)
+      root.claudeLimitsLive = c.limitsLive !== false
+      root.codexLimitsLive = x.limitsLive !== false
       root.claudeLimitsStatus = String(c.limitsStatus || "")
       root.codexLimitsStatus = String(x.limitsStatus || "")
       root.claudeByModel = c.byModel && typeof c.byModel === "object" ? c.byModel : ({})
@@ -418,6 +439,7 @@ Item {
       root.grokSessions = num(g.sessions)
       root.grokLimits = Array.isArray(g.limits) ? g.limits : []
       root.grokLimitsMeasuredAt = num(g.limitsMeasuredAt)
+      root.grokLimitsLive = g.limitsLive === true
       root.grokLimitsStatus = String(g.limitsStatus || "")
       root.grokByModel = g.byModel && typeof g.byModel === "object" ? g.byModel : ({})
       root.grokSplit = g.split && typeof g.split === "object" ? g.split : ({})

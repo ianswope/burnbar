@@ -240,6 +240,13 @@ ok "grok totalTokens delta + billing limits"
 
 jq -e '.presence.claude == true and .presence.codex == true and .presence.grok == true' "$out" >/dev/null \
   || fail "presence flags missing or false with transcripts on disk: $(jq -c '.presence' "$out")"
+
+# Claude and Codex records are re-probed by Burn Bar, so age condemns them.
+# Grok is a snapshot tailed from Grok Bot's log, which writes it only at startup;
+# it must be marked so the panel judges it by its billing window instead of age.
+jq -e '.claude.limitsLive == true and .codex.limitsLive == true and .grok.limitsLive == false' "$out" >/dev/null \
+  || fail "limitsLive must be true for the re-probed records and false for the Grok snapshot"
+ok "limits are marked live (Claude, Codex) vs snapshot (Grok)"
 ok "presence detects Claude, Codex and Grok from transcripts"
 
 # Second run must be byte-identical: the incremental cache must not double-count

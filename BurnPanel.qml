@@ -942,26 +942,35 @@ Panel {
                 var rows = []
                 if (panel.showClaude)
                   rows.push({ agent: "Claude", accent: panel.widget.claudeHot, limits: panel.svc.claudeLimits,
-                    updatedAt: panel.svc.claudeLimitsMeasuredAt, status: panel.svc.claudeLimitsStatus })
+                    updatedAt: panel.svc.claudeLimitsMeasuredAt, status: panel.svc.claudeLimitsStatus,
+                    live: panel.svc.claudeLimitsLive })
                 if (panel.showCodex)
                   rows.push({ agent: "Codex", accent: panel.widget.codexHot, limits: panel.svc.codexLimits,
-                    updatedAt: panel.svc.codexLimitsMeasuredAt, status: panel.svc.codexLimitsStatus })
+                    updatedAt: panel.svc.codexLimitsMeasuredAt, status: panel.svc.codexLimitsStatus,
+                    live: panel.svc.codexLimitsLive })
                 if (panel.showGrok)
                   rows.push({ agent: "Grok", accent: panel.widget.grokHot, limits: panel.svc.grokLimits,
-                    updatedAt: panel.svc.grokLimitsMeasuredAt, status: panel.svc.grokLimitsStatus })
+                    updatedAt: panel.svc.grokLimitsMeasuredAt, status: panel.svc.grokLimitsStatus,
+                    live: panel.svc.grokLimitsLive })
                 for (var i = 0; i < rows.length; i++) {
                   var r = rows[i]
                   // No record and nothing to say: this agent is simply not
                   // in use here. Do not nag about it.
                   if (r.limits.length === 0 && r.status === "") continue
-                  var stale = panel.svc.limitsStale(r.updatedAt)
+                  var stale = panel.svc.limitsStale(r.updatedAt, r.live)
+                  // A snapshot older than the bound is still shown, so this
+                  // caption is the honesty: when it was actually measured. Not
+                  // urgent, because nothing is wrong with it.
+                  var aged = panel.svc.limitsSnapshotAged(r.updatedAt, r.live)
                   var parts = []
                   if (r.status !== "") parts.push(r.status)
                   var t = Number(r.updatedAt) || 0
-                  if (t > 0) parts.push("measured " + Qt.formatDateTime(new Date(t), "ddd h:mm AP") + (stale ? "  ·  stale" : ""))
+                  if (t > 0) parts.push((aged ? "snapshot measured " : "measured ")
+                    + Qt.formatDateTime(new Date(t), "ddd h:mm AP") + (stale ? "  ·  stale" : ""))
                   else parts.push("no measurement time")
-                  if (panel.svc.limitsRefreshUnavailable) parts.push("omarchy-agent-usage-update not found, cannot refresh")
-                  if (!stale && r.status === "" && !panel.svc.limitsRefreshUnavailable) continue
+                  if (panel.svc.limitsRefreshUnavailable && r.live) parts.push("omarchy-agent-usage-update not found, cannot refresh")
+                  if (!stale && !aged && r.status === "" && !(panel.svc.limitsRefreshUnavailable && r.live)) continue
+                  r.urgent = stale || r.status !== ""
                   r.text = parts.join("  ·  ")
                   out.push(r)
                 }
@@ -972,7 +981,11 @@ Panel {
                 Layout.fillWidth: true
                 spacing: Style.space(6)
                 Body { text: modelData.agent; color: modelData.accent; Layout.preferredWidth: Style.space(48) }
-                Caption { text: modelData.text; color: Color.urgent; Layout.fillWidth: true }
+                Caption {
+                  text: modelData.text
+                  color: modelData.urgent === false ? panel.dim : Color.urgent
+                  Layout.fillWidth: true
+                }
               }
             }
 
@@ -985,15 +998,18 @@ Panel {
                 var cAt = panel.svc ? panel.svc.claudeLimitsMeasuredAt : 0
                 var xAt = panel.svc ? panel.svc.codexLimitsMeasuredAt : 0
                 var gAt = panel.svc ? panel.svc.grokLimitsMeasuredAt : 0
+                var cLive = panel.svc ? panel.svc.claudeLimitsLive : true
+                var xLive = panel.svc ? panel.svc.codexLimitsLive : true
+                var gLive = panel.svc ? panel.svc.grokLimitsLive : false
                 if (panel.showClaude)
                   for (var i = 0; i < c.length; i++)
-                    out.push({ agent: "Claude", accent: panel.widget.claudeHot, limit: c[i], updatedAt: cAt })
+                    out.push({ agent: "Claude", accent: panel.widget.claudeHot, limit: c[i], updatedAt: cAt, live: cLive })
                 if (panel.showCodex)
                   for (var j = 0; j < x.length; j++)
-                    out.push({ agent: "Codex", accent: panel.widget.codexHot, limit: x[j], updatedAt: xAt })
+                    out.push({ agent: "Codex", accent: panel.widget.codexHot, limit: x[j], updatedAt: xAt, live: xLive })
                 if (panel.showGrok)
                   for (var k = 0; k < g.length; k++)
-                    out.push({ agent: "Grok", accent: panel.widget.grokHot, limit: g[k], updatedAt: gAt })
+                    out.push({ agent: "Grok", accent: panel.widget.grokHot, limit: g[k], updatedAt: gAt, live: gLive })
                 return out
               }
               delegate: ColumnLayout {
@@ -1012,7 +1028,7 @@ Panel {
                 }
                 readonly property bool stale: {
                   void panel.tick
-                  return panel.svc ? panel.svc.limitsStale(modelData.updatedAt) : true
+                  return panel.svc ? panel.svc.limitsStale(modelData.updatedAt, modelData.live) : true
                 }
                 // The collector marks a figure it could not read as -1; that
                 // is unknown too, not -100%.
