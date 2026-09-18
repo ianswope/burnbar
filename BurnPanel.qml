@@ -1045,6 +1045,9 @@ Panel {
                 var cLive = panel.svc ? panel.svc.claudeLimitsLive : true
                 var xLive = panel.svc ? panel.svc.codexLimitsLive : true
                 var gLive = panel.svc ? panel.svc.grokLimitsLive : false
+                var km = panel.svc ? panel.svc.kimiLimits : []
+                var kAt = panel.svc ? panel.svc.kimiLimitsMeasuredAt : 0
+                var kLive = panel.svc ? panel.svc.kimiLimitsLive : true
                 if (panel.showClaude)
                   for (var i = 0; i < c.length; i++)
                     out.push({ agent: "Claude", accent: panel.widget.claudeHot, limit: c[i], updatedAt: cAt, live: cLive })
@@ -1054,6 +1057,9 @@ Panel {
                 if (panel.showGrok)
                   for (var k = 0; k < g.length; k++)
                     out.push({ agent: "Grok", accent: panel.widget.grokHot, limit: g[k], updatedAt: gAt, live: gLive })
+                if (panel.showKimiPlan)
+                  for (var q = 0; q < km.length; q++)
+                    out.push({ agent: "Kimi", accent: panel.widget.kimiHot, limit: km[q], updatedAt: kAt, live: kLive })
                 // The note belongs under the rows it describes, on the last of
                 // them, so the agent's name is printed exactly once.
                 for (var n = 0; n < out.length; n++) out[n].note = ""
@@ -1064,11 +1070,14 @@ Panel {
                   var note = panel.limitNote(out[m].updatedAt,
                     out[m].agent === "Claude" ? (panel.svc ? panel.svc.claudeLimitsStatus : "")
                     : out[m].agent === "Codex" ? (panel.svc ? panel.svc.codexLimitsStatus : "")
+                    : out[m].agent === "Kimi" ? (panel.svc ? panel.svc.kimiLimitsStatus : "")
                     : (panel.svc ? panel.svc.grokLimitsStatus : ""),
                     out[m].agent === "Claude" ? (panel.svc ? panel.svc.claudeLimitsHelp : "")
                     : out[m].agent === "Codex" ? (panel.svc ? panel.svc.codexLimitsHelp : "")
+                    : out[m].agent === "Kimi" ? (panel.svc ? panel.svc.kimiLimitsHelp : "")
                     : (panel.svc ? panel.svc.grokLimitsHelp : ""),
-                    out[m].live)
+                    out[m].live,
+                    out[m].agent === "Kimi" ? (panel.svc ? panel.svc.kimiLimitsInfo : false) : false)
                   out[m].note = note.text
                   out[m].noteUrgent = note.urgent
                 }

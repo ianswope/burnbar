@@ -1242,6 +1242,108 @@ def kimi_api_key():
     return ""
 
 
+# Usage moves with every call, so it is refreshed on roughly the same cadence
+# Burn Bar re-probes Claude and Codex, not the tier's twice-a-day TTL.
+KIMI_USAGE_TTL_MS = 240 * 1000
+
+
+def kimi_window_label(window):
+    """"5-hour" from {duration: 300, timeUnit: TIME_UNIT_MINUTE}."""
+    try:
+        n = int(window.get("duration") or 0)
+    except (TypeError, ValueError):
+        return ""
+    unit = str(window.get("timeUnit") or "").replace("TIME_UNIT_", "").lower()
+    if n <= 0 or not unit:
+        return ""
+    if unit == "minute" and n % 60 == 0:
+        n, unit = n // 60, "hour"
+    return "%d-%s" % (n, unit)
+
+
+def kimi_limits_from_usages(raw):
+    """Burn Bar's {label, percent, resetsAt} rows from Kimi's /usages payload.
+
+    Two different measures come back. `limits[]` is the request window that
+    actually cuts you off (8 of 100 in five hours); `usages` carries credit
+    ratios for that same window and for the month. The request window is the
+    binding one, so it wins the 5-hour row and the duplicate credit ratio for
+    the same span is dropped rather than printed twice.
+    """
+    out = []
+    seen_hours = set()
+    for entry in (raw.get("limits") or []):
+        if not isinstance(entry, dict):
+            continue
+        window = entry.get("window") if isinstance(entry.get("window"), dict) else {}
+        detail = entry.get("detail") if isinstance(entry.get("detail"), dict) else {}
+        label = kimi_window_label(window)
+        try:
+            limit = float(detail.get("limit") or 0)
+            used = float(detail.get("used") or 0)
+        except (TypeError, ValueError):
+            continue
+        if not label or limit <= 0:
+            continue
+        seen_hours.add(label)
+        out.append({"label": "Session (%s)" % label,
+                    "percent": max(0.0, min(1.0, used / limit)),
+                    "resetsAt": str(detail.get("resetTime") or "")})
+    names = {"limit_5h": ("Session (5-hour)", "5-hour"),
+             "limit_month_total": ("Monthly (total)", ""),
+             "limit_month_code": ("Monthly (code)", "")}
+    for key, (label, span) in names.items():
+        entry = (raw.get("usages") or {}).get(key)
+        if not isinstance(entry, dict):
+            continue
+        if span and span in seen_hours:
+            continue  # the request window above already speaks for this span
+        try:
+            ratio = float(entry.get("used_ratio") or 0)
+        except (TypeError, ValueError):
+            continue
+        out.append({"label": label,
+                    "percent": max(0.0, min(1.0, ratio)),
+                    "resetsAt": str(entry.get("reset_time") or "")})
+    return out
+
+
+def refresh_kimi_usage():
+    """Kimi's real quota. GET /usages — plural; /usage is a 404, which is how
+    this was first written off as unavailable."""
+    path = OUT_DIR / "kimi-usage.json"
+    try:
+        cached = json.loads(path.read_text())
+        if now_ms - int(cached.get("measuredAt") or 0) < KIMI_USAGE_TTL_MS:
+            return
+    except (OSError, ValueError, TypeError):
+        pass
+    key = kimi_api_key()
+    if not key:
+        return
+    base = (os.environ.get("KIMI_BASE_URL") or "https://api.kimi.com/coding/v1").rstrip("/")
+    if not base.startswith(("http://", "https://")):
+        return
+    try:
+        req = urllib.request.Request(base + "/usages",
+                                     headers={"Authorization": "Bearer " + key})
+        with urllib.request.urlopen(req, timeout=5) as response:
+            raw = json.loads(response.read(262144).decode("utf-8", "replace"))
+        limits = kimi_limits_from_usages(raw if isinstance(raw, dict) else {})
+    except (urllib.error.URLError, OSError, ValueError, TypeError):
+        return  # keep the last good answer rather than blanking a real figure
+    if not limits:
+        return
+    try:
+        OUT_DIR.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=str(OUT_DIR), prefix=".kimi-usage.", suffix=".tmp")
+        with os.fdopen(fd, "w") as stream:
+            stream.write(json.dumps({"limits": limits, "measuredAt": now_ms}))
+        os.replace(tmp, path)
+    except OSError:
+        pass
+
+
 def refresh_kimi_plan():
     """Cache Kimi's plan tier. The only thing Kimi will tell us about a
     subscription: /me carries user_level_name, and nothing anywhere carries a
@@ -1281,39 +1383,41 @@ def refresh_kimi_plan():
 
 
 def with_kimi_plan(agent_payload):
-    """Kimi publishes a tier and no quota.
+    """Kimi's real quota, from GET /usages, plus the tier from /me.
 
-    Fourteen endpoints under the coding base answer 404, and a real /messages
-    call returns no rate-limit headers at all, so there is no percentage to
-    show and none is invented. /me does return `user_level_name` ("Max"), which
-    is worth saying plainly. It is cached because it is a network call on a
-    5-second collector loop, and it changes about never.
+    Live, because Burn Bar re-probes it itself on the usage TTL: an old
+    measurement really does mean something is wrong, and the figure is withheld
+    the same way Claude's and Codex's are.
     """
-    agent_payload["limits"] = []
-    agent_payload["limitsLive"] = False
-    agent_payload["limitsHelp"] = ""
-    tier = ""
+    limits = []
     measured = 0
     try:
-        raw = json.loads((STATE / "omarchy" / "burnbar" / "kimi-plan.json").read_text())
-        if isinstance(raw, dict):
-            tier = str(raw.get("tier") or "")[:40]
+        raw = json.loads((OUT_DIR / "kimi-usage.json").read_text())
+        if isinstance(raw, dict) and isinstance(raw.get("limits"), list):
+            limits = raw["limits"]
             measured = int(raw.get("measuredAt") or 0)
     except (OSError, ValueError, TypeError):
         pass
+    tier = ""
+    try:
+        plan = json.loads((OUT_DIR / "kimi-plan.json").read_text())
+        if isinstance(plan, dict):
+            tier = str(plan.get("tier") or "")[:40]
+    except (OSError, ValueError, TypeError):
+        pass
+    agent_payload["limits"] = limits
+    agent_payload["limitsLive"] = True
+    agent_payload["limitsHelp"] = "Check KIMI_API_KEY in ~/.env" if not limits else ""
     agent_payload["planTier"] = tier
     agent_payload["limitsMeasuredAt"] = measured
-    agent_payload["limitsStatus"] = (
-        (tier + "  ·  plan tier  ·  Kimi publishes no quota") if tier
-        else "Kimi publishes no quota")
-    # Informational, not a fault. Every other status string here means something
-    # is wrong and is drawn in the urgent colour; "Kimi publishes no quota" is
-    # just true, and painting it red says a problem exists that does not.
+    # The tier is worth saying once; it is not a fault, so it stays dim.
+    agent_payload["limitsStatus"] = ("%s plan" % tier) if (tier and not limits) else ""
     agent_payload["limitsInfo"] = True
     return agent_payload
 
 
 refresh_kimi_plan()
+refresh_kimi_usage()
 all_burn = claude.total + codex.total + grok.total + kimi.total + local.total
 payload = {
     "generatedAt": now_ms,

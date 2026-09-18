@@ -70,14 +70,13 @@ class KimiSplitTests(unittest.TestCase):
         self.assertEqual(sum(b["kimi"] for b in d["buckets"]), 710)
         self.assertEqual(sum(b["claude"] for b in d["buckets"]), 0)
 
-    def test_no_quota_is_claimed_for_kimi(self):
-        """Kimi answers 404 on every usage endpoint and sends no rate-limit
-        headers, so an empty limits list is the honest answer."""
+    def test_without_a_key_no_quota_is_invented(self):
+        """The collect() helper drops KIMI_API_KEY, so /usages is never called.
+        An empty limits list is then the honest answer — never a made-up 0%."""
         now = time.time() * 1000
         d = self.collect([turn(now - 60_000, "kimi-k2-turbo-preview", 700)])
         self.assertEqual(d["kimi"]["limits"], [])
-        self.assertFalse(d["kimi"]["limitsLive"])
-        self.assertIn("no quota", d["kimi"]["limitsStatus"])
+        self.assertEqual(d["kimi"]["limitsMeasuredAt"], 0)
 
     def test_moonshot_ids_count_as_kimi_too(self):
         now = time.time() * 1000

@@ -1307,14 +1307,15 @@ BarWidget {
 
       QuotaGauge {
         id: kimiGauge
-        // Kimi publishes no quota, so this reads as unknown rather than 0%.
         visible: root.showGauges && root.showKimi
         width: visible ? graph.gaugeWidth : 0
         height: parent.height
         anchors.left: kimiLane.right
         anchors.leftMargin: visible ? graph.gaugeGap : 0
         anchors.verticalCenter: parent.verticalCenter
-        percent: -1
+        // The monthly credit pool is the one that runs out; the 5-hour window
+        // refills on its own. -1 when it has not been read, never a false 0%.
+        percent: root.svc ? root.svc.kimiMonthly : -1
         accent: root.kimiHot
       }
 

@@ -129,6 +129,15 @@ python3 -m unittest discover -s tests -p 'test_limits_help.py' -q >/dev/null \
   || fail "limits help tests"
 ok "a withheld limit carries its remedy, and the limits tuple shape holds"
 
+# Kimi's quota parser: /usages (plural) is the endpoint, and the request window
+# must win the five-hour row rather than printing beside its credit ratio.
+python3 -m unittest discover -s tests -p 'test_kimi_usages.py' -q >/dev/null \
+  || fail "kimi usages tests"
+ok "kimi /usages parses to real percentages, one row per window"
+python3 -m unittest discover -s tests -p 'test_kimi_split.py' -q >/dev/null \
+  || fail "kimi split tests"
+ok "a Kimi turn is not billed to Claude"
+
 # Grok has no stock probe, so its record freezes while its log keeps moving.
 # Picking between two sources has to go on evidence, not on argument order.
 python3 -m unittest discover -s tests -p 'test_limits_selection.py' -q >/dev/null \

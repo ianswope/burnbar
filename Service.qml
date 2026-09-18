@@ -307,6 +307,9 @@ Item {
   readonly property real claudeWeekly: limitPercent(claudeLimits, "weekly", claudeLimitsMeasuredAt, claudeLimitsLive)
   readonly property real codexWeekly: limitPercent(codexLimits, "weekly", codexLimitsMeasuredAt, codexLimitsLive)
   readonly property real grokWeekly: limitPercent(grokLimits, "weekly", grokLimitsMeasuredAt, grokLimitsLive)
+  // Kimi meters by the month, not the week: "Monthly (total)" is its credit
+  // pool, and the one worth putting on the strip gauge.
+  readonly property real kimiMonthly: limitPercent(kimiLimits, "monthly (total)", kimiLimitsMeasuredAt, kimiLimitsLive)
 
   // A collect() asked for while one is running is not dropped: the limits
   // refresh asks for one the moment it lands, and that ask must survive an
