@@ -85,6 +85,8 @@ Item {
   property string kimiLimitsStatus: ""
   property string kimiLimitsHelp: ""
   property string kimiPlanTier: ""
+  // A status that describes rather than warns: drawn dim, not urgent.
+  property bool kimiLimitsInfo: false
   property var kimiByModel: ({})
   property var kimiSplit: ({})
   property int kimiTurns: 0
@@ -490,6 +492,7 @@ Item {
       root.kimiLimitsStatus = String(km.limitsStatus || "")
       root.kimiLimitsHelp = String(km.limitsHelp || "")
       root.kimiPlanTier = String(km.planTier || "")
+      root.kimiLimitsInfo = km.limitsInfo === true
       root.kimiByModel = km.byModel && typeof km.byModel === "object" ? km.byModel : ({})
       root.kimiSplit = km.split && typeof km.split === "object" ? km.split : ({})
       root.kimiTurns = num(km.turns)

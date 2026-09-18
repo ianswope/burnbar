@@ -1306,6 +1306,10 @@ def with_kimi_plan(agent_payload):
     agent_payload["limitsStatus"] = (
         (tier + "  ·  plan tier  ·  Kimi publishes no quota") if tier
         else "Kimi publishes no quota")
+    # Informational, not a fault. Every other status string here means something
+    # is wrong and is drawn in the urgent colour; "Kimi publishes no quota" is
+    # just true, and painting it red says a problem exists that does not.
+    agent_payload["limitsInfo"] = True
     return agent_payload
 
 

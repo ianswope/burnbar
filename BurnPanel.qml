@@ -215,6 +215,35 @@ Panel {
   readonly property bool showCodex: widget.showCodex
   readonly property bool showGrok: widget.showGrok
   readonly property bool showKimi: widget.showKimi
+  // The lane needs burn to draw; a plan row only needs a plan. Kimi's tier
+  // comes back from /me, so the subscription is known before a single token
+  // has gone through it.
+  // One builder for the note under a plan limit, so the standalone caption and
+  // the line under an agent's rows can never disagree about whether a figure is
+  // trustworthy. Empty text means the record is healthy and needs no comment.
+  function limitNote(updatedAt, status, help, live, info) {
+    void panel.tick
+    if (!svc) return { text: "", urgent: false }
+    var stale = svc.limitsStale(updatedAt, live)
+    var aged = svc.limitsSnapshotAged(updatedAt, live)
+    var quiet = !stale && !aged && status === ""
+      && !(svc.limitsRefreshUnavailable && live)
+    if (quiet) return { text: "", urgent: false }
+    var parts = []
+    if (status !== "") parts.push(status)
+    // Only when a figure is actually withheld: the remedy is noise otherwise.
+    if (status !== "" && String(help || "") !== "") parts.push(help)
+    var t = Number(updatedAt) || 0
+    if (t > 0) parts.push((aged ? "snapshot measured " : "measured ")
+      + Qt.formatDateTime(new Date(t), "ddd h:mm AP") + (stale ? "  ·  stale" : ""))
+    else parts.push("no measurement time")
+    if (svc.limitsRefreshUnavailable && live)
+      parts.push("omarchy-agent-usage-update not found, cannot refresh")
+    return { text: parts.join("  ·  "),
+             urgent: stale || (status !== "" && info !== true) }
+  }
+
+  readonly property bool showKimiPlan: showKimi || (svc ? svc.kimiPlanTier !== "" : false)
   readonly property bool showLocal: widget.showLocal
   // The box's name, as the user configured it: what the panel calls the
   // lane wherever it used to say "local". Always known, even offline.
@@ -942,10 +971,14 @@ Panel {
               fontFamily: panel.fontFamily
             }
 
-            // The record behind each agent's limits, when it is not to be
-            // trusted: written too long ago, carrying a status ("Sign-in
-            // expired"), or unrefreshable because the Omarchy collector is
-            // missing. Silent otherwise — a healthy record needs no caption.
+            // The note behind an agent's limits, when the record is not to be
+            // trusted: written too long ago, carrying a status ("Waiting for
+            // auth"), or unrefreshable. "" when the record is healthy.
+            //
+            // An agent with limit rows carries its note under them, so the
+            // name is printed once. Only an agent with no rows at all — Kimi,
+            // which publishes a tier and no quota — gets a labelled line of
+            // its own. Grok used to appear twice for exactly this reason.
             Repeater {
               model: {
                 void panel.tick
@@ -967,33 +1000,22 @@ Panel {
                 // Kimi has no limits array at all: the caption carries its tier
                 // and says plainly that Kimi publishes no quota, so the row
                 // exists without pretending to a percentage.
-                if (panel.showKimi)
+                if (panel.showKimiPlan)
                   rows.push({ agent: "Kimi", accent: panel.widget.kimiHot, limits: panel.svc.kimiLimits,
                     updatedAt: panel.svc.kimiLimitsMeasuredAt, status: panel.svc.kimiLimitsStatus, help: panel.svc.kimiLimitsHelp,
-                    live: panel.svc.kimiLimitsLive })
+                    live: panel.svc.kimiLimitsLive, info: panel.svc.kimiLimitsInfo })
                 for (var i = 0; i < rows.length; i++) {
                   var r = rows[i]
                   // No record and nothing to say: this agent is simply not
                   // in use here. Do not nag about it.
                   if (r.limits.length === 0 && r.status === "") continue
-                  var stale = panel.svc.limitsStale(r.updatedAt, r.live)
-                  // A snapshot older than the bound is still shown, so this
-                  // caption is the honesty: when it was actually measured. Not
-                  // urgent, because nothing is wrong with it.
-                  var aged = panel.svc.limitsSnapshotAged(r.updatedAt, r.live)
-                  var parts = []
-                  if (r.status !== "") parts.push(r.status)
-                  // Only when a figure is actually being withheld: the remedy
-                  // is noise next to a healthy row.
-                  if (r.status !== "" && String(r.help || "") !== "") parts.push(r.help)
-                  var t = Number(r.updatedAt) || 0
-                  if (t > 0) parts.push((aged ? "snapshot measured " : "measured ")
-                    + Qt.formatDateTime(new Date(t), "ddd h:mm AP") + (stale ? "  ·  stale" : ""))
-                  else parts.push("no measurement time")
-                  if (panel.svc.limitsRefreshUnavailable && r.live) parts.push("omarchy-agent-usage-update not found, cannot refresh")
-                  if (!stale && !aged && r.status === "" && !(panel.svc.limitsRefreshUnavailable && r.live)) continue
-                  r.urgent = stale || r.status !== ""
-                  r.text = parts.join("  ·  ")
+                  // An agent with rows of its own carries the note under them;
+                  // printing it here too is what made Grok read as two agents.
+                  if (r.limits.length > 0) continue
+                  var note = panel.limitNote(r.updatedAt, r.status, r.help, r.live, r.info)
+                  if (note.text === "") continue
+                  r.text = note.text
+                  r.urgent = note.urgent
                   out.push(r)
                 }
                 return out
@@ -1032,6 +1054,24 @@ Panel {
                 if (panel.showGrok)
                   for (var k = 0; k < g.length; k++)
                     out.push({ agent: "Grok", accent: panel.widget.grokHot, limit: g[k], updatedAt: gAt, live: gLive })
+                // The note belongs under the rows it describes, on the last of
+                // them, so the agent's name is printed exactly once.
+                for (var n = 0; n < out.length; n++) out[n].note = ""
+                var seen = {}
+                for (var m = out.length - 1; m >= 0; m--) {
+                  if (seen[out[m].agent]) continue
+                  seen[out[m].agent] = true
+                  var note = panel.limitNote(out[m].updatedAt,
+                    out[m].agent === "Claude" ? (panel.svc ? panel.svc.claudeLimitsStatus : "")
+                    : out[m].agent === "Codex" ? (panel.svc ? panel.svc.codexLimitsStatus : "")
+                    : (panel.svc ? panel.svc.grokLimitsStatus : ""),
+                    out[m].agent === "Claude" ? (panel.svc ? panel.svc.claudeLimitsHelp : "")
+                    : out[m].agent === "Codex" ? (panel.svc ? panel.svc.codexLimitsHelp : "")
+                    : (panel.svc ? panel.svc.grokLimitsHelp : ""),
+                    out[m].live)
+                  out[m].note = note.text
+                  out[m].noteUrgent = note.urgent
+                }
                 return out
               }
               delegate: ColumnLayout {
@@ -1080,6 +1120,16 @@ Panel {
                 Gauge {
                   fraction: limitRow.fraction
                   accent: limitRow.unknown ? panel.dim : panel.widget.gaugeColor(Number(modelData.limit.percent))
+                }
+                // Why this agent's figures are or are not to be trusted, under
+                // the rows it applies to rather than as a second agent above.
+                Caption {
+                  visible: String(modelData.note || "") !== ""
+                  Layout.fillWidth: true
+                  Layout.leftMargin: Style.space(48) + Style.space(6)
+                  text: modelData.note || ""
+                  color: modelData.noteUrgent === true ? Color.urgent : panel.dim
+                  elide: Text.ElideRight
                 }
               }
             }
