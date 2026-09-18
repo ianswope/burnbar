@@ -34,6 +34,11 @@ Item {
   property bool claudeLimitsLive: true
   property bool codexLimitsLive: true
   property string claudeLimitsStatus: ""
+  // The remedy the usage record already knows ("Run `claude auth login`").
+  // Shown beside the fault so a withheld row says what to do about it.
+  property string claudeLimitsHelp: ""
+  property string codexLimitsHelp: ""
+  property string grokLimitsHelp: ""
   property string codexLimitsStatus: ""
   property var claudeByModel: ({})
   property var claudeSplit: ({})
@@ -418,7 +423,9 @@ Item {
       root.claudeLimitsLive = c.limitsLive !== false
       root.codexLimitsLive = x.limitsLive !== false
       root.claudeLimitsStatus = String(c.limitsStatus || "")
+      root.claudeLimitsHelp = String(c.limitsHelp || "")
       root.codexLimitsStatus = String(x.limitsStatus || "")
+      root.codexLimitsHelp = String(x.limitsHelp || "")
       root.claudeByModel = c.byModel && typeof c.byModel === "object" ? c.byModel : ({})
       root.claudeSplit = c.split && typeof c.split === "object" ? c.split : ({})
       root.codexSplit = x.split && typeof x.split === "object" ? x.split : ({})
@@ -441,6 +448,7 @@ Item {
       root.grokLimitsMeasuredAt = num(g.limitsMeasuredAt)
       root.grokLimitsLive = g.limitsLive === true
       root.grokLimitsStatus = String(g.limitsStatus || "")
+      root.grokLimitsHelp = String(g.limitsHelp || "")
       root.grokByModel = g.byModel && typeof g.byModel === "object" ? g.byModel : ({})
       root.grokSplit = g.split && typeof g.split === "object" ? g.split : ({})
       root.grokTurns = num(g.turns)

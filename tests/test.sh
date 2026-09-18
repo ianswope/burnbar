@@ -122,6 +122,13 @@ python3 -m unittest discover -s tests -p 'test_walk_symlinks.py' -q >/dev/null \
   || fail "walk symlink tests"
 ok "transcript discovery follows symlinked stores and survives a cycle"
 
+# A withheld plan limit must carry the remedy the record already knows, and
+# limits_for must keep its three-value shape: pick_limits and the Grok log
+# source both unpack three, and widening it broke the Grok path once.
+python3 -m unittest discover -s tests -p 'test_limits_help.py' -q >/dev/null \
+  || fail "limits help tests"
+ok "a withheld limit carries its remedy, and the limits tuple shape holds"
+
 # Grok has no stock probe, so its record freezes while its log keeps moving.
 # Picking between two sources has to go on evidence, not on argument order.
 python3 -m unittest discover -s tests -p 'test_limits_selection.py' -q >/dev/null \

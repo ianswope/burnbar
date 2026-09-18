@@ -755,6 +755,9 @@ def with_grok_limits(agent_payload):
         agent_payload["limits"] = []
         agent_payload["limitsMeasuredAt"] = 0
         agent_payload["limitsStatus"] = "Grok billing data unavailable"
+        # Grok carries its own remedy in the status text ("run grok to
+        # refresh"); the key is still set so every agent has the same shape.
+        agent_payload["limitsHelp"] = ""
         return agent_payload
     limits, measured, status = chosen
     if not status and not window_open(limits, now_ms):
@@ -763,6 +766,7 @@ def with_grok_limits(agent_payload):
     agent_payload["limits"] = limits
     agent_payload["limitsMeasuredAt"] = measured
     agent_payload["limitsStatus"] = status
+    agent_payload["limitsHelp"] = ""
     return agent_payload
 
 
@@ -1165,11 +1169,29 @@ def limits_for(agent):
     return limits, measured, status
 
 
+def limits_help(agent):
+    """The remedy the record already knows, e.g. "Run `claude auth login`".
+
+    Kept out of limits_for so that pick_limits and grok_limits_from_log keep
+    speaking the same three-value shape; widening that tuple broke the Grok
+    path, which chooses between two sources of the same kind.
+    """
+    try:
+        raw = json.loads((USAGE_DIR / f"{agent}.json").read_text())
+    except (OSError, ValueError):
+        return ""
+    if not isinstance(raw, dict):
+        return ""
+    return str(raw.get("authHelpText") or "")[:160]
+
+
 def with_limits(agent_payload, agent_name):
     limits, measured, status = limits_for(agent_name)
+    help_text = limits_help(agent_name)
     agent_payload["limits"] = limits
     agent_payload["limitsMeasuredAt"] = measured
     agent_payload["limitsStatus"] = status
+    agent_payload["limitsHelp"] = help_text
     # Live: Burn Bar re-probes these records itself (limitsRefreshSec), so an old
     # measurement really does mean something is wrong and the figure is withheld.
     agent_payload["limitsLive"] = True

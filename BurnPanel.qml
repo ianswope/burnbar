@@ -942,15 +942,15 @@ Panel {
                 var rows = []
                 if (panel.showClaude)
                   rows.push({ agent: "Claude", accent: panel.widget.claudeHot, limits: panel.svc.claudeLimits,
-                    updatedAt: panel.svc.claudeLimitsMeasuredAt, status: panel.svc.claudeLimitsStatus,
+                    updatedAt: panel.svc.claudeLimitsMeasuredAt, status: panel.svc.claudeLimitsStatus, help: panel.svc.claudeLimitsHelp,
                     live: panel.svc.claudeLimitsLive })
                 if (panel.showCodex)
                   rows.push({ agent: "Codex", accent: panel.widget.codexHot, limits: panel.svc.codexLimits,
-                    updatedAt: panel.svc.codexLimitsMeasuredAt, status: panel.svc.codexLimitsStatus,
+                    updatedAt: panel.svc.codexLimitsMeasuredAt, status: panel.svc.codexLimitsStatus, help: panel.svc.codexLimitsHelp,
                     live: panel.svc.codexLimitsLive })
                 if (panel.showGrok)
                   rows.push({ agent: "Grok", accent: panel.widget.grokHot, limits: panel.svc.grokLimits,
-                    updatedAt: panel.svc.grokLimitsMeasuredAt, status: panel.svc.grokLimitsStatus,
+                    updatedAt: panel.svc.grokLimitsMeasuredAt, status: panel.svc.grokLimitsStatus, help: panel.svc.grokLimitsHelp,
                     live: panel.svc.grokLimitsLive })
                 for (var i = 0; i < rows.length; i++) {
                   var r = rows[i]
@@ -964,6 +964,9 @@ Panel {
                   var aged = panel.svc.limitsSnapshotAged(r.updatedAt, r.live)
                   var parts = []
                   if (r.status !== "") parts.push(r.status)
+                  // Only when a figure is actually being withheld: the remedy
+                  // is noise next to a healthy row.
+                  if (r.status !== "" && String(r.help || "") !== "") parts.push(r.help)
                   var t = Number(r.updatedAt) || 0
                   if (t > 0) parts.push((aged ? "snapshot measured " : "measured ")
                     + Qt.formatDateTime(new Date(t), "ddd h:mm AP") + (stale ? "  ·  stale" : ""))
