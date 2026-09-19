@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.20.0 — 2026-09-18
+
+### Added
+- **Kimi card on the top row, and a quota bar on every cloud card.** Each cloud
+  card carries its binding limit as a bar plus a percentage: weekly for Claude,
+  Codex and Grok, monthly for Kimi, which is what Kimi meters. Localhost keeps
+  the shorter card — it has no quota, and drawing one would say something
+  untrue. A withheld figure draws a dim bar and an em dash, never a confident
+  0%, so Grok's real 0% and an unknown still look different.
+- The Kimi card gates on having a plan rather than on burn, the same correction
+  v1.17.1 made to its PLAN LIMITS row. It reads 0 tokens and 1% monthly today.
+
+### Changed
+- Panel width 1360 → 1480. Four cards without bars already filled 1360.
+  `fittedContentWidth` clamps to the screen, so a narrower display shrinks the
+  row rather than overflowing.
+
 ## 1.19.0 — 2026-09-18
 
 ### Added

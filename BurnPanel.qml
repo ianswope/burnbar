@@ -68,7 +68,9 @@ Panel {
 
   // Width is the remedy, never height: a panel that does not fit is clipped,
   // not scrolled, so the data simply disappears with nothing to say it has.
-  readonly property int panelWidth: Style.space(1360)
+  // Five cloud cards with a quota bar each, rather than four without: the row
+  // was already tight at 1360 and a bar needs width to read as a bar.
+  readonly property int panelWidth: Style.space(1480)
   readonly property int columnGap: Style.space(20)
 
   // Relative times ("3m ago", "evicts in 4m") go stale the moment they are
@@ -753,12 +755,26 @@ Panel {
                 return live + " · peak " + Math.round(s.localPeakLoad) + "% · " + s.localPeakPowerW.toFixed(0) + " W"
               }
 
+              // The quota that actually bites, per agent. Kimi meters by the
+              // month; the rest by the week. -1 means withheld — stale, expired
+              // or never read — and is drawn as "—", never as a confident 0%.
+              readonly property real quota: {
+                void panel.tick
+                if (!s || !isCloud) return -1
+                return isClaude ? s.claudeWeekly
+                  : isCodex ? s.codexWeekly
+                  : isGrok ? s.grokWeekly
+                  : s.kimiMonthly
+              }
+              readonly property string quotaLabel: isClaude || isCodex || isGrok
+                ? "weekly" : "monthly"
+
               visible: (isClaude && panel.showClaude) || (isCodex && panel.showCodex)
-                || (isGrok && panel.showGrok) || (isKimi && panel.showKimi)
+                || (isGrok && panel.showGrok) || (isKimi && panel.showKimiPlan)
                 || (!isCloud && panel.showLocal)
               Layout.fillWidth: visible
               Layout.preferredWidth: visible ? -1 : 0
-              implicitHeight: visible ? Style.space(76) : 0
+              implicitHeight: visible ? Style.space(isCloud ? 94 : 76) : 0
               radius: Style.cornerRadius
               color: Util.alpha(tile.accent, 0.10)
               border.width: 1
@@ -782,6 +798,31 @@ Panel {
                 }
                 Caption { text: tile.sub; Layout.fillWidth: true }
                 Caption { text: tile.sub2; Layout.fillWidth: true }
+
+                // How close this agent is to its wall, on the row you look at
+                // first. Local has no quota, so it keeps the shorter card.
+                Item { visible: tile.isCloud; Layout.fillWidth: true; implicitHeight: Style.space(3) }
+                RowLayout {
+                  visible: tile.isCloud
+                  Layout.fillWidth: true
+                  spacing: Style.space(6)
+                  Caption {
+                    text: tile.quotaLabel
+                    color: panel.dim
+                  }
+                  Gauge {
+                    fraction: tile.quota >= 0 ? tile.quota : 0
+                    accent: tile.quota >= 0 ? panel.widget.gaugeColor(tile.quota) : panel.dim
+                    Layout.alignment: Qt.AlignVCenter
+                  }
+                  Caption {
+                    text: tile.quota >= 0 ? Math.round(tile.quota * 100) + "%" : "—"
+                    color: tile.quota >= 0 ? panel.widget.gaugeColor(tile.quota) : panel.dim
+                    font.bold: true
+                    Layout.preferredWidth: Style.space(30)
+                    horizontalAlignment: Text.AlignRight
+                  }
+                }
               }
             }
           }
