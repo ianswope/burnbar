@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "nixfred.burnbar",
   "name": "Burn Bar",
-  "version": "1.18.0",
+  "version": "1.19.0",
   "author": "nixfred",
   "license": "MIT",
   "description": "Live thermal heat map of the AIs this machine actually uses — Claude, Codex, Grok, and local Ollama when a GPU is present — with weekly quota gauges and the share of tokens kept off frontier models.",
@@ -70,6 +70,14 @@
         "label": "Fill the room beside it",
         "description": "Grow from the minimum to take whatever space is free between this widget and the next section of the bar, the way the Now Playing deck does on the left.",
         "defaultValue": true
+      },
+      {
+        "key": "maxPerLane",
+        "type": "integer",
+        "label": "Max per lane (0.1 in)",
+        "description": "Physical width the strip may take for each visible lane (Claude, Codex, Grok, local), in tenths of an inch. 10 = 1 inch per lane. It still shrinks below this when the bar is crowded.",
+        "min": 2,
+        "max": 40
       },
       {
         "key": "maxWidth",

@@ -1,5 +1,49 @@
 # Changelog
 
+## 1.19.0 — 2026-09-18
+
+### Added
+- **A maximum width measured per lane, in inches.** Fred: *"have a max space it
+  can take ... per claude / codex / grok / local and can shrink if needed."* The
+  strip now refuses to grow past an allowance for each visible lane (Claude,
+  Codex, Grok and the local GPU), set with **Max per lane (0.1 in)**, default 10
+  = one inch per lane. The allowance is physical, converted through the screen's
+  own pixel density, so the strip covers the same span of desk on a 27" 4K as on
+  a 49" ultrawide instead of ballooning with the pixel count. A monitor whose
+  EDID reports an absurd density (outside 50..300 dpi) falls back to the logical
+  density, and a density that cannot be read at all means no physical cap rather
+  than a collapsed strip. `maxWidth` still applies as the absolute ceiling, the
+  floor always wins over the cap, and the crowded-bar yield from 1.13.0 is
+  unchanged: this sets how much it may take, not how little.
+- **The strip publishes `stretchMinWidth` and `stretchMaxWidth`.** It has always
+  read those two off a stretching neighbour; publishing its own is what lets the
+  neighbour absorb the room this cap makes it refuse, instead of the gap sitting
+  blank.
+
+## 1.18.0 — 2026-09-18
+
+### Fixed
+- **Kimi's plan limits are live figures, not a tier badge.** The percentages come
+  from `/usages`, not `/usage`, so Session (5-hour) and the rest are real.
+
+## 1.17.1 — 2026-09-18
+
+### Fixed
+- **PLAN LIMITS listed Grok twice and never listed Kimi's plan.**
+
+## 1.17.0 — 2026-09-18
+
+### Added
+- **Kimi3 gets its own lane, stat tile, rate row, token-mix row and buckets.**
+  Kimi Code speaks the Anthropic API, so its burn had been billed to Claude.
+
+## 1.16.0 — 2026-09-18
+
+### Fixed
+- **A withheld plan limit now says what to do about it.** The usage records carry
+  two strings, not one, and the cockpit had shown neither when a limit was
+  withheld.
+
 ## 1.15.0 — 2026-09-18
 
 ### Fixed

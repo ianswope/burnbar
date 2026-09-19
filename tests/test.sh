@@ -83,6 +83,9 @@ ok "no unqualified reference to a name that is both an id and a property"
 # The theme palette parser and the hue transfer, against synthetic input.
 command -v node >/dev/null && {
   node tests/test_theme_palette.cjs >/dev/null 2>&1 || fail "theme palette tests"
+node tests/test_lane_cap.cjs >/dev/null 2>&1 \
+  || fail "lane cap tests"
+ok "the strip's ceiling is one physical allowance per visible lane, floor wins"
   ok "theme palette parses, hues are in range, every lane has a fallback key"
 }
 

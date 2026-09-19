@@ -145,6 +145,30 @@ BarWidget {
   readonly property int maxWidth: Math.max(configuredWidth, boundedInt("maxWidth", 2400, 110, 4000))
   readonly property int stretchGap: boundedInt("stretchGap", 14, 0, 200)
 
+  // Fred, 2026-09-18: "have a max space it can take ... per claude / codex /
+  // grok / local and can shrink if needed." The ceiling is a PHYSICAL allowance
+  // per visible lane, so the strip covers the same span of desk on a 27" 4K and
+  // on a 49" ultrawide instead of ballooning with the pixel count. Tenths of an
+  // inch because plugin settings carry integers. `maxWidth` still applies as the
+  // absolute ceiling, and the floor always wins: a cap must never squeeze the
+  // strip below what its least detailed layout needs.
+  readonly property int maxPerLaneTenths: boundedInt("maxPerLane", 10, 2, 40)
+  readonly property int laneCount: Math.max(1, cloudAgents + (showLocal ? 1 : 0))
+
+  // Style units -> device pixels, sampled over 100 so rounding cannot land on 0.
+  readonly property real styleScale: Math.max(0.01, Style.spaceReal(100) / 100)
+
+  // What a stretching neighbour needs to know about us: the floor we will not
+  // go under, and the ceiling we will not grow past. Burn Bar has always read
+  // these two off Beatdeck; publishing them is what lets the partner take the
+  // room this cap makes us refuse instead of leaving the gap blank.
+  readonly property int stretchMinWidth: minWidthForCells
+  readonly property int stretchMaxWidth: {
+    var cap = laneCapPx(laneCount, maxPerLaneTenths, pixelsPerInch())
+    if (!isFinite(cap)) return maxWidth
+    return Math.max(minWidthForCells, Math.min(maxWidth, Math.round(cap / styleScale)))
+  }
+
   // Device pixels. Seeded at the preferred width; measureStretch then
   // replaces it with a fair share of the hole to the centre section.
   readonly property real preferredWidth: Style.spaceReal(configuredWidth)
@@ -194,10 +218,38 @@ BarWidget {
     return 96
   }
 
+  // Device pixels per inch for the screen this instance is on. EDID lies: a
+  // monitor that reports no physical size at all lands at an absurd density, so
+  // anything outside 50..300 dpi is refused and the logical density is used.
+  function pixelsPerInch() {
+    var w = QsWindow.window
+    var s = w && w.screen ? w.screen : null
+    var dpi = s && Number(s.physicalPixelDensity) > 0 ? Number(s.physicalPixelDensity) * 25.4 : 0
+    if (!(dpi >= 50 && dpi <= 300)) {
+      var r = s && Number(s.devicePixelRatio) > 0 ? Number(s.devicePixelRatio) : 1
+      dpi = 96 * r
+    }
+    return dpi
+  }
+
+  // The ceiling in device pixels: one allowance per visible lane. Infinity when
+  // the density is unusable, which means "no physical cap", not "zero width".
+  function laneCapPx(lanes, tenths, dpi) {
+    var n = Math.max(1, Math.floor(Number(lanes) || 0))
+    var t = Math.max(1, Number(tenths) || 0)
+    var d = Number(dpi)
+    if (!isFinite(d) || d <= 0) return Infinity
+    return n * (t / 10) * d
+  }
+
   function measureStretch() {
     if (!stretch || vertical || !bar || !Array.isArray(bar.moduleSlots)) return
 
     var maximum = Style.spaceReal(maxWidth)
+    // The per-lane physical cap, never below the floor: the strip may shrink to
+    // what it needs, but a cap that starved it would be worse than no cap.
+    var laneCap = laneCapPx(laneCount, maxPerLaneTenths, pixelsPerInch())
+    if (isFinite(laneCap)) maximum = Math.max(Style.spaceReal(minWidthForCells), Math.min(maximum, laneCap))
     var gap = Style.spaceReal(stretchGap)
     var ourMin = Math.max(80, minWidthForCells)
     var origin
