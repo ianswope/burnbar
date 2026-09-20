@@ -154,6 +154,19 @@ Panel {
     return t > 0 ? Qt.formatTime(new Date(t), "h:mm AP") : "--"
   }
 
+  // The one word this row is really about. Ratios are for the sentence; the
+  // headline has to be readable without translating anything.
+  function paceVerdict(limit, unknown) {
+    void panel.tick
+    if (unknown || !limit || !limit.pace) return { word: "", color: panel.dim }
+    var r = Number(limit.pace.ratio)
+    if (!(r >= 0)) return { word: "", color: panel.dim }
+    if (r > 1.5) return { word: "WAY OVER", color: Color.urgent }
+    if (r > 1.0) return { word: "OVER", color: Qt.lighter(Color.urgent, 1.35) }
+    if (r > 0.9) return { word: "AT PACE", color: panel.foreground }
+    return { word: "ON TRACK", color: panel.widget.gaugeColor(0.2) }
+  }
+
   // The budget sentence under a limit row. On budget means an even spend across
   // the window, so the pace ratio is used-over-elapsed: 1.0 is exactly on pace.
   // Everything here is withheld rather than guessed - a row with no measured
@@ -165,18 +178,25 @@ Panel {
     var r = Number(p.ratio)
     if (!(r >= 0)) return { text: "", urgent: false }
     var over = r > 1.0
-    var parts = [over ? r.toFixed(1) + "x over pace" : "on pace  ·  " + r.toFixed(2) + "x"]
+    var used = Math.round(Number(limit.percent) * 100)
+    var gone = Math.round(Number(p.elapsed) * 100)
+    // Used against elapsed is the whole idea, so say both in the same breath
+    // rather than making a multiplier stand for them.
+    var parts = [used + "% spent, " + gone + "% of the window gone"]
 
     var a = Number(p.allowancePerHour)
     if (a >= 0) {
       // A window with nothing left must not be told it may spend 0.0%/h: at
       // that point the only thing that helps is the reset.
-      if (a < 0.0005) parts.push("nothing left until the reset")
-      else if (a >= 1) parts.push("all that is left is yours to spend")
-      else parts.push("≤ " + (a * 100).toFixed(1) + "%/h still makes it")
+      if (a < 0.0005) parts.push("nothing left until it resets")
+      else if (a >= 1) parts.push("the rest is yours to spend")
+      else if (over) parts.push("slow to " + (a * 100).toFixed(1) + "%/h to make it")
+      else parts.push("you can spend " + (a * 100).toFixed(1) + "%/h and still make it")
     }
 
-    if (Number(p.ratePerHour) >= 0) {
+    // "At this rate" is only worth saying when something is actually burning.
+    // A measured rate of zero means idle, and "ends at 0%" is noise.
+    if (Number(p.ratePerHour) > 0.00005) {
       if (Number(p.dryAt) > 0)
         parts.push("at this rate dry " + dayClockText(new Date(Number(p.dryAt)).toISOString()))
       else if (Number(p.projected) >= 0)
@@ -609,6 +629,38 @@ Panel {
   }
 
   // Thin horizontal gauge that wipes in on open and eases on change.
+  // The budget bar: thick enough to read across the room, with a bright tick at
+  // the point an even spend would have reached by now. Fill past the tick is
+  // overspend, and it is meant to be obvious without reading anything.
+  component BudgetGauge: Rectangle {
+    id: bgauge
+    property real fraction: 0
+    property real elapsed: -1
+    property color accent: panel.foreground
+    Layout.fillWidth: true
+    implicitHeight: Style.space(12)
+    radius: height / 2
+    color: panel.faint
+    Rectangle {
+      anchors.left: parent.left
+      height: parent.height
+      radius: height / 2
+      width: parent.width * Math.max(0, Math.min(1, bgauge.fraction)) * panel.reveal
+      color: bgauge.accent
+      Behavior on width { NumberAnimation { duration: 500; easing.type: Easing.OutCubic } }
+    }
+    Rectangle {
+      visible: bgauge.elapsed >= 0 && bgauge.elapsed <= 1
+      width: Math.max(2, Style.space(2))
+      height: parent.height + Style.space(4)
+      y: -Style.space(2)
+      x: Math.round(parent.width * Math.max(0, Math.min(1, bgauge.elapsed))) - width / 2
+      radius: width / 2
+      color: panel.foreground
+      Behavior on x { NumberAnimation { duration: 500; easing.type: Easing.OutCubic } }
+    }
+  }
+
   component Gauge: Rectangle {
     id: gauge
     property real fraction: 0
@@ -1190,6 +1242,10 @@ Panel {
                   void panel.tick
                   return panel.paceText(modelData.limit, unknown)
                 }
+                readonly property var verdict: {
+                  void panel.tick
+                  return panel.paceVerdict(modelData.limit, unknown)
+                }
 
                 RowLayout {
                   Layout.fillWidth: true
@@ -1204,6 +1260,13 @@ Panel {
                     color: limitRow.expired ? Color.urgent : panel.dim
                   }
                   Body {
+                    text: limitRow.verdict.word
+                    color: limitRow.verdict.color
+                    font.bold: true
+                    Layout.preferredWidth: Style.space(72)
+                    horizontalAlignment: Text.AlignRight
+                  }
+                  Body {
                     text: limitRow.unknown ? "—" : Math.round(Number(modelData.limit.percent) * 100) + "%"
                     color: limitRow.unknown ? panel.dim : panel.widget.gaugeColor(Number(modelData.limit.percent))
                     font.bold: true
@@ -1211,20 +1274,23 @@ Panel {
                     horizontalAlignment: Text.AlignRight
                   }
                 }
-                Gauge {
+                BudgetGauge {
                   fraction: limitRow.fraction
+                  elapsed: limitRow.unknown || !modelData.limit.pace ? -1 : Number(modelData.limit.pace.elapsed)
                   accent: limitRow.unknown ? panel.dim
                     : (limitRow.pace.urgent ? Color.urgent : panel.widget.gaugeColor(Number(modelData.limit.percent)))
                 }
                 // Am I over budget, may I keep spending, and when do I get back
                 // to "making it" - the three questions a percentage cannot answer.
-                Caption {
+                Body {
                   visible: limitRow.pace.text !== ""
                   Layout.fillWidth: true
                   Layout.leftMargin: Style.space(48) + Style.space(6)
                   text: limitRow.pace.text
-                  color: limitRow.pace.urgent ? Color.urgent : panel.dim
-                  elide: Text.ElideRight
+                  color: limitRow.pace.urgent ? Color.urgent : panel.foreground
+                  // The explanation is the point of the row; eliding it to
+                  // "still ma…" defeats the purpose. Let it take a second line.
+                  wrapMode: Text.WordWrap
                 }
                 // Why this agent's figures are or are not to be trusted, under
                 // the rows it applies to rather than as a second agent above.

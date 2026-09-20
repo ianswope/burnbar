@@ -699,6 +699,28 @@ BarWidget {
     return String(Math.round(v))
   }
 
+  // The worst window on this machine, when one is past its even-spend pace.
+  // Empty when everything is on track, which is the point: the chip below only
+  // exists while it has something to say.
+  readonly property var worstPace: {
+    var none = { text: "", short: "", third: "", mult: "", color: urgent, ratio: 0 }
+    if (!svc) return none
+    var rows = [["CLAUDE", svc.claudeWeeklyPace], ["CODEX", svc.codexWeeklyPace],
+                ["GROK", svc.grokWeeklyPace], ["KIMI", svc.kimiMonthlyPace]]
+    var best = none
+    for (var i = 0; i < rows.length; i++) {
+      var pace = rows[i][1]
+      if (!pace) continue
+      var r = Number(pace.ratio)
+      if (!(r > 1.0) || r <= best.ratio) continue
+      var mult = (r >= 10 ? Math.round(r) : r.toFixed(1)) + "x"
+      best = { text: rows[i][0] + "  " + mult + " OVER",
+               short: rows[i][0] + "  OVER", third: mult + " OVER", mult: mult,
+               color: r > 1.5 ? urgent : Qt.lighter(urgent, 1.35), ratio: r }
+    }
+    return best
+  }
+
   function gaugeColor(percent) {
     if (percent >= 0.9) return urgent
     if (percent >= 0.75) return gaugeWarn
@@ -1177,6 +1199,83 @@ BarWidget {
             opacity: parent.hovered ? 1.0 : 0.45
             Behavior on opacity { NumberAnimation { duration: 160 } }
           }
+        }
+      }
+
+      // ── over budget, in words, on top of everything ─────────────────────
+      // Being past an even spend is not a subtlety to encode in a tint. While
+      // it is true the strip says which service and by how much, over the
+      // cells, and it pulses. When nothing is over, the chip does not exist.
+      // It takes the longest label that FITS, down to the bare multiplier, so a
+      // narrow strip gets a smaller headline rather than a clipped one.
+      Rectangle {
+        id: overChip
+        visible: root.worstPace.text !== "" && width > 0
+        z: 50
+        anchors.left: parent.left
+        anchors.leftMargin: Style.spaceReal(2)
+        anchors.verticalCenter: parent.verticalCenter
+
+        readonly property real pad: Style.spaceReal(7)
+        // Nearly the whole strip, measured on the widget rather than on the
+        // container the chip happens to sit in. While a window is over budget
+        // the alarm outranks the history behind it: on a crowded bar the strip
+        // yields to ~200px, and half of that could not carry a single word.
+        readonly property real maxWidth: Math.max(Style.spaceReal(52), root.stripWidth - Style.spaceReal(6))
+        readonly property string label: measureFull.implicitWidth + pad <= maxWidth ? root.worstPace.text
+          : measureShort.implicitWidth + pad <= maxWidth ? root.worstPace.short
+          : measureThird.implicitWidth + pad <= maxWidth ? root.worstPace.third
+          : root.worstPace.mult
+
+        height: Math.max(Style.spaceReal(10), Math.min(parent.height - Style.spaceReal(3), Style.spaceReal(13)))
+        width: Math.min(maxWidth, chipText.implicitWidth + pad)
+        radius: height / 2
+        color: root.worstPace.color
+        border.width: 0
+
+        Text {
+          id: chipText
+          anchors.centerIn: parent
+          text: overChip.label
+          color: "#11141a"
+          font.family: root.bar ? root.bar.fontFamily : Style.font.family
+          font.pixelSize: Style.font.caption
+          font.bold: true
+        }
+
+        // Never drawn: they exist so the chip can ask how wide each candidate
+        // label would be before choosing one.
+        Text {
+          id: measureFull
+          visible: false
+          text: root.worstPace.text
+          font.family: chipText.font.family
+          font.pixelSize: chipText.font.pixelSize
+          font.bold: true
+        }
+        Text {
+          id: measureShort
+          visible: false
+          text: root.worstPace.short
+          font.family: chipText.font.family
+          font.pixelSize: chipText.font.pixelSize
+          font.bold: true
+        }
+        Text {
+          id: measureThird
+          visible: false
+          text: root.worstPace.third
+          font.family: chipText.font.family
+          font.pixelSize: chipText.font.pixelSize
+          font.bold: true
+        }
+
+        SequentialAnimation on opacity {
+          running: overChip.visible && root.visible
+          loops: Animation.Infinite
+          onRunningChanged: if (!running) overChip.opacity = 1
+          NumberAnimation { to: 0.55; duration: 900; easing.type: Easing.InOutQuad }
+          NumberAnimation { to: 1.0; duration: 900; easing.type: Easing.InOutQuad }
         }
       }
 

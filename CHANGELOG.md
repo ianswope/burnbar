@@ -1,5 +1,25 @@
 # Changelog
 
+## 1.22.0 — 2026-09-20
+
+### Changed
+- **Over budget now says so, in words, at a size you can read.** Fred: *"I need
+  it to be more visible. it's small and hard to understand."* A one-pixel tick
+  and a grey caption were not that.
+  - **The strip carries a pulsing chip** naming the service and the verdict
+    while any window is past an even spend: "CODEX 8.7x OVER", falling back to
+    "CODEX OVER", then "8.7x OVER", then "8.7x", always taking the longest
+    label that actually fits. The service and the word OVER outrank the exact
+    multiplier, because they are the parts that need no translating. When
+    nothing is over budget the chip does not exist.
+  - **The cockpit rows speak plainly.** Each limit row now carries a bold
+    verdict (ON TRACK, AT PACE, OVER, WAY OVER), a bar thick enough to read
+    across the room with a bright tick at the point an even spend would have
+    reached, and a full sentence: "100% spent, 11% of the window gone ·
+    nothing left until it resets". The sentence wraps instead of eliding to
+    "still ma…", and "at this rate" is omitted entirely when nothing is
+    actually burning rather than reporting "ends at 0%".
+
 ## 1.21.0 — 2026-09-20
 
 ### Added
