@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.21.0 — 2026-09-20
+
+### Added
+- **Budget pace: am I over, and will I make it to the reset?** Fred: *"tell me
+  when I'm over budget ... if I will make it to my next reset if I keep
+  consuming at the same rate ... when I get back into 'making it'."* On budget
+  means an even spend across the window, so the pace ratio is used divided by
+  elapsed: 1.0 is exactly on pace. Every limit row in the cockpit now carries a
+  line under it, and the strip's quota gauges carry the same verdict as colour.
+  - **The gauges tint by pace**, urgent past 1.25x and warmer between 1.0 and
+    1.25x, with a thin tick at the point an even spend would have reached by
+    now. The gap between that tick and the fill is the overspend, with no
+    number to read.
+  - **The cockpit line** says how far over or under, what may still be spent per
+    hour and still make it, where the current rate lands by the reset, when the
+    window runs dry if that is before the reset, and when it comes back on pace
+    if the burning stops.
+  - Nothing is invented. A row with no measurable rate says nothing about "at
+    this rate"; a blown window says "nothing left until the reset" rather than
+    offering 0.0%/h; and "back on pace" is withheld when it is simply the reset
+    again, which is what it always is at 100%.
+
 ## 1.20.0 — 2026-09-18
 
 ### Added

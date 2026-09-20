@@ -961,6 +961,17 @@ BarWidget {
     id: gauge
     property real percent: 0
     property color accent: "#ffffff"
+    // Pace: how far over an even spend this window runs, and how far through
+    // the window we are. -1 in either means "no claim" - a snapshot row, or
+    // the first moments of a window where any spend divides by nearly zero.
+    property real ratio: -1
+    property real elapsed: -1
+    readonly property bool overPace: ratio > 1.0
+    // Over budget is a colour, not a number to read: urgent past 1.25x, warmer
+    // between 1.0 and 1.25x, and the ordinary quota colour when under pace.
+    readonly property color paceColor: ratio > 1.25 ? Color.urgent
+      : ratio > 1.0 ? Qt.lighter(Color.urgent, 1.35)
+      : root.gaugeColor(gauge.percent)
     // Negative means the service would not vouch for the number: the record
     // is stale or its window rolled over. An unknown gauge is an empty,
     // dimmer track — not a green sliver that reads as "0% used".
@@ -981,7 +992,7 @@ BarWidget {
       radius: width / 2
       height: gauge.unknown ? 0 : Math.max(1, parent.height * Math.min(1, gauge.percent))
       visible: !gauge.unknown
-      color: root.gaugeColor(gauge.percent)
+      color: gauge.paceColor
       border.width: 0
       Behavior on height { NumberAnimation { duration: 900; easing.type: Easing.OutCubic } }
       Behavior on color { ColorAnimation { duration: 400 } }
@@ -997,6 +1008,18 @@ BarWidget {
         NumberAnimation { to: 0.35; duration: 700; easing.type: Easing.InOutQuad }
         NumberAnimation { to: 1.0; duration: 700; easing.type: Easing.InOutQuad }
       }
+    }
+
+    // Where an even spend would have you by now. The gap between this tick and
+    // the fill IS the overspend, which is the whole point: no number to read.
+    Rectangle {
+      visible: !gauge.unknown && gauge.elapsed >= 0 && gauge.elapsed <= 1
+      anchors.horizontalCenter: parent.horizontalCenter
+      width: parent.width
+      height: 1
+      y: Math.round(parent.height * (1 - Math.min(1, Math.max(0, gauge.elapsed)))) - 1
+      color: Util.alpha(gauge.accent, 0.85)
+      Behavior on y { NumberAnimation { duration: 900; easing.type: Easing.OutCubic } }
     }
   }
 
@@ -1166,6 +1189,8 @@ BarWidget {
         anchors.left: parent.left
         anchors.verticalCenter: parent.verticalCenter
         percent: root.svc ? Math.min(1, root.svc.claudeWeekly) : -1
+        ratio: root.svc && root.svc.claudeWeeklyPace ? Number(root.svc.claudeWeeklyPace.ratio) : -1
+        elapsed: root.svc && root.svc.claudeWeeklyPace ? Number(root.svc.claudeWeeklyPace.elapsed) : -1
         accent: root.claudeHot
       }
 
@@ -1297,6 +1322,8 @@ BarWidget {
         anchors.leftMargin: visible ? graph.gaugeGap : 0
         anchors.verticalCenter: parent.verticalCenter
         percent: root.svc ? Math.min(1, root.svc.codexWeekly) : -1
+        ratio: root.svc && root.svc.codexWeeklyPace ? Number(root.svc.codexWeeklyPace.ratio) : -1
+        elapsed: root.svc && root.svc.codexWeeklyPace ? Number(root.svc.codexWeeklyPace.elapsed) : -1
         accent: root.codexHot
       }
 
@@ -1368,6 +1395,8 @@ BarWidget {
         // The monthly credit pool is the one that runs out; the 5-hour window
         // refills on its own. -1 when it has not been read, never a false 0%.
         percent: root.svc ? root.svc.kimiMonthly : -1
+        ratio: root.svc && root.svc.kimiMonthlyPace ? Number(root.svc.kimiMonthlyPace.ratio) : -1
+        elapsed: root.svc && root.svc.kimiMonthlyPace ? Number(root.svc.kimiMonthlyPace.elapsed) : -1
         accent: root.kimiHot
       }
 
@@ -1393,6 +1422,8 @@ BarWidget {
         anchors.leftMargin: visible ? graph.gaugeGap : 0
         anchors.verticalCenter: parent.verticalCenter
         percent: root.svc ? Math.min(1, root.svc.grokWeekly) : -1
+        ratio: root.svc && root.svc.grokWeeklyPace ? Number(root.svc.grokWeeklyPace.ratio) : -1
+        elapsed: root.svc && root.svc.grokWeeklyPace ? Number(root.svc.grokWeeklyPace.elapsed) : -1
         accent: root.grokHot
       }
 

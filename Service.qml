@@ -303,6 +303,21 @@ Item {
     return -1
   }
 
+  // The pace block the collector attached to this row, or null when there is
+  // nothing to say. Same withholding rules as limitPercent: a stale record or a
+  // rolled-over window has no pace either, because pace is a claim about NOW.
+  function limitPace(limits, needle, measuredAt, live) {
+    if (limitsStale(measuredAt, live)) return null
+    for (var i = 0; i < limits.length; i++) {
+      var label = String(limits[i].label || "")
+      if (label.toLowerCase().indexOf(needle) < 0) continue
+      if (limitExpired(limits[i])) return null
+      var pace = limits[i].pace
+      return (pace && Number(pace.ratio) >= 0) ? pace : null
+    }
+    return null
+  }
+
   // Weekly is the limit that actually bites on both plans.
   readonly property real claudeWeekly: limitPercent(claudeLimits, "weekly", claudeLimitsMeasuredAt, claudeLimitsLive)
   readonly property real codexWeekly: limitPercent(codexLimits, "weekly", codexLimitsMeasuredAt, codexLimitsLive)
@@ -310,6 +325,14 @@ Item {
   // Kimi meters by the month, not the week: "Monthly (total)" is its credit
   // pool, and the one worth putting on the strip gauge.
   readonly property real kimiMonthly: limitPercent(kimiLimits, "monthly (total)", kimiLimitsMeasuredAt, kimiLimitsLive)
+
+  // The same four windows, as pace: how far over or under an even spend each
+  // one is running. The gauges tint by this, so being over budget is visible
+  // without opening anything.
+  readonly property var claudeWeeklyPace: limitPace(claudeLimits, "weekly", claudeLimitsMeasuredAt, claudeLimitsLive)
+  readonly property var codexWeeklyPace: limitPace(codexLimits, "weekly", codexLimitsMeasuredAt, codexLimitsLive)
+  readonly property var grokWeeklyPace: limitPace(grokLimits, "weekly", grokLimitsMeasuredAt, grokLimitsLive)
+  readonly property var kimiMonthlyPace: limitPace(kimiLimits, "monthly (total)", kimiLimitsMeasuredAt, kimiLimitsLive)
 
   // A collect() asked for while one is running is not dropped: the limits
   // refresh asks for one the moment it lands, and that ask must survive an

@@ -154,6 +154,46 @@ Panel {
     return t > 0 ? Qt.formatTime(new Date(t), "h:mm AP") : "--"
   }
 
+  // The budget sentence under a limit row. On budget means an even spend across
+  // the window, so the pace ratio is used-over-elapsed: 1.0 is exactly on pace.
+  // Everything here is withheld rather than guessed - a row with no measured
+  // rate says nothing about "at this rate" instead of inventing one.
+  function paceText(limit, unknown) {
+    void panel.tick
+    if (unknown || !limit || !limit.pace) return { text: "", urgent: false }
+    var p = limit.pace
+    var r = Number(p.ratio)
+    if (!(r >= 0)) return { text: "", urgent: false }
+    var over = r > 1.0
+    var parts = [over ? r.toFixed(1) + "x over pace" : "on pace  ·  " + r.toFixed(2) + "x"]
+
+    var a = Number(p.allowancePerHour)
+    if (a >= 0) {
+      // A window with nothing left must not be told it may spend 0.0%/h: at
+      // that point the only thing that helps is the reset.
+      if (a < 0.0005) parts.push("nothing left until the reset")
+      else if (a >= 1) parts.push("all that is left is yours to spend")
+      else parts.push("≤ " + (a * 100).toFixed(1) + "%/h still makes it")
+    }
+
+    if (Number(p.ratePerHour) >= 0) {
+      if (Number(p.dryAt) > 0)
+        parts.push("at this rate dry " + dayClockText(new Date(Number(p.dryAt)).toISOString()))
+      else if (Number(p.projected) >= 0)
+        parts.push("at this rate ends at " + Math.round(Number(p.projected) * 100) + "%")
+    }
+
+    // Back on pace only says something when it is EARLIER than the reset. At
+    // 100% the two are the same moment, and the row already prints the reset.
+    var back = Number(p.backOnPaceAt)
+    var resets = Date.parse(String(limit.resetsAt || ""))
+    if (back > 0 && (!isFinite(resets) || back < resets - 60_000))
+      parts.push("back on pace " + dayClockText(new Date(back).toISOString()) + " if you stop")
+
+    if (p.overDaily === true) parts.push("today's budget eaten")
+    return { text: parts.join("  ·  "), urgent: over }
+  }
+
   function dayClockText(iso) {
     var t = Date.parse(String(iso || ""))
     return isFinite(t) ? Qt.formatDateTime(new Date(t), "ddd h:mm AP") : "--"
@@ -1146,6 +1186,10 @@ Panel {
                 // is unknown too, not -100%.
                 readonly property bool unknown: expired || stale || !(Number(modelData.limit.percent) >= 0)
                 readonly property real fraction: unknown ? 0 : Number(modelData.limit.percent)
+                readonly property var pace: {
+                  void panel.tick
+                  return panel.paceText(modelData.limit, unknown)
+                }
 
                 RowLayout {
                   Layout.fillWidth: true
@@ -1169,7 +1213,18 @@ Panel {
                 }
                 Gauge {
                   fraction: limitRow.fraction
-                  accent: limitRow.unknown ? panel.dim : panel.widget.gaugeColor(Number(modelData.limit.percent))
+                  accent: limitRow.unknown ? panel.dim
+                    : (limitRow.pace.urgent ? Color.urgent : panel.widget.gaugeColor(Number(modelData.limit.percent)))
+                }
+                // Am I over budget, may I keep spending, and when do I get back
+                // to "making it" - the three questions a percentage cannot answer.
+                Caption {
+                  visible: limitRow.pace.text !== ""
+                  Layout.fillWidth: true
+                  Layout.leftMargin: Style.space(48) + Style.space(6)
+                  text: limitRow.pace.text
+                  color: limitRow.pace.urgent ? Color.urgent : panel.dim
+                  elide: Text.ElideRight
                 }
                 // Why this agent's figures are or are not to be trusted, under
                 // the rows it applies to rather than as a second agent above.
