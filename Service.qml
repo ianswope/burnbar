@@ -62,6 +62,9 @@ Item {
   property int grokSessions: 0
   property var grokLimits: []
   property real grokLimitsMeasuredAt: 0
+  // Newest write to any Grok session file, even one too old to be scanned: the
+  // only way to know whether Grok has been used since its quota snapshot.
+  property real grokLastWriteAt: 0
   property bool grokLimitsLive: false
   property string grokLimitsStatus: ""
   property var grokByModel: ({})
@@ -84,7 +87,7 @@ Item {
   property int kimiSessions: 0
   property var kimiLimits: []
   property real kimiLimitsMeasuredAt: 0
-  property bool kimiLimitsLive: false
+  property bool kimiLimitsLive: true
   property string kimiLimitsStatus: ""
   property string kimiLimitsHelp: ""
   property string kimiPlanTier: ""
@@ -142,9 +145,11 @@ Item {
   property int claudePulse: 0
   property int codexPulse: 0
   property int grokPulse: 0
+  property int kimiPulse: 0
   property real lastClaudeLatest: 0
   property real lastCodexLatest: 0
   property real lastGrokLatest: 0
+  property real lastKimiLatest: 0
   property real lastBucketT: 0
 
   readonly property string stateDir: (Quickshell.env("XDG_STATE_HOME")
@@ -396,11 +401,14 @@ Item {
   // collect() refuses to start while one is already running.
   Timer {
     id: watchdog
-    interval: 30000
+    // Longer than the collector's own worst case (two 20 s journal reads, two
+    // 10 s unit probes, two Kimi calls): at 30 s this killed a healthy run
+    // whenever a remote meter host was slow, and published nothing.
+    interval: 75000
     repeat: false
     onTriggered: {
       if (collector.running) {
-        console.warn("burnbar: collector exceeded 30s, killing")
+        console.warn("burnbar: collector exceeded 75s, killing")
         collector.signal(15)
         root.lastError = "collector timed out"
         root.collectorBroken = true
@@ -501,6 +509,7 @@ Item {
       root.grokSessions = num(g.sessions)
       root.grokLimits = Array.isArray(g.limits) ? g.limits : []
       root.grokLimitsMeasuredAt = num(g.limitsMeasuredAt)
+      root.grokLastWriteAt = num(g.lastWriteAt)
       root.grokLimitsLive = g.limitsLive === true
       root.grokLimitsStatus = String(g.limitsStatus || "")
       root.grokLimitsHelp = String(g.limitsHelp || "")
@@ -518,7 +527,7 @@ Item {
       root.kimiSessions = num(km.sessions)
       root.kimiLimits = Array.isArray(km.limits) ? km.limits : []
       root.kimiLimitsMeasuredAt = num(km.limitsMeasuredAt)
-      root.kimiLimitsLive = km.limitsLive === true
+      root.kimiLimitsLive = km.limitsLive !== false
       root.kimiLimitsStatus = String(km.limitsStatus || "")
       root.kimiLimitsHelp = String(km.limitsHelp || "")
       root.kimiPlanTier = String(km.planTier || "")
@@ -582,14 +591,17 @@ Item {
       root.lastClaudeLatest = 0
       root.lastCodexLatest = 0
       root.lastGrokLatest = 0
+      root.lastKimiLatest = 0
       root.lastBucketT = latestT
     }
     if (root.claudeLatest > root.lastClaudeLatest) root.claudePulse++
     if (root.codexLatest > root.lastCodexLatest) root.codexPulse++
     if (root.grokLatest > root.lastGrokLatest) root.grokPulse++
+    if (root.kimiLatest > root.lastKimiLatest) root.kimiPulse++
     root.lastClaudeLatest = root.claudeLatest
     root.lastCodexLatest = root.codexLatest
     root.lastGrokLatest = root.grokLatest
+    root.lastKimiLatest = root.kimiLatest
   }
 
   Timer {

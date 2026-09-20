@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "nixfred.burnbar",
   "name": "Burn Bar",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "author": "nixfred",
   "license": "MIT",
   "description": "Live thermal heat map of the AIs this machine actually uses (Claude, Codex, Grok, Kimi, and local Ollama when a GPU is present), with budget pacing per subscription, quota gauges, and the share of tokens kept off frontier models.",
@@ -86,6 +86,13 @@
         "options": ["pace", "burn", "spent", "stop", "off"],
         "defaultValue": "pace",
         "description": "What makes a subscription card glow: burning over pace, burning right now, how much of the budget is spent, time to stop for the day, or never."
+      },
+      {
+        "key": "advice",
+        "type": "boolean",
+        "label": "Suggest a subscription to use",
+        "description": "With two or more subscriptions, a chip on the strip names the one with the most banked budget whenever nothing is over pace. The local GPU is never suggested.",
+        "defaultValue": true
       },
       {
         "key": "showSession",

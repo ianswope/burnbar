@@ -1,5 +1,85 @@
 # Changelog
 
+## 2.1.0 (2026-09-20)
+
+Guidance. Burn Bar told you where you stood; now it tells you what to do.
+
+### Added
+- **Banked budget, live.** Fred: *"if you get ahead, how much you have banked,
+  real time, always if you are ahead, not shown if behind."* Each card leads
+  with `BANKED 49%` and a running clock, `3d 10:03:03 in the bank`: the share of
+  the plan an even spend would have used by now and you did not. Leave a sub
+  alone and the clock climbs a second every second.
+- **A timer for coming back.** Fred: *"If I take some time off from the agent it
+  should slowly come back to budget, right? Maybe a timer that shows when you
+  can come back."* A sub that is behind shows `COME BACK IN 8:36:42`, then the
+  wall-clock time, `if you stop`, and how far over it is. A spent plan says
+  `BACK AT THE RESET` with its countdown.
+- **Which sub to use next.** Fred: *"SUGGEST the right sub to go use. If they
+  have 2 tell them which one is the right one. 4 same thing. If they only have
+  one dont suggest it. Dont ever suggest local."* A banner above the cards names
+  it and says why, then who is next and when each resting sub is back. It turns
+  into "use it or lose it" when a reset is close with budget unspent, and into
+  "keep using" when you are already on the right one. The strip shows the same
+  pick as a chip whenever nothing is over pace, tooltips carry it, and SETUP's
+  notes speak it too.
+- **The rules behind the advice.** Two subscriptions or it says nothing. Never
+  the local GPU. Only a sub that is ahead. A lane you unticked is left out. A
+  5-hour session window that is full, or will be inside half an hour, blocks a
+  sub. A snapshot (Grok) needs five times the margin, more once it has been
+  used since, and says when it was measured. The clocks hold still while tokens
+  are leaving. The pick does not flap.
+- **The cockpit fits itself to the screen.** The guidance line pushed the footer
+  off the bottom of a 1080p laptop, so the panel now measures the screen it
+  opens on and tightens (shorter graphs, closer rows, a one-line footer), and
+  tightens again if the real content still would not fit. It never scrolls and
+  never clips.
+- A reset label on every burndown, rate labels that cannot be read as totals
+  (`/MIN NOW`), and a flip control that names where it goes.
+
+### Changed
+- **The badge on the bar speaks words, not multipliers.** `CLAUDE  REST 8H` and
+  `SPENT` instead of `7.6x OVER`. A multiplier is data; a rest time is
+  something you can act on.
+- **One definition of "over".** Within 5% of an even spend is on pace
+  everywhere: verdict, badge, glow and guidance.
+- The pace sentence no longer repeats what the what-to-do line now says, and
+  "stop in ..." appears only when today's share really would run out today.
+
+### Fixed
+Twenty-two defects found by an outside review of the whole plugin by Grok 4.6
+and Kimi k3, each one verified against the code first. The full list, the two
+findings that were rejected and why, and which guidance ideas came from the
+reviewers are in [docs/review-2.1.md](docs/review-2.1.md). The ones you could
+have seen:
+- **The local GPU lane painted over Kimi's lane** whenever both were on.
+- **A hidden lane still warned.** With Codex unticked the strip said `SPENT`
+  about Codex. (Found in the screenshots for this release.)
+- Every on-pace sub was told to "stop in 23h".
+- A Codex-only machine drew its lane backwards.
+- The header counted Kimi's tokens but not its turns, sessions or rates.
+- Kimi's lane never flashed on new burn and had no tinted plate, and Kimi
+  burning alone looked idle.
+- Every quota row on every card was rebuilt once a second while the panel was
+  open.
+- A missing Grok usage figure published a confident 0%.
+- A collector run against a slow remote meter host was killed at 30 seconds.
+
+### Docs
+- Fifteen new README graphics, all real captures of the plugin on one day of
+  recorded usage, in `docs/img/`. A new store preview showing the 2.x strip.
+- A sample tailnet address in the README, a collector comment and the tests is
+  now a documentation address.
+
+### Tests
+- `tests/test_guidance.cjs`, 21 cases: banked only when ahead, a way back only
+  when behind, spent while ahead of the clock, the 5% grace, one sub never
+  suggested, a week and a month ranked on one scale, use it or lose it, urgency
+  by the calendar, snapshots, blocked and unreadable subs, no flapping, and
+  local never a candidate.
+- `tests/test_grok_unknowns.py`, and two stop-time regressions in the pace
+  tests.
+
 ## 2.0.0 (2026-09-20)
 
 The cockpit is rebuilt around one idea: a subscription is one card, and the card

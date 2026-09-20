@@ -20,4 +20,7 @@ Before I shipped it I handed about 7,800 lines to Grok 4.6 and Kimi k3 and told 
 
 Today: 16.1M tokens in 24 hours, 2,404 turns, 75 sessions.
 
+Omarchy is DHH's and Basecamp's. This is a plugin on top of it. MIT.
+
 github.com/nixfred/burnbar
+omarchy.nixfred.com

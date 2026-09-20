@@ -18,7 +18,7 @@ it; only the tail of the body is kept for metering.
 Journal line (stdout, one per metered request):
 
   meter ts=1788649079782 path=/api/generate model=llama3.2:3b status=200 \
-        prompt=33 eval=137 ms=41875 client=100.101.176.48
+        prompt=33 eval=137 ms=41875 client=100.64.0.2
 
 ts is the request's end in epoch ms; prompt is prompt_eval_count (tokens
 actually evaluated: cache hits are not included, since Ollama does not report

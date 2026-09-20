@@ -86,6 +86,9 @@ command -v node >/dev/null && {
 node tests/test_lane_cap.cjs >/dev/null 2>&1 \
   || fail "lane cap tests"
 ok "the strip's ceiling is one physical allowance per visible lane, floor wins"
+node tests/test_guidance.cjs >/dev/null 2>&1 \
+  || fail "guidance tests"
+ok "guidance: banked only when ahead, a way back when behind, a pick only with a choice, never local"
   ok "theme palette parses, hues are in range, every lane has a fallback key"
 }
 
@@ -153,6 +156,10 @@ ok "no QML file declares a function, handler or property twice at its root"
 python3 -m unittest discover -s tests -p 'test_pace_math.py' -q >/dev/null \
   || fail "pace math tests"
 ok "pace: ratio, allowance, projection, dry time and back-on-pace arithmetic"
+
+python3 -m unittest discover -s tests -p 'test_grok_unknowns.py' -q >/dev/null \
+  || fail "grok unknown-versus-zero tests"
+ok "a Grok figure that is absent reads as unknown, never as zero"
 
 python3 -m unittest discover -s tests -p 'test_limits_selection.py' -q >/dev/null \
   || fail "limit source selection tests"
@@ -470,11 +477,11 @@ j="$tmp/journal.txt"
 t0=$(( pinned - 600 ))
 cat > "$j" <<EOF
 $t0.000000 nano python3[9143]: ollama-meter listening on 0.0.0.0:11434, upstream 127.0.0.1:11435
-$(( t0 + 1 )).804220 nano python3[9143]: meter ts=$(( t0 + 1 ))803 path=/api/generate model=llama3.2:3b status=200 prompt=33 eval=53 ms=2744 client=100.101.176.48
+$(( t0 + 1 )).804220 nano python3[9143]: meter ts=$(( t0 + 1 ))803 path=/api/generate model=llama3.2:3b status=200 prompt=33 eval=53 ms=2744 client=100.64.0.2
 $(( t0 + 2 )).175497 nano python3[9143]: meter ts=$(( t0 + 2 ))175 path=/api/chat model=llama3.2:3b status=200 prompt=31 eval=3 ms=352 client=10.0.0.147
 $(( t0 + 8 )).080384 nano python3[9143]: meter ts=$(( t0 + 8 ))080 path=/api/embed model=nomic-embed-text status=200 prompt=4 eval=-1 ms=5028 client=10.0.0.147
-$(( t0 + 40 )).358225 nano python3[9143]: meter ts=$(( t0 + 40 ))358 path=/api/generate model=qwen2.5:3b status=500 prompt=-1 eval=-1 ms=30259 client=100.101.176.48
-$(( t0 + 41 )).000000 nano python3[9143]: meter ts=$(( t0 + 41 ))000 path=/api/generate model=qwen2.5:3b status=200 prompt=-1 eval=-1 ms=10 client=100.101.176.48
+$(( t0 + 40 )).358225 nano python3[9143]: meter ts=$(( t0 + 40 ))358 path=/api/generate model=qwen2.5:3b status=500 prompt=-1 eval=-1 ms=30259 client=100.64.0.2
+$(( t0 + 41 )).000000 nano python3[9143]: meter ts=$(( t0 + 41 ))000 path=/api/generate model=qwen2.5:3b status=200 prompt=-1 eval=-1 ms=10 client=100.64.0.2
 EOF
 BURNBAR_METER_JOURNAL="$j" HOME="$fake_home" GROK_HOME="$fake_home/.grok" python3 bin/burnbar-collect --window 360 --buckets 12
 jq -e '.local.available == true and .local.total == 124 and .local.turns == 3
