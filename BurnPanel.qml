@@ -1474,6 +1474,12 @@ Panel {
               Counter { visible: panel.showGrok; target: panel.rateNow("grok"); format: panel.widget.compact; color: panel.foreground; font.bold: true; font.pixelSize: Style.font.bodySmall; Layout.preferredWidth: Style.space(58); horizontalAlignment: Text.AlignRight }
               Counter { visible: panel.showGrok; target: panel.rateHour("grok"); format: panel.widget.compact; color: panel.foreground; font.pixelSize: Style.font.bodySmall; Layout.preferredWidth: Style.space(58); horizontalAlignment: Text.AlignRight }
               Counter { visible: panel.showGrok; target: panel.rateWindow("grok"); format: panel.widget.compact; color: panel.foreground; font.pixelSize: Style.font.bodySmall; Layout.preferredWidth: Style.space(58); horizontalAlignment: Text.AlignRight }
+              // Kimi rides inside Claude's transcripts, but it is its own
+              // subscription with its own money: it gets its own rate row.
+              Body { visible: panel.showKimi; text: "Kimi"; color: panel.widget.kimiHot; Layout.fillWidth: true }
+              Counter { visible: panel.showKimi; target: panel.rateNow("kimi"); format: panel.widget.compact; color: panel.foreground; font.bold: true; font.pixelSize: Style.font.bodySmall; Layout.preferredWidth: Style.space(58); horizontalAlignment: Text.AlignRight }
+              Counter { visible: panel.showKimi; target: panel.rateHour("kimi"); format: panel.widget.compact; color: panel.foreground; font.pixelSize: Style.font.bodySmall; Layout.preferredWidth: Style.space(58); horizontalAlignment: Text.AlignRight }
+              Counter { visible: panel.showKimi; target: panel.rateWindow("kimi"); format: panel.widget.compact; color: panel.foreground; font.pixelSize: Style.font.bodySmall; Layout.preferredWidth: Style.space(58); horizontalAlignment: Text.AlignRight }
 
               Body { visible: panel.showLocal && panel.localTokens; text: panel.boxName; color: panel.widget.localHot; Layout.fillWidth: true }
               Counter { visible: panel.showLocal && panel.localTokens; target: panel.rateNow("local"); format: panel.widget.compact; color: panel.foreground; font.bold: true; font.pixelSize: Style.font.bodySmall; Layout.preferredWidth: Style.space(58); horizontalAlignment: Text.AlignRight }
@@ -1502,6 +1508,8 @@ Panel {
                   rows.push({ name: "Codex", accent: panel.widget.codexHot, split: panel.svc ? panel.svc.codexSplit : ({}) })
                 if (panel.showGrok)
                   rows.push({ name: "Grok", accent: panel.widget.grokHot, split: panel.svc ? panel.svc.grokSplit : ({}) })
+                if (panel.showKimi)
+                  rows.push({ name: "Kimi", accent: panel.widget.kimiHot, split: panel.svc ? panel.svc.kimiSplit : ({}) })
                 // Local: evaluated prompt as "in", generated as "out", the
                 // reused prefix as the cache read. There is no cache write.
                 if (panel.showLocal && panel.localTokens)

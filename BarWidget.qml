@@ -112,7 +112,7 @@ BarWidget {
     var localNeed = showLocal ? (2 * localCells + 6) * 4 : 0
     return Math.max(minWidthForCells, Math.ceil(Math.max(cloudNeed, localNeed)) + 6)
   }
-  readonly property int configuredWidth: Math.max(minWidthForCells, boundedInt("width", 158, 110, 400))
+  readonly property int configuredWidth: Math.max(minWidthForCells, boundedInt("width", 150, 110, 400))
   readonly property bool showGauges: setting("showGauges", true) !== false
   // Local settings stay in the plugin schema so a GPU box can be pointed at,
   // but the lane itself only appears when a compute GPU was actually found.
@@ -141,7 +141,11 @@ BarWidget {
   //     and grow both ways, bounded by the tighter side.
   // Siblings in our own row are measured by implicitWidth, never by position:
   // their x moves when we grow, the space they need does not.
-  readonly property bool stretch: setting("stretch", true) !== false
+  // Fred, 2026-09-20: "Remove its variable size. I like the size of it right
+  // now. Use that going forward." A strip that changes width with the bar's
+  // mood is hard to read and hard to find; it is a fixed instrument now.
+  // Filling the room is still available, it is simply no longer the default.
+  readonly property bool stretch: setting("stretch", false) === true
   readonly property int maxWidth: Math.max(configuredWidth, boundedInt("maxWidth", 2400, 110, 4000))
   readonly property int stretchGap: boundedInt("stretchGap", 14, 0, 200)
 
@@ -438,6 +442,11 @@ BarWidget {
 
   function zoneTooltip(zone) {
     if (!svc) return "Burn Bar — starting up"
+    // Before the first history.json is parsed every total is zero, and a
+    // confident "0 tokens" while burning is a lie. The plugin withholds
+    // unknown quotas for the same reason; a tooltip is no different. This is
+    // the state Fred caught seconds after a shell restart, 2026-09-20.
+    if (!svc.ready) return "Burn Bar — collecting…"
     if (broken && zone !== zoneLocal)
       return "CLOUD FAULT — " + (svc.lastError || "collector failed")
     var span = windowLabel(svc.windowMinutes || 360)

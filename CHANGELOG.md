@@ -1,5 +1,28 @@
 # Changelog
 
+## 1.25.0 — 2026-09-20
+
+### Fixed
+- **Kimi had no lane, no rate row and no token mix, only plan rows.** Kimi Code
+  rides inside Claude's transcripts, so presence was decided by finding a
+  Kimi-model turn. A machine with Kimi configured but no Kimi turn today showed
+  nothing, while its plan sat in the cockpit saying otherwise. Fred: *"It should
+  default on install to all known lanes for that machine."* Presence now also
+  counts a machine whose Kimi plan or quota came back from Kimi's own API, and
+  the RATE grid and TOKEN MIX gained the Kimi rows they never had.
+- **The tooltip claimed "0 tokens" while tokens were burning.** In the seconds
+  after a shell restart, before the first `history.json` is parsed, every total
+  is zero and the tooltip said so with confidence. It now says "collecting…"
+  until the service has actually read something, the same way a stale quota is
+  withheld rather than shown as 0%.
+
+### Changed
+- **The strip is a fixed size by default.** Fred: *"Remove its variable size. I
+  like the size of it right now."* A widget that changes width with the bar's
+  mood is hard to read and hard to find. Filling the room beside it is still
+  available as a setting, it is simply off by default, and the default width is
+  150.
+
 ## 1.24.0 — 2026-09-20
 
 ### Fixed

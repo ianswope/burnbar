@@ -806,7 +806,26 @@ def agent_present(root, match):
 claude_present = agent_present(CLAUDE_ROOT, lambda n: n.endswith(".jsonl"))
 codex_present = agent_present(CODEX_ROOT, lambda n: n.startswith("rollout-") and n.endswith(".jsonl"))
 grok_present = agent_present(GROK_ROOT, lambda n: n == "updates.jsonl")
-kimi_present = kimi_seen or kimi.total > 0
+def kimi_configured():
+    """True when this machine is set up for Kimi at all: its plan or its quota
+    came back from Kimi's own API. Fred, 2026-09-20: "It should default on
+    install to all known lanes for that machine." Kimi Code rides inside
+    Claude's transcripts, so a machine that has Kimi configured but has not run
+    a Kimi-model turn today would otherwise show no Kimi lane and no Kimi in the
+    token mix, while its plan rows sat in the cockpit saying otherwise."""
+    for name in ("kimi-usage.json", "kimi-plan.json"):
+        try:
+            raw = json.loads((OUT_DIR / name).read_text())
+        except (OSError, ValueError, TypeError):
+            continue
+        if not isinstance(raw, dict):
+            continue
+        if raw.get("limits") or raw.get("tier"):
+            return True
+    return False
+
+
+kimi_present = kimi_seen or kimi.total > 0 or kimi_configured()
 if not grok_present and GROK_LOG.is_file():
     grok_present = True
 
