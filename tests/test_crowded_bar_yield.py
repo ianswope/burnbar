@@ -47,7 +47,7 @@ class CrowdedBarYieldTests(unittest.TestCase):
         self.assertIn("minBars", body, "the floor must be built from minBars")
         self.assertNotRegex(
             body, r"\*\s*n\s*\*\s*baseBars",
-            "the floor must not be built from baseBars — that is comfortWidth")
+            "the floor must not be built from baseBars; that is comfortWidth")
 
     def test_comfort_is_built_from_the_preferred_bar_count(self):
         block = re.search(r"comfortWidth:\s*\{.*?\n  \}", SRC, re.S)

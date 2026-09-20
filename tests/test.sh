@@ -198,7 +198,7 @@ echo "$discover" | jq -e 'has("hasGpu") and ((.hasGpu == true) or (.hasGpu == fa
 ok "GPU discover reports hasGpu"
 
 # The local probe must degrade to a clean offline JSON object rather than
-# crashing when nothing is listening — that path is what draws the red core.
+# crashing when nothing is listening; that path is what draws the red core.
 # A GPU-less localhost never ssh's; a GPU box whose Ollama is down still
 # returns online=false.
 offline=$(python3 bin/burnbar-local-status --threshold 8 --url http://127.0.0.1:1 --host localhost)
@@ -347,7 +347,7 @@ jq -e '[.claude.limits[].percent] == [-1, -1, -1, -1, -1, 0.42]' "$out" >/dev/nu
 ok "junk percentages become -1, never 0, never a crash, never NaN on disk"
 
 # A syntactically valid record with the wrong shape must be skipped, not
-# abort the run — and the totals must be exactly what the good records say.
+# abort the run, and the totals must be exactly what the good records say.
 printf '{"timestamp":"%s","message":{"id":"msg_junk","model":"claude-test","usage":{"input_tokens":"unknown","output_tokens":[]}}}\n' \
   "$now_iso" >> "$fake_home/.claude/projects/p/s.jsonl"
 printf '{"timestamp":"%s","payload":{"type":"token_count","info":"bad"}}\n' \
@@ -358,7 +358,7 @@ HOME="$fake_home" GROK_HOME="$fake_home/.grok" python3 bin/burnbar-collect --win
 ok "malformed records are skipped, not fatal"
 
 # A transcript rewritten to different content of the same length, with a
-# newer mtime, must be rescanned — the old cache resumed at EOF and kept the
+# newer mtime, must be rescanned: the old cache resumed at EOF and kept the
 # stale points forever.
 same="$fake_home/.claude/projects/p/same.jsonl"
 printf '{"timestamp":"%s","message":{"id":"msg_same1","model":"claude-test","usage":{"input_tokens":0,"cache_creation_input_tokens":0,"output_tokens":100}}}\n' "$now_iso" > "$same"
@@ -374,7 +374,7 @@ ok "equal-size rewrite with a new mtime is rescanned"
 # Codex's counter is cumulative. A rate-limit refresh re-emits the same
 # last_token_usage with an unchanged total, and counting last_token_usage
 # counted it twice. Three events: a turn, the same snapshot again, a second
-# turn — 300 + 0 + 250.
+# turn: 300 + 0 + 250.
 cx2="$fake_home/.codex/sessions/2026/09/03/rollout-y.jsonl"
 tc() { printf '{"timestamp":"%s","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":%s,"cached_input_tokens":%s,"cache_write_input_tokens":0,"output_tokens":%s},"total_token_usage":{"input_tokens":%s,"cached_input_tokens":%s,"cache_write_input_tokens":0,"output_tokens":%s}}}}\n' "$now_iso" "$@"; }
 { tc 500 300 100 500 300 100; tc 500 300 100 500 300 100; tc 200 0 50 700 300 150; } > "$cx2"

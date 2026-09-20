@@ -9,16 +9,16 @@ desktop session. Review the source and the commit you intend to install.
 **Burn Bar reads your AI coding transcripts.** To count tokens it opens every
 file under:
 
-- `~/.claude/projects/**/*.jsonl` — your complete Claude Code conversations
-- `~/.grok/sessions/**/updates.jsonl` and `~/.grok/logs/unified.jsonl` — Grok Build/CLI session updates and billing snapshots
-- `~/.codex/sessions/**/rollout-*.jsonl` — your complete Codex sessions
+- `~/.claude/projects/**/*.jsonl`: your complete Claude Code conversations
+- `~/.grok/sessions/**/updates.jsonl` and `~/.grok/logs/unified.jsonl`, Grok Build/CLI session updates and billing snapshots
+- `~/.codex/sessions/**/rollout-*.jsonl`: your complete Codex sessions
 
 These files contain your prompts, the assistant's replies, and the contents of
 files you worked on. There is no way to count per-turn tokens without reading
 them, because the token counts are interleaved with the conversation. If you
 are not comfortable with a bar widget opening those files, do not install this.
 
-**Burn Bar also logs in to another machine — but only when a compute GPU
+**Burn Bar also logs in to another machine, but only when a compute GPU
 exists and `localHost` is not this machine.** Intel integrated graphics does
 not count. On a GPU-less laptop there is no ssh, no Ollama poll, and no
 local lane. When the Ollama box is another host (a Jetson named `nano`, for
@@ -41,7 +41,7 @@ prompt, never the reply. The journal line is the whole record.
 
 1. `bin/burnbar-collect` (Python 3, standard library only) reads each line and
    keeps: a timestamp, token counts split into input, cache write, output and
-   cache read, the model name, and — for Claude — the opaque `message.id`
+   cache read, the model name, and, for Claude, the opaque `message.id`
    used to deduplicate streamed records.
 2. No prompt text, reply text, or file content from inside a conversation is
    extracted, stored, or displayed. The scan cache does key on the absolute
@@ -64,9 +64,9 @@ own. Three things do generate network traffic, and you should know all three:
    sign-in Claude Code already saved on this machine; its Codex collector asks
    the Codex app-server over a local pipe (which may itself talk to OpenAI).
    Burn Bar never reads, holds or sends either credential. If you do not want
-   this traffic, do not install Burn Bar — there is no setting that disables
+   this traffic, do not install Burn Bar; there is no setting that disables
    it, because without it the plan limits it shows would be hours stale.
-2. **The Ollama box** — only when a compute GPU was detected. HTTP to
+2. **The Ollama box**, only when a compute GPU was detected. HTTP to
    `ollamaUrl` (default `http://127.0.0.1:11434`) and, if `localHost` is
    another machine, ssh to that host. Both go wherever your settings and
    your ssh config point.
@@ -77,7 +77,7 @@ own. Three things do generate network traffic, and you should know all three:
    | `bin/burnbar-local-status` | `GET /api/ps`, `GET /api/version` | Which models are resident, their size and `expires_at`; the Ollama version |
    | `bin/burnbar-local-status` | ssh, one `sh -c` snippet | GPU load and clock, temperature, power rails, fan, memory from sysfs and `/proc`; ollama CPU ticks 200 ms apart |
    | `bin/burnbar-collect` | ssh `journalctl -u ollama-meter … --show-cursor -g 'meter ts='` | The meter's lines since the last cursor; on a cold read that finds nothing, `systemctl show -p LoadState` to tell a quiet meter from a missing one |
-   | `bin/burnbar-local-control list` | `GET /api/tags`, `GET /api/ps` | Installed and resident model lists — on panel open, refresh, and after each action |
+   | `bin/burnbar-local-control list` | `GET /api/tags`, `GET /api/ps` | Installed and resident model lists, on panel open, refresh, and after each action |
    | `bin/burnbar-local-control load` | ssh `sudo -n /usr/local/bin/ollama-prepare.sh`, then `POST /api/show`, then `POST /api/generate` or `POST /api/embed` | Drop the box's page cache; capabilities; warm the model you picked (`keep_alive: -1`); no prompt is sent |
    | `bin/burnbar-local-control unload` | `POST /api/generate` | Evict the model you picked (`keep_alive: 0`) |
 
@@ -107,7 +107,7 @@ your own state directory and is never transmitted.
 Burn Bar writes nothing inside its own plugin directory, and modifies no
 Omarchy, Hyprland, or application configuration on this machine.
 
-On the Ollama box, `nano/install.sh` — run by hand, once — installs
+On the Ollama box, `nano/install.sh`, run by hand, once, installs
 `/usr/local/lib/burnbar/ollama-meter.py`, `/etc/systemd/system/ollama-meter.service`,
 `/etc/systemd/system/ollama.service.d/zz-burnbar.conf` (Ollama to
 `127.0.0.1:11435`, `OLLAMA_NUM_PARALLEL=1`) and
@@ -117,7 +117,7 @@ then restarts Ollama. The rollback is in the script's header.
 ## Processes it runs
 
 Three scripts of its own, all `python3`, all as your user, all from the
-plugin's own `bin/` directory — plus one Omarchy command:
+plugin's own `bin/` directory, plus one Omarchy command:
 
 - `omarchy-agent-usage-update --limits-only claude codex`, every
   `limitsRefreshSec` seconds (default 300), on panel open, and on refresh.

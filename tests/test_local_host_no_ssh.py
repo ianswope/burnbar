@@ -3,7 +3,7 @@
 The collector discovered a GPU locally and then tried to read its journal
 through `ssh localhost`. On a host with no key or no trusted host key for
 itself that fails, and the lane published "available: false" with
-"Host key verification failed" as the only clue — a card sitting right there,
+"Host key verification failed" as the only clue, a card sitting right there,
 reporting zero tokens.
 
 burnbar-local-status already had is_local_host(); the collector did not, so the

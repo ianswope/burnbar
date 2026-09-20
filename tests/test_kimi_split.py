@@ -2,7 +2,7 @@
 
 Kimi speaks the Anthropic API. Run through Claude Code it lands in
 ~/.claude/projects/**/*.jsonl exactly like Claude's own turns, and before this
-split its spend was counted as Claude's — the one number that says how close
+split its spend was counted as Claude's, the one number that says how close
 the wall is.
 """
 import json
@@ -72,7 +72,7 @@ class KimiSplitTests(unittest.TestCase):
 
     def test_without_a_key_no_quota_is_invented(self):
         """The collect() helper drops KIMI_API_KEY, so /usages is never called.
-        An empty limits list is then the honest answer — never a made-up 0%."""
+        An empty limits list is then the honest answer, never a made-up 0%."""
         now = time.time() * 1000
         d = self.collect([turn(now - 60_000, "kimi-k2-turbo-preview", 700)])
         self.assertEqual(d["kimi"]["limits"], [])

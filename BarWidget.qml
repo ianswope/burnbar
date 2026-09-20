@@ -4,7 +4,7 @@ import Quickshell.Io
 import qs.Commons
 import qs.Ui
 
-// Burn Bar — one live thermal instrument for every model this machine runs.
+// Burn Bar: one live thermal instrument for every model this machine runs.
 //
 //   CLAUDE ◄── time ──┤ now ├── time ──► CODEX  │  GROK ──►  ║  GPU ──► seconds
 //
@@ -12,7 +12,7 @@ import qs.Ui
 // the left and Codex on the right, both with their newest bucket against the
 // shared centre line, so the divider is always "now". Grok (Grok Build / CLI
 // under ~/.grok) rides after Codex when it is present, or takes a side of
-// the pair when Codex is not. Local intelligence — Ollama on a compute GPU —
+// the pair when Codex is not. Local intelligence, Ollama on a compute GPU,
 // stays bolted on the right behind a hard rule, and is omitted entirely when
 // no NVIDIA / AMD / Jetson GPU is detected. Intel iGPU does not count.
 //
@@ -23,7 +23,7 @@ import qs.Ui
 // a glowing core rather than bars standing on a floor.
 //
 // Motion is data, never decoration:
-//   · ember flicker      scales with a cell's own heat — cold coals sit still
+//   · ember flicker      scales with a cell's own heat, cold coals sit still
 //   · impact shockwave   fires outward from the now line when new burn lands
 //   · rising sparks      density and speed follow total energy across all three
 //   · idle drift         a slow travelling swell, so calm never looks broken
@@ -43,7 +43,7 @@ BarWidget {
     if (!isFinite(n)) n = fallback
     return Math.max(low, Math.min(high, n))
   }
-  // One clamp — the service's — so the strip can never draw a different
+  // One clamp, the service's, so the strip can never draw a different
   // number of cells than the collector made buckets (bars: 0 used to read as
   // 12 here and 6 there). The fallback only matters before the service binds.
   // `bars` is the FLOOR for granularity, not the whole story. A strip
@@ -95,7 +95,7 @@ BarWidget {
     var n = Math.max(1, cloudAgents)
     // minBars, not cellCount: cellCount is derived from the width this number
     // helps decide, and reading it here would close the loop. It is minBars
-    // rather than baseBars because this is the floor — the narrowest the strip
+    // rather than baseBars because this is the floor, the narrowest the strip
     // can be drawn, not the width it would like. Using baseBars held 136px on a
     // crowded bar and refused to yield the last 26 of them, which is the whole
     // complaint: it should shed cells before it hoards width.
@@ -126,8 +126,8 @@ BarWidget {
   // room left between them. So the strip claims it by hand, the way beatdeck
   // does on the left: measure where the neighbouring section begins, subtract
   // what the siblings in our own row still need, and take the rest. `width` is
-  // the floor — the narrowest the strip will go, and its fixed size with the
-  // fill turned off — and `maxWidth` the ceiling.
+  // the floor: the narrowest the strip will go, and its fixed size with the
+  // fill turned off, and `maxWidth` the ceiling.
   //
   // Loop-safe because no input depends on our own width. Which edge of ours
   // is fixed depends on where the widget sits:
@@ -344,7 +344,7 @@ BarWidget {
         next = ourMin
       } else {
         next = ourMin + extra / n
-        // The partner has capped itself under its share — it is yielding.
+        // The partner has capped itself under its share; it is yielding.
         // Take the room it will not use rather than leaving it blank.
         if (partnerCap < Infinity && partnerCap < hole - next)
           next = hole - partnerCap
@@ -400,7 +400,7 @@ BarWidget {
   // ── zones ─────────────────────────────────────────────────────────────────
   // The widget is three instruments in one slot, so each gets a tinted plate
   // and a coloured baseline in its own identity hue. Hovering a zone names it
-  // and reports only that agent — a single blended tooltip made you do the
+  // and reports only that agent; a single blended tooltip made you do the
   // arithmetic of working out which number belonged to which lane.
   readonly property int zoneNone: -1
   readonly property int zoneClaude: 0
@@ -411,7 +411,7 @@ BarWidget {
 
   property int hoverZone: zoneNone
   // The bar only offers a tooltip to a target that reports itself hovered, and
-  // our own overlay takes the hover away from WidgetButton's MouseArea — so
+  // our own overlay takes the hover away from WidgetButton's MouseArea, so
   // this widget becomes the tooltip target in its place.
   readonly property bool tooltipHovered: zoneHover.containsMouse && visible
 
@@ -433,7 +433,7 @@ BarWidget {
     return Math.round(percent * 100) + "%"
   }
 
-  // "6h", "1h40m", "30m" — never a window rounded to the nearest hour.
+  // "6h", "1h40m", "30m", never a window rounded to the nearest hour.
   function windowLabel(minutes) {
     var m = Math.round(Number(minutes) || 0)
     var h = Math.floor(m / 60), r = m % 60
@@ -658,7 +658,7 @@ BarWidget {
   // ── heat ramps ────────────────────────────────────────────────────────────
   // Cloud + local converge on the same amber/white at the top end, because
   // hot is hot. Identity lives in the cold and mid stops: Claude orange,
-  // Codex teal, Grok rose, local violet — separable at 3px in every theme.
+  // Codex teal, Grok rose, local violet, separable at 3px in every theme.
   // Each stop keeps its literal as the base the theme hue is applied to.
   readonly property color baseClaudeCold: "#4A2113"
   readonly property color baseClaudeWarm: "#C4542A"
@@ -734,7 +734,7 @@ BarWidget {
   }
 
   // ── scale ─────────────────────────────────────────────────────────────────
-  // A power curve, not a log one. Log flatters idleness — a 1k-token blip would
+  // A power curve, not a log one. Log flatters idleness: a 1k-token blip would
   // read half as hot as a 1M-token burst and the strip would look busy when it
   // is not. ^0.45 keeps small burns visible without lying about magnitude.
   readonly property real scaleFloor: 150000
@@ -780,7 +780,7 @@ BarWidget {
     return root.norm(idx >= 0 && idx < b.length ? Number(b[idx].kimi || 0) : 0, root.kimiRef)
   }
 
-  // Local is already a percentage, so it needs no reference peak — but it does
+  // Local is already a percentage, so it needs no reference peak, but it does
   // need the same gamma, or a 40% GPU would read cooler than a small token blip
   // sitting right next to it.
   function localLevel(i) {
@@ -893,7 +893,7 @@ BarWidget {
 
   // Nothing burning is a real and common state, and a dead-flat widget reads as
   // broken. A slow travelling swell keeps the strip alive without inventing
-  // data. A fault must never animate like a calm idle strip — that is how a
+  // data. A fault must never animate like a calm idle strip; that is how a
   // total outage hides in plain sight.
   readonly property bool idle: !broken && (!ready
     || ((!showClaude || (svc ? svc.claudeLatest : 0) <= 0)
@@ -917,11 +917,11 @@ BarWidget {
   // Driven by a 20fps timer rather than a frame-rate NumberAnimation: with up to
   // 80 cells each re-deriving colour from the phase, 60fps would be three times
   // the property churn for flicker nobody can see.
-  // Two phases, both wrapped at exactly 2π — and EVERY consumer reads them at a
+  // Two phases, both wrapped at exactly 2π, and EVERY consumer reads them at a
   // whole-number harmonic (×1, ×2, ×3). That is what makes the wrap invisible:
   // sin(k·(φ+2π)) === sin(k·φ) only when k is an integer. Reading the same phase
   // at ×1.7 or ×0.35 puts a hard discontinuity in the shimmer every time it
-  // wraps, which is exactly the visual restart this replaced — the strip
+  // wraps, which is exactly the visual restart this replaced, the strip
   // appeared to loop every 1.65s because that is how long the wrap took.
   property real emberPhase: 0
   // Idle drift needs a period measured in tens of seconds, not one second, so it
@@ -937,7 +937,7 @@ BarWidget {
     repeat: true
     onTriggered: {
       // Steps are scaled by interval so neither phase changes speed when the
-      // frame rate drops — only the smoothness changes.
+      // frame rate drops: only the smoothness changes.
       root.emberPhase = (root.emberPhase + (resting ? 0.56 : 0.14)) % (Math.PI * 2)
       root.driftPhase = (root.driftPhase + (resting ? 0.050 : 0.0125)) % (Math.PI * 2)
     }
@@ -995,7 +995,7 @@ BarWidget {
 
   // ── one lane of thermal cells ─────────────────────────────────────────────
   // An inline component so Claude, Codex and Local are literally the same
-  // instrument with different inputs — when the visual language changes it
+  // instrument with different inputs, when the visual language changes it
   // changes in one place, which is how the three lanes stay readable as one
   // widget instead of drifting into three dialects.
   component ThermalLane: Item {
@@ -1033,7 +1033,7 @@ BarWidget {
           : (lane.newestLast ? index / (lane.count - 1) : 1 - index / (lane.count - 1))
         readonly property bool live: lane.newestLast ? index === lane.count - 1 : index === 0
 
-        // Hot cells flicker harder — cold coals sit still, a live fire does not.
+        // Hot cells flicker harder: cold coals sit still, a live fire does not.
         // ×2 and ×3 against the same phase: two harmonics that beat against each
         // other into something that never repeats obviously, and both survive
         // the 2π wrap untouched. The per-cell offset is what stops the lane
@@ -1047,7 +1047,7 @@ BarWidget {
 
         // Motion (flicker, idle drift, impact) rides on top of the sample.
         // Colour reads the sum. Height reads the sample through an eased
-        // Behavior and the motion through a plain scale — so a 5 Hz flicker
+        // Behavior and the motion through a plain scale, so a 5 Hz flicker
         // step never restarts a 420 ms height animation on every cell, which
         // is what kept two rectangles per cell animating continuously while
         // the strip was supposedly idle.
@@ -1154,7 +1154,7 @@ BarWidget {
       : root.gaugeColor(gauge.percent)
     // Negative means the service would not vouch for the number: the record
     // is stale or its window rolled over. An unknown gauge is an empty,
-    // dimmer track — not a green sliver that reads as "0% used".
+    // dimmer track, not a green sliver that reads as "0% used".
     readonly property bool unknown: percent < 0
 
     Rectangle {
@@ -1177,7 +1177,7 @@ BarWidget {
       Behavior on height { NumberAnimation { duration: 900; easing.type: Easing.OutCubic } }
       Behavior on color { ColorAnimation { duration: 400 } }
 
-      // Quota nearly gone gets its own heartbeat — you should not have to read
+      // Quota nearly gone gets its own heartbeat; you should not have to read
       // a number to learn you are about to be cut off. Gated on the gauge
       // actually being on screen, and the fill is restored to full when the
       // beat stops so a quota that drops under 90% mid-pulse is not left dim.
@@ -1447,7 +1447,7 @@ BarWidget {
         }
       }
 
-      // Claude weekly fuel gauge — far left, outermost.
+      // Claude weekly fuel gauge, far left, outermost.
       QuotaGauge {
         id: claudeGauge
         visible: root.showGauges && root.showClaude
@@ -1553,7 +1553,7 @@ BarWidget {
 
       // Shockwaves: a bright band that rides outward from the now line along
       // each lane when that agent lands new burn. This is the movement you see
-      // from the corner of your eye — it means tokens just left the building.
+      // from the corner of your eye; it means tokens just left the building.
       Rectangle {
         id: claudeWave
         visible: root.claudeFlash > 0.01
@@ -1579,7 +1579,7 @@ BarWidget {
         opacity: root.codexFlash * 0.55
       }
 
-      // Codex weekly fuel gauge — the right bookend of the mirrored pair.
+      // Codex weekly fuel gauge, the right bookend of the mirrored pair.
       QuotaGauge {
         id: codexGauge
         visible: root.showGauges && root.showCodex
@@ -1697,7 +1697,7 @@ BarWidget {
       // ── the hard rule ───────────────────────────────────────────────────────
       // Everything left of this line is metered cloud spend in tokens per
       // bucket. Everything right of it is free local compute in percent per
-      // second. Different money, different clock, different scale — so they get
+      // second. Different money, different clock, different scale, so they get
       // a wall between them rather than a gap you might read as a pause.
       Item {
         id: localRule
@@ -1731,7 +1731,7 @@ BarWidget {
         readonly property real core: Math.max(Style.spaceReal(4),
           Math.min(width * 0.34, parent.height * 0.62))
 
-        // Reactor core — the one glyph in the widget, and the only thing that
+        // Reactor core: the one glyph in the widget, and the only thing that
         // can say "offline" out loud. Red ring means Ollama is not answering;
         // green means it is warm and waiting; violet means it is thinking.
         Item {
@@ -1741,7 +1741,7 @@ BarWidget {
           anchors.left: parent.left
           anchors.verticalCenter: parent.verticalCenter
 
-          // Halo — pushed out by inference load, so the core visibly inflates
+          // Halo: pushed out by inference load, so the core visibly inflates
           // when a local model is chewing.
           Rectangle {
             anchors.centerIn: parent
@@ -1766,7 +1766,7 @@ BarWidget {
             Behavior on color { ColorAnimation { duration: 260 } }
 
             // Both loops are gated on the lane actually being shown, and each
-            // puts its property back when it stops — a stopped animation
+            // puts its property back when it stops; a stopped animation
             // leaves whatever value it was mid-way through.
             SequentialAnimation on scale {
               running: root.localActive && root.visible && root.showLocal
@@ -1877,7 +1877,7 @@ BarWidget {
 
     // ── zone hover ──────────────────────────────────────────────────────────
     // Buttons only ever carry one tooltip, and this widget is three
-    // instruments — so the pointer is read here and the bar's tooltip is driven
+    // instruments, so the pointer is read here and the bar's tooltip is driven
     // by hand with whatever lane the cursor is actually over. Clicks are not
     // accepted, so they fall straight through to the button underneath.
     MouseArea {

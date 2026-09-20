@@ -23,7 +23,7 @@ Codex:   ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl   event_msg lines with
          this was built on), and counting last_token_usage would count it twice.
 
 Grok:    ~/.grok/sessions/**/updates.jsonl   _meta.totalTokens is the running
-         context size for a promptId (Grok Bot / Build sessions — the local
+         context size for a promptId (Grok Bot / Build sessions, the local
          transcript store beside the Grok Bot app process).
          Per-prompt burn is estimated as
          max(totalTokens)-min(totalTokens) within that prompt; flat prompts
@@ -161,7 +161,7 @@ except (KeyError, ValueError):
 
 # Anchor the strip to the bucket grid so cells march instead of jittering. The
 # grid holds BUCKETS-1 whole buckets plus the partial newest one, so it covers
-# a little less than the window — which is why the headline numbers below use
+# a little less than the window, which is why the headline numbers below use
 # the exact window instead.
 grid_now = (now_ms // BUCKET_MS) * BUCKET_MS
 grid_start = grid_now - (BUCKETS - 1) * BUCKET_MS
@@ -198,7 +198,7 @@ def parse_ts(value):
 
 
 def count(value):
-    """A token count: a non-negative bounded integer. None for anything else —
+    """A token count: a non-negative bounded integer. None for anything else,
     a bool, a string, a negative, a float that is not whole, 1e999."""
     if value is None:
         return 0
@@ -355,7 +355,7 @@ def scan(path, extract):
 
 # Both extractors treat a record as untrusted end to end. Valid JSON with the
 # wrong shape ("input_tokens": "unknown", "info": "bad"), a number that only
-# fits a float (1e999 → OverflowError on int()), a negative count, a bool —
+# fits a float (1e999 → OverflowError on int()), a negative count, a bool,
 # any of them used to abort the whole collection for both agents, and the
 # same record would do it again on every run. Now the record is skipped.
 MALFORMED = (TypeError, ValueError, AttributeError, KeyError, OverflowError)
@@ -385,7 +385,7 @@ def claude_extract(line, _state):
         if inp + cache_w + out + cache_r == 0:
             return None
         # Billable work: fresh input + what we paid to write cache + output.
-        # Cache reads are excluded on purpose — they are the cheap path and
+        # Cache reads are excluded on purpose; they are the cheap path and
         # would swamp the scale (939M read vs 24M written on the machine this
         # was built on).
         tokens = inp + cache_w + out
@@ -431,7 +431,7 @@ def codex_extract(line, state):
             if isinstance(prev, list) and len(prev) == 4:
                 delta = [total[i] - prev[i] for i in range(4)]
                 if all(x == 0 for x in delta):
-                    # The same snapshot again — a rate-limit refresh. Not a turn.
+                    # The same snapshot again, a rate-limit refresh. Not a turn.
                     return None
                 if all(x >= 0 for x in delta):
                     split = delta
@@ -450,7 +450,7 @@ def walk(root, match):
     if not root.is_dir():
         return
     # followlinks: a session store symlinked onto another disk is a real
-    # layout, and os.walk skips those by default — every transcript under one
+    # layout, and os.walk skips those by default; every transcript under one
     # would go missing with nothing said about it. The visited set is what
     # keeps a symlink cycle from walking forever.
     seen = set()
@@ -529,7 +529,7 @@ codex = Agent("codex")
 # Kimi Code speaks the Anthropic API, so running it through Claude Code writes
 # its turns into ~/.claude/projects alongside Claude's own. Nothing but the
 # model id tells them apart, and without this split Kimi's spend is billed to
-# Claude's lane — the one number Fred reads to see how close the wall is.
+# Claude's lane: the one number Fred reads to see how close the wall is.
 kimi = Agent("kimi")
 
 
@@ -751,7 +751,7 @@ def window_open(limits, now):
 
 def pick_limits(candidates, now):
     """Choose between limit sets from different sources. A window that is still
-    open always beats one that has already reset — a reset window is last
+    open always beats one that has already reset; a reset window is last
     week's answer no matter how recently it was written down. Between two of
     the same kind the more recently measured wins. None when nothing is usable."""
     best = None
@@ -793,7 +793,7 @@ def with_grok_limits(agent_payload):
 
 def agent_present(root, match):
     """True when this machine has actually used the agent: a transcript file
-    exists. A binary on PATH with no sessions is not 'in use' — that would
+    exists. A binary on PATH with no sessions is not 'in use'; that would
     light Claude on every Omarchy box."""
     try:
         return next(walk(root, match)) is not None
@@ -834,8 +834,8 @@ if not grok_present and GROK_LOG.is_file():
 # One line per request, written by nano/ollama-meter.py (journalctl -o short-unix):
 #   1788649667.804220 nano python3[9143]: meter ts=1788649667803 path=/api/generate \
 #       model=llama3.2:3b status=200 prompt=33 eval=53 ms=2744 client=100.101.176.48
-# prompt is prompt_eval_count — tokens actually evaluated; Ollama does not
-# report cache hits — and eval is eval_count. -1 means the response never
+# prompt is prompt_eval_count: tokens actually evaluated; Ollama does not
+# report cache hits, and eval is eval_count. -1 means the response never
 # carried the number (an error, a cut-off stream). Only status 200 counts.
 JOURNAL_KEY = "journal:" + METER_HOST + ":" + METER_UNIT
 JOURNAL_MATCH = "meter ts="
@@ -894,7 +894,7 @@ def ssh_command(argv):
     prompting a process nobody can see; the host is the user's own ssh alias
     and is passed after '--' so it can never read as an option. ssh joins
     the remote words with spaces and hands them to a shell, so each one is
-    quoted here — "-g 'meter ts='" used to arrive as two arguments.
+    quoted here: "-g 'meter ts='" used to arrive as two arguments.
 
     When the box IS this machine, run it directly. Wrapping a local command in
     ssh needs a key and a trusted host key for localhost, and on a host without
@@ -930,7 +930,7 @@ def journal_lines(cursor, unit=None, match=None):
         except subprocess.SubprocessError as e:
             return [], "", ("ssh %s failed: %s" % (METER_HOST, e))[:160]
         # journalctl exits 1, with nothing on stderr, when -g matched no entry
-        # — which on the cursor path is the normal case between two runs.
+        # which on the cursor path is the normal case between two runs.
         # Only an exit with an actual message is a failure.
         stderr = run.stderr.strip()
         if run.returncode == 0 or (run.returncode == 1 and not stderr):
@@ -1051,8 +1051,8 @@ if NO_LOCAL:
 else:
     # Go back to the journal the kept points actually came from. The fallback
     # to Ollama's own unit below only fires on a cold read, so once it had
-    # chosen that source every later run still asked METER_UNIT — a unit this
-    # box does not run — and got nothing, forever. The lane stayed
+    # chosen that source every later run still asked METER_UNIT, a unit this
+    # box does not run, and got nothing, forever. The lane stayed
     # "available" and simply stopped advancing at whatever its first read saw.
     read_unit, read_match = journal_source_args(local_source)
     lines, new_cursor, err = journal_lines(cursor, read_unit, read_match)
@@ -1068,7 +1068,7 @@ else:
     elif not cursor and not lines and os.environ.get("BURNBAR_METER_JOURNAL") is None:
         # A cold read that found nothing: is the meter even installed, or just
         # quiet? If it is absent, Ollama's own journal is itself a per-request
-        # ledger — a GPU that is plainly busy must not report zero tokens just
+        # ledger: a GPU that is plainly busy must not report zero tokens just
         # because the optional meter was never installed on this box.
         if unit_missing(METER_UNIT):
             olines, ocursor, oerr = journal_lines("", OLLAMA_UNIT, OLLAMA_MATCH)
@@ -1143,16 +1143,16 @@ elif jhit:
 # ── limits, straight off the records omarchy-agent-usage-update maintains ────
 # The record is copied, not trusted. Three things travel with the numbers so
 # the widget can tell a live figure from a leftover:
-#   measuredAt — when the figure was actually measured. The record's own
+#   measuredAt, when the figure was actually measured. The record's own
 #     updatedAt is stamped every time it is rewritten, and Omarchy's Claude
 #     collector rewrites it with its *cached* limits when the probe fails or
 #     the sign-in has lapsed, so updatedAt alone lets an old 0% wear a fresh
 #     timestamp. The probe cache beside it (claude-limits.json) carries
 #     fetchedAtMs, written only by a successful probe; that is the truth when
 #     it exists. Codex keeps no fallback cache, so its updatedAt is honest.
-#   status — the record's own words ("Sign-in expired", "Waiting for auth"),
+#   status: the record's own words ("Sign-in expired", "Waiting for auth"),
 #     or a note that the last probe failed and these are the last known.
-#   percent — normalised per entry: anything that is not a finite 0..1
+#   percent: normalised per entry; anything that is not a finite 0..1
 #     fraction becomes -1, an explicit "unknown", never 0 and never a crash.
 # Whether a window has since rolled over is judged live in QML from resetsAt.
 def parse_iso_ms(raw):
@@ -1605,7 +1605,7 @@ def kimi_limits_from_usages(raw):
 
 
 def refresh_kimi_usage():
-    """Kimi's real quota. GET /usages — plural; /usage is a 404, which is how
+    """Kimi's real quota. GET /usages (plural); /usage is a 404, which is how
     this was first written off as unavailable."""
     path = OUT_DIR / "kimi-usage.json"
     try:
@@ -1643,7 +1643,7 @@ def refresh_kimi_usage():
 def refresh_kimi_plan():
     """Cache Kimi's plan tier. The only thing Kimi will tell us about a
     subscription: /me carries user_level_name, and nothing anywhere carries a
-    quota. Silent on every failure — a tier we cannot reach is not an error
+    quota. Silent on every failure: a tier we cannot reach is not an error
     worth breaking a collection over."""
     path = OUT_DIR / "kimi-plan.json"
     try:

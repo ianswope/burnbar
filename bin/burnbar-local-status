@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Report the Ollama box — residency over HTTP, hardware locally or over ssh.
+"""Report the Ollama box, residency over HTTP, hardware locally or over ssh.
 
 A compute GPU is NVIDIA, AMD, or a Jetson. Intel integrated graphics does
 not count: that is a display adapter, not a place models run. --discover
@@ -14,7 +14,7 @@ processes' CPU ticks sampled 200 ms apart. nvidia-smi on a Jetson
 answers [N/A] to every query; sysfs is instant and needs no privilege.
 
 Either HTTP or hardware can fail on its own. No HTTP means OFFLINE. No
-hardware figures are withheld with the reason in telemetryError — not
+hardware figures are withheld with the reason in telemetryError, not
 zeros that look like an idle board.
 """
 
@@ -297,7 +297,7 @@ def bounded_int(value, limit: int = 10**16) -> int:
 def ollama_models(url: str) -> list[dict]:
     """Resident models with everything /api/ps knows about them: memory
     footprint, context length, quantisation and the keep-alive deadline. All
-    bounded — this is the one place untrusted JSON turns into panel text."""
+    bounded: this is the one place untrusted JSON turns into panel text."""
     with urllib.request.urlopen(normalize_url(url) + "/api/ps", timeout=HTTP_TIMEOUT) as response:
         payload = read_json_response(response)
     models = payload.get("models", [])

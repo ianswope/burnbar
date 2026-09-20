@@ -58,7 +58,7 @@ holds everything about it.
 - The burndown series (normalised, ends on the present, never mixes windows, is
   thinned rather than shipped whole, and still draws with no samples).
 
-## 1.27.0 — 2026-09-20
+## 1.27.0 (2026-09-20)
 
 ### Added
 - **"Stop in 12h 8m (1:04 AM) to leave tomorrow whole."** Fred: *"tell you that
@@ -82,7 +82,7 @@ holds everything about it.
   shell complains, by which point the bar is empty. `tests/test_qml_duplicates.py`
   now fails the build instead.
 
-## 1.26.0 — 2026-09-20
+## 1.26.0 (2026-09-20)
 
 ### Added
 - **The right-click menu is multi-select.** Fred: *"on right click multi
@@ -97,7 +97,7 @@ holds everything about it.
   that rounds to 1.0 now reads "at pace" and only a real overspend carries a
   multiplier.
 
-## 1.25.0 — 2026-09-20
+## 1.25.0 (2026-09-20)
 
 ### Fixed
 - **Kimi had no lane, no rate row and no token mix, only plan rows.** Kimi Code
@@ -120,7 +120,7 @@ holds everything about it.
   available as a setting, it is simply off by default, and the default width is
   150.
 
-## 1.24.0 — 2026-09-20
+## 1.24.0 (2026-09-20)
 
 ### Fixed
 - **The over-budget chip was a curtain across the strip.** It was drawn inside
@@ -142,7 +142,7 @@ holds everything about it.
   subscription's verdict beside it. Plus "Warn me again", which re-arms every
   dismissed warning without waiting to overspend further.
 
-## 1.23.0 — 2026-09-20
+## 1.23.0 (2026-09-20)
 
 ### Added
 - **A warning you have answered goes quiet until it gets worse.** Fred: *"once I
@@ -166,7 +166,7 @@ holds everything about it.
   does, so keying on it would have re-opened a warning seconds after it was
   answered.
 
-## 1.22.0 — 2026-09-20
+## 1.22.0 (2026-09-20)
 
 ### Changed
 - **Over budget now says so, in words, at a size you can read.** Fred: *"I need
@@ -186,7 +186,7 @@ holds everything about it.
     "still ma…", and "at this rate" is omitted entirely when nothing is
     actually burning rather than reporting "ends at 0%".
 
-## 1.21.0 — 2026-09-20
+## 1.21.0 (2026-09-20)
 
 ### Added
 - **Budget pace: am I over, and will I make it to the reset?** Fred: *"tell me
@@ -208,13 +208,13 @@ holds everything about it.
     offering 0.0%/h; and "back on pace" is withheld when it is simply the reset
     again, which is what it always is at 100%.
 
-## 1.20.0 — 2026-09-18
+## 1.20.0 (2026-09-18)
 
 ### Added
 - **Kimi card on the top row, and a quota bar on every cloud card.** Each cloud
   card carries its binding limit as a bar plus a percentage: weekly for Claude,
   Codex and Grok, monthly for Kimi, which is what Kimi meters. Localhost keeps
-  the shorter card — it has no quota, and drawing one would say something
+  the shorter card: it has no quota, and drawing one would say something
   untrue. A withheld figure draws a dim bar and an em dash, never a confident
   0%, so Grok's real 0% and an unknown still look different.
 - The Kimi card gates on having a plan rather than on burn, the same correction
@@ -225,7 +225,7 @@ holds everything about it.
   `fittedContentWidth` clamps to the screen, so a narrower display shrinks the
   row rather than overflowing.
 
-## 1.19.0 — 2026-09-18
+## 1.19.0 (2026-09-18)
 
 ### Added
 - **A maximum width measured per lane, in inches.** Fred: *"have a max space it
@@ -245,34 +245,34 @@ holds everything about it.
   neighbour absorb the room this cap makes it refuse, instead of the gap sitting
   blank.
 
-## 1.18.0 — 2026-09-18
+## 1.18.0 (2026-09-18)
 
 ### Fixed
 - **Kimi's plan limits are live figures, not a tier badge.** The percentages come
   from `/usages`, not `/usage`, so Session (5-hour) and the rest are real.
 
-## 1.17.1 — 2026-09-18
+## 1.17.1 (2026-09-18)
 
 ### Fixed
 - **PLAN LIMITS listed Grok twice and never listed Kimi's plan.**
 
-## 1.17.0 — 2026-09-18
+## 1.17.0 (2026-09-18)
 
 ### Added
 - **Kimi3 gets its own lane, stat tile, rate row, token-mix row and buckets.**
   Kimi Code speaks the Anthropic API, so its burn had been billed to Claude.
 
-## 1.16.0 — 2026-09-18
+## 1.16.0 (2026-09-18)
 
 ### Fixed
 - **A withheld plan limit now says what to do about it.** The usage records carry
   two strings, not one, and the cockpit had shown neither when a limit was
   withheld.
 
-## 1.15.0 — 2026-09-18
+## 1.15.0 (2026-09-18)
 
 ### Fixed
-- **Grok's weekly limit read "—" for days.** Plan limits were judged stale after
+- **Grok's weekly limit read "-" for days.** Plan limits were judged stale after
   15 minutes, which is right for Claude and Codex because Burn Bar re-probes
   those records itself every 5 minutes. Nothing re-probes Grok: its figure is
   tailed from `~/.grok/logs/unified.jsonl`, and Grok Bot writes
@@ -284,7 +284,7 @@ holds everything about it.
   "snapshot measured ..." caption instead of a red "stale" one. The strip gauge
   and the tooltip come back with it.
 
-## 1.14.0 — 2026-09-13
+## 1.14.0 (2026-09-13)
 
 ### Fixed
 - **Moving work to a faster local backend lowered the offload share.** The share
@@ -296,10 +296,10 @@ holds everything about it.
   `local-ai:<model>` and `npu:<model>`. Ollama calls are never written there, so
   nothing is counted twice.
 
-## 1.11.0 — 2026-09-10
+## 1.11.0 (2026-09-10)
 
 ### Changed
-- **The cockpit fits the screen again — three columns, not two.** With the panel
+- **The cockpit fits the screen again, three columns, not two.** With the panel
   height cap patched out, a panel that outgrows the screen does not scroll, it
   clips: no scrollbar, no hint, the rows below the fold simply are not drawn. On
   a 1080p screen the single tall cloud stack was silently losing CLAUDE BY MODEL,
@@ -316,11 +316,11 @@ holds everything about it.
   panel now reads the `manifest.json` sitting next to it and treats the registry
   as a bonus.
 
-## 1.10.2 — 2026-09-10
+## 1.10.2 (2026-09-10)
 
 ### Fixed
 - **Grok plan limits froze and never refreshed.** Grok has no stock Omarchy
-  probe, so nothing ever rewrites `agents/usage/grok.json` — once that record
+  probe, so nothing ever rewrites `agents/usage/grok.json`; once that record
   exists it is pinned to whatever it said the day it appeared. The collector
   preferred it over the live `~/.grok/logs/unified.jsonl` whenever it merely
   had a non-empty `limits` array, so a six-day-old record with an already-reset
@@ -332,7 +332,7 @@ holds everything about it.
   "Grok window has reset; run grok to refresh" instead of an empty status, so
   the panel says why the figure is withheld rather than just dimming it.
 
-## 1.10.1 — 2026-09-09
+## 1.10.1 (2026-09-09)
 
 ### Fixed
 - Transcript discovery skipped any session store symlinked in from another
@@ -355,7 +355,7 @@ holds everything about it.
   `~/.codex/history.jsonl` carries prompt text and no counts, and
   `fireworks.json` is a stub with `ready: false` and every total zero.
 
-## 1.10.0 — 2026-09-09
+## 1.10.0 (2026-09-09)
 
 ### Added
 - **The strip follows the Omarchy theme.** Each lane takes its hue from the
@@ -378,7 +378,7 @@ holds everything about it.
   urgent and muted, so the plugin reads `colors.toml` itself. Five of the
   installed themes ship no such file; those fall through to the built-in ramp.
 
-## 1.9.0 — 2026-09-07
+## 1.9.0 (2026-09-07)
 
 ### Added
 - **About line in the cockpit.** Version, source repo and nixfred.com at the
@@ -415,7 +415,7 @@ holds everything about it.
 - The Grok source bullet sat after the "Two clocks" paragraph rather than with
   the other sources; the list reads Claude, Codex, Grok, Limits again.
 
-## 1.8.0 — 2026-09-06
+## 1.8.0 (2026-09-06)
 
 ### Added
 - **Agent detection.** The strip and cockpit only show Claude, Codex and Grok
@@ -438,7 +438,7 @@ holds everything about it.
   one eating the other or painting through the temperature. The strip
   clips to its slot.
 
-## 1.7.0 — 2026-09-06
+## 1.7.0 (2026-09-06)
 
 ### Added
 - **Grok as a third cloud agent.** `burnbar-collect` reads
@@ -448,7 +448,7 @@ holds everything about it.
   `billing: fetched credits config` line in `~/.grok/logs/unified.jsonl`, with
   a fallback to `~/.local/state/omarchy/agents/usage/grok.json` when present.
 - Strip lane + hover tooltip for GROK (rose ramp), cockpit tile, rate row,
-  token-mix row, and plan-limit gauges — Claude and Codex reporting unchanged.
+  token-mix row, and plan-limit gauges, Claude and Codex reporting unchanged.
 
 ### Notes
 - Grok does not persist a full API token ledger the way Claude/Codex do; the
@@ -456,17 +456,17 @@ holds everything about it.
   heat with a live weekly gauge is a normal state.
 
 
-## 1.6.0 — 2026-09-05
+## 1.6.0 (2026-09-05)
 
 ### Added
 - **The strip fills the room beside it.** The bar's sections do not negotiate
-  for space — each row is pinned to its own edge and nothing hands out what is
-  left between them — so the widget now measures the gap itself, the way the
+  for space: each row is pinned to its own edge and nothing hands out what is
+  left between them, so the widget now measures the gap itself, the way the
   Now Playing deck (beatdeck) does on the left: where the neighbouring section
   begins, what the siblings in its own row still need, and it takes the rest.
   Loop-safe because no input depends on its own width: siblings in the same
   row are measured by `implicitWidth`, never by position, and the fixed edge
-  is chosen from where the widget sits — left row or after the centre anchor
+  is chosen from where the widget sits, left row or after the centre anchor
   grows rightward, right row or before the anchor grows leftward, an
   unanchored centre row widens until either end touches, and as the anchor
   itself it grows both ways bounded by the tighter side. Re-measured when
@@ -481,10 +481,10 @@ holds everything about it.
   fixed width with `stretch` off. Existing configurations keep their meaning
   as the floor; nothing gets narrower than before.
 
-## 1.5.0 — 2026-09-05
+## 1.5.0 (2026-09-05)
 
-The local lane moves off this machine. dex has no GPU and no Ollama; nano —
-a Jetson Orin Nano Super on the tailnet — has both. Every call that used to
+The local lane moves off this machine. dex has no GPU and no Ollama; nano,
+a Jetson Orin Nano Super on the tailnet, has both. Every call that used to
 go to the local GPU now goes to nano: residency and model control over HTTP,
 hardware telemetry and the token journal over ssh. The strip, the cockpit and
 the numbers are the same instrument pointed at a different box.
@@ -495,8 +495,8 @@ the numbers are the same instrument pointed at a different box.
   journal (`OLLAMA_DEBUG=1` only adds the prompt-cache slot line), no metrics
   endpoint. Every response *does* carry `prompt_eval_count` and
   `eval_count`, so the meter sits on Ollama's public port, forwards
-  everything byte for byte — streams relayed chunk by chunk, first token in
-  0.37 s — and writes one journal line per request with the counts off the
+  everything byte for byte, streams relayed chunk by chunk, first token in
+  0.37 s, and writes one journal line per request with the counts off the
   way out. `/api/generate`, `/api/chat`, `/api/embed`, `/api/embeddings` and
   the OpenAI-compatible `/v1/*` (from `usage`) are all read. Whatever asks
   is counted the same.
@@ -507,11 +507,11 @@ the numbers are the same instrument pointed at a different box.
 - Settings `ollamaUrl` (default `http://nano:11434`), `localHost` (the ssh
   alias, default `nano`) and `meterUnit` (default `ollama-meter`).
 - **The lane is called by the box's name.** Wherever the strip and cockpit
-  said LOCAL — the tile, the tooltip, the RATE and TOKEN MIX rows, the
-  tokens header, the footer — they now say NANO (the `localHost` setting,
+  said LOCAL (the tile, the tooltip, the RATE and TOKEN MIX rows, the
+  tokens header, the footer), they now say NANO (the `localHost` setting,
   upper-cased), so the instrument names the machine it is reading.
 - The cockpit's local header names the box and, when residency answered but
-  ssh did not, says "no hardware telemetry" with the reason in red — never a
+  ssh did not, says "no hardware telemetry" with the reason in red, never a
   board full of zeros. POWER DRAW carries the CPU/GPU/CV rail under the
   whole-board figure.
 
@@ -554,7 +554,7 @@ the numbers are the same instrument pointed at a different box.
   Three model swaps in a row loaded without a cache drop afterwards; loads
   read a little more from disk in exchange (55–60 s cold vs 35 s).
 
-## 1.4.0 — 2026-09-05
+## 1.4.0 (2026-09-05)
 
 ### Added
 - **Local tokens and the offload share.** The cockpit now shows how many
@@ -568,8 +568,8 @@ the numbers are the same instrument pointed at a different box.
   row. The strip's local tooltip carries the total and the share.
 - **Source: the Ollama unit's journal.** Ollama persists no per-request
   token counts anywhere and exposes no metrics endpoint (verified on
-  0.32.15), but its runner logs every task — prompt size, cached prefix,
-  evaluated prompt tokens, generated tokens, release — timestamped, whatever
+  0.32.15), but its runner logs every task, prompt size, cached prefix,
+  evaluated prompt tokens, generated tokens, release, timestamped, whatever
   client asked. The collector reads that journal incrementally by cursor
   (`journalctl -u <unit> -o short-unix --after-cursor …`, server-side
   filtered): ~600 ms once per window, ~10 ms per run after. Model comes from
@@ -589,7 +589,7 @@ the numbers are the same instrument pointed at a different box.
   cloud spend; local tokens live beside it, not inside it.
 - Buckets carry a `local` series alongside `claude` and `codex`.
 
-## 1.3.3 — 2026-09-05
+## 1.3.3 (2026-09-05)
 
 Full-scope adversarial audit (Codex, gpt-6-astra, read-only, 24 minutes) over
 1.3.2: every file, the tests, the docs, and a regression pass over the 1.3.2
@@ -613,7 +613,7 @@ marked otherwise.
   computed over the exact trailing window from timestamped points; the
   grid-aligned buckets only draw the strip and chart. "last 6h" used to mean
   330–360 minutes depending on the clock. Exact 5- and 60-minute sums travel
-  as `trailing`, and the panel's rates divide them by exactly 5 and 60 —
+  as `trailing`, and the panel's rates divide them by exactly 5 and 60,
   "1 HOUR" no longer covers 31 to 61 minutes and the one-minute denominator
   floor is gone.
 - **Every count is validated on its own.** Negative components, booleans,
@@ -637,7 +637,7 @@ marked otherwise.
   fails when it straddles a bucket boundary.
 
 ### Service.qml
-- A snapshot is validated in full — every bucket, both agents — before any
+- A snapshot is validated in full, every bucket, both agents, before any
   property changes; `{"buckets":[null]}` used to clear the fault and throw.
 - `file://` URLs are decoded to paths; a `#` in the install directory broke
   every helper.
@@ -655,7 +655,7 @@ marked otherwise.
   flash is brightness alone.
 - Quota heartbeat, live-cell ring and reactor loops are gated on their
   instrument actually being shown, and each restores its property when it
-  stops — a quota that dropped under 90% mid-pulse was left dim.
+  stops: a quota that dropped under 90% mid-pulse was left dim.
 - Window labels are exact ("1h40m", "30m"), never rounded to hours.
 
 ### BurnPanel.qml
@@ -704,7 +704,7 @@ marked otherwise.
 - A game running while a model sits idle in VRAM still reads as local load;
   the runner cannot say more.
 
-## 1.3.2 — 2026-09-05
+## 1.3.2 (2026-09-05)
 
 Adversarial bug hunt (Codex, gpt-6-astra, read-only) over 1.3.1. Seventeen
 findings, every one verified against the code or by execution before it was
@@ -713,8 +713,8 @@ fixed. In severity order:
 ### Fixed
 - **A refreshed record could give an old Claude figure a fresh timestamp.**
   Omarchy's Claude collector re-stamps its record with *cached* limits when
-  the probe fails or the sign-in has lapsed, so 1.3.1's staleness check —
-  keyed on the record's `updatedAt` — would have called an eight-hour-old 0%
+  the probe fails or the sign-in has lapsed, so 1.3.1's staleness check,
+  keyed on the record's `updatedAt`, would have called an eight-hour-old 0%
   fresh again the moment anything rewrote the file. The collector now reads
   `fetchedAtMs` from Omarchy's probe cache, which only a successful probe
   writes, and uses that as the measurement time (`limitsMeasuredAt`). A
@@ -774,7 +774,7 @@ fixed. In severity order:
   meant "never inferencing".
 - **A missing temperature sensor no longer reads "cool".**
 
-## 1.3.1 — 2026-09-05
+## 1.3.1 (2026-09-05)
 
 ### Fixed
 - **Claude plan limits showed 0% for hours.** Burn Bar only ever copied the
@@ -798,10 +798,10 @@ fixed. In severity order:
   says "unknown · record from 4:12 PM".
 - `untilText` no longer says "now" for a time in the past.
 
-## 1.3.0 — 2026-09-04
+## 1.3.0 (2026-09-04)
 
 ### Added
-- **Cockpit panel.** Two columns at 860px, fitted height, no scrolling — the
+- **Cockpit panel.** Two columns at 860px, fitted height, no scrolling, the
   whole instrument in one glance.
 - Cloud: burn-over-time chart (Claude up, Codex down, heat-ramp coloured, hour
   labels, breathing live column), tokens-per-minute at three horizons, token
@@ -817,13 +817,13 @@ fixed. In severity order:
 - `burnbar-collect` carries an input / cache-write / output / cache-read split
   per point, plus turns, first/last activity and peak time per agent.
 
-## 1.2.0 — 2026-09-04
+## 1.2.0 (2026-09-04)
 
 ### Added
 - **Local intelligence lane.** The `io.github.nixfred.local-intelligence` plugin
   is folded in: a reactor core plus a violet strip of live Ollama runner load,
   right of a hard rule. Widget grew 114 → 158, and local takes a quarter of the
-  strip rather than a third — free local compute must not read at the same
+  strip rather than a third, free local compute must not read at the same
   weight as metered cloud spend.
 - Local model control in the detail panel: pick any installed model and warm it
   into memory or evict it, plus a LOCAL tile and live load bar.
@@ -842,7 +842,7 @@ fixed. In severity order:
 - Weekly quota gauges moved inside the cloud lanes to bookend them, making room
   for local on the outer right.
 
-## 1.1.0 — 2026-09-03
+## 1.1.0 (2026-09-03)
 
 ### Changed
 - **Collector ported from TypeScript/bun to Python 3 (stdlib only).** `bun` is
@@ -867,7 +867,7 @@ fixed. In severity order:
   value resets toward zero when the window advances.
 - Ember flicker drops from 20fps to 5fps while idle.
 
-## 1.0.0 — 2026-09-03
+## 1.0.0 (2026-09-03)
 
 Initial release. Mirrored thermal heat map of Claude and Codex token burn with
 weekly plan-quota gauges.

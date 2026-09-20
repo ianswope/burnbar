@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-"""ollama-meter — a transparent reverse proxy in front of Ollama that writes
+"""ollama-meter: a transparent reverse proxy in front of Ollama that writes
 one journal line per inference request with the token counts Ollama itself
 never persists.
 
 Ollama 0.15 keeps no per-request token record anywhere: nothing in the
 journal (OLLAMA_DEBUG=1 only adds the prompt-cache slot line), no metrics
 endpoint, and /api/ps knows nothing about traffic. Every response *does*
-carry prompt_eval_count and eval_count — but only the client sees them. So
+carry prompt_eval_count and eval_count, but only the client sees them. So
 this sits on Ollama's public port, forwards everything byte for byte, and
-reads those two numbers off the way out. Whatever asks — a bar widget on
-another machine, a voice server, `ollama run` — is counted the same.
+reads those two numbers off the way out. Whatever asks (a bar widget on
+another machine, a voice server, `ollama run`) is counted the same.
 
 Python 3 standard library only. Streaming responses are relayed chunk by
 chunk with read1(), so a token reaches the client as soon as Ollama emits
@@ -21,7 +21,7 @@ Journal line (stdout, one per metered request):
         prompt=33 eval=137 ms=41875 client=100.101.176.48
 
 ts is the request's end in epoch ms; prompt is prompt_eval_count (tokens
-actually evaluated — cache hits are not included, Ollama does not report
+actually evaluated: cache hits are not included, since Ollama does not report
 them); eval is eval_count. A request that failed or was cut off logs -1 for
 a count it never received.
 

@@ -2,7 +2,7 @@
 
 On a host with no `ollama-meter` unit, the cold read falls back to Ollama's own
 journal and caches `source: "ollama"` with a cursor. Every read after that used
-to call journal_lines(cursor) with no unit, which defaults to METER_UNIT — the
+to call journal_lines(cursor) with no unit, which defaults to METER_UNIT, the
 unit this host does not run. journalctl returned nothing, no error, and the
 `not cursor` guard meant the fallback never fired again.
 

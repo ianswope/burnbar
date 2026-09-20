@@ -10,7 +10,7 @@ import qs.Ui
 
 // Detail view for Burn Bar. The bar answers "is something burning right now";
 // this is the cockpit: what, how much, how fast, how close to the wall, and
-// what the GPU is doing about it — all in one glance, never a scroll.
+// what the GPU is doing about it, all in one glance, never a scroll.
 //
 // Two columns, hard split. Left is metered cloud spend in tokens; right is the
 // Ollama box (nano, a Jetson on the tailnet) in watts, degrees and megabytes.
@@ -88,7 +88,7 @@ Panel {
   // Constants are a fallback for when the registry is not reachable.
   // The registry is the nice path, but a widget hosted by a REPLACEMENT bar
   // gets a service-less facade with no pluginRegistry hanging off it, and the
-  // version then vanished from the About line with nothing to say why — the
+  // version then vanished from the About line with nothing to say why; the
   // repo and site only survived because they have literal fallbacks. The
   // manifest sits next to this file and is always readable, so read that and
   // treat the registry as a bonus rather than a requirement.
@@ -135,7 +135,7 @@ Panel {
   // ── entrance ──────────────────────────────────────────────────────────────
   // Everything grows into place on open: bars wipe left→right, numbers count
   // up, sections rise a few pixels as they fade in. Data-driven motion after
-  // that — the live column breathes, bars ease to new values, a pulse flashes
+  // that: the live column breathes, bars ease to new values, a pulse flashes
   // the chart when the collector lands new burn.
   property real reveal: 0
   property int counterEpoch: 0
@@ -314,8 +314,8 @@ Panel {
   readonly property real bucketMinutes: svc ? Math.max(0.25, svc.bucketMinutes) : 30
   readonly property real windowMinutes: svc ? svc.windowMinutes : 360
 
-  // Rates come from the collector's exact trailing sums — tokens in the last
-  // 5 and 60 minutes from timestamped points — and the exact window total.
+  // Rates come from the collector's exact trailing sums, tokens in the last
+  // 5 and 60 minutes from timestamped points, and the exact window total.
   // No bucket arithmetic: two 30-minute buckets called "1 HOUR" covered 31 to
   // 61 minutes depending on the clock, and a one-minute denominator floor
   // read 90 tokens in a 30-second bucket as 90/min.
@@ -654,7 +654,7 @@ Panel {
     }
   }
 
-  // A row of thin bars from a ring of samples, newest on the right — the same
+  // A row of thin bars from a ring of samples, newest on the right, the same
   // orientation as the cloud chart, so time reads one way across the panel.
   component Trace: ColumnLayout {
     id: trace
@@ -2201,7 +2201,7 @@ Panel {
             }
 
             Trace {
-              // The span the ring actually covers, from its own timestamps —
+              // The span the ring actually covers, from its own timestamps,
               // polls skip while a probe runs and refreshes add early samples.
               caption: "LOAD  ·  LAST " + Math.round((panel.svc ? panel.svc.localSpanMs : 0) / 1000) + "S"
               valueText: (panel.svc ? Math.round(panel.svc.localLoad) : 0) + "%  ·  peak " + (panel.svc ? Math.round(panel.svc.localPeakLoad) : 0) + "%"
@@ -2336,7 +2336,7 @@ Panel {
         }
 
         // About: version, source, site. Out of the way at the foot of the
-        // panel, but always there — you should never have to open a file to
+        // panel, but always there; you should never have to open a file to
         // learn which Burn Bar you are looking at.
         RowLayout {
           Layout.fillWidth: true

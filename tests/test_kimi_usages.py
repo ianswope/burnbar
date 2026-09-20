@@ -1,4 +1,4 @@
-"""Kimi's real quota comes from GET /usages — plural.
+"""Kimi's real quota comes from GET /usages, plural.
 
 /usage is a 404, which is how this was first written off as unavailable. The
 payload carries two different measures of the same five-hour span: a request

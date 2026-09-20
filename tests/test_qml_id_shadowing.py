@@ -17,7 +17,7 @@ for f in ('BarWidget.qml', 'BurnPanel.qml', 'Service.qml'):
             if re.match(r'\s*id:\s*%s\b' % name, line):            continue
             if re.match(r'\s*(readonly\s+)?property\s+\w+\s+%s\s*:' % name, line): continue
             for m in re.finditer(r'(?<![.\w])%s\b' % name, line):
-                bad.append("%s:%d  unqualified `%s` (also an id — the id wins)\n      %s"
+                bad.append("%s:%d  unqualified `%s` (also an id, the id wins)\n      %s"
                            % (f, i, name, line.strip()))
 if bad:
     print("FAIL: a name that is both an id and a property must always be qualified:")

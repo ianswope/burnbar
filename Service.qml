@@ -5,7 +5,7 @@ import Quickshell.Io
 // Burn Bar service. Owns three jobs: run the cloud-agent collector (Claude, Codex, Grok) on a cadence,
 // republish whatever history.json currently says, and poll the Ollama box
 // (nano, a Jetson on the tailnet) for live inference load. All extraction
-// logic lives in bin/ — this file never parses a transcript and never talks
+// logic lives in bin/; this file never parses a transcript and never talks
 // HTTP or ssh itself.
 Item {
   id: root
@@ -22,7 +22,7 @@ Item {
   property var claudeLimits: []
   property var codexLimits: []
   // When each limits list was actually measured (not when its record was last
-  // rewritten — Omarchy re-stamps a record with cached limits when its probe
+  // rewritten: Omarchy re-stamps a record with cached limits when its probe
   // fails), and what the record said about itself ("Sign-in expired"). A
   // percentage without its measurement time is how an 8-hour-old 0% got
   // presented as live.
@@ -51,7 +51,7 @@ Item {
   property real codexLastAt: 0
   property real claudePeakAt: 0
   property real codexPeakAt: 0
-  // Exact trailing sums from the collector — tokens in the last 5 and 60
+  // Exact trailing sums from the collector, tokens in the last 5 and 60
   // minutes measured from timestamped points, not bucket approximations.
   property real claudeTrailing5: 0
   property real claudeTrailing60: 0
@@ -164,7 +164,7 @@ Item {
   // ── local intelligence (Ollama on nano) ────────────────────────────────────
   // Cloud burn is history reconstructed from transcripts; local load is a live
   // vital sign with no persistent record anywhere. So the service keeps its own
-  // rolling ring of load samples — that ring IS the local half of the strip.
+  // rolling ring of load samples; that ring IS the local half of the strip.
   property bool localOnline: false
   property bool localActive: false
   property real localLoad: 0
@@ -204,7 +204,7 @@ Item {
   property real localFanPct: 0
   // The CPU/GPU/CV rail alone, beside the whole-board draw in localPowerW.
   property real localGpuRailW: 0
-  // The probe reaches the box twice — HTTP for residency, ssh for hardware —
+  // The probe reaches the box twice, HTTP for residency, ssh for hardware,
   // and either can fail alone. Online with no hardware figures is a real
   // state, and this is its reason.
   property string localTelemetryError: ""
@@ -223,14 +223,14 @@ Item {
 
   readonly property int intervalSec: boundedInt("refreshIntervalSec", 5, 5, 600)
   // Plan limits come from records Omarchy's own collectors write. Nothing
-  // else guarantees those records are fresh — the agents panel refreshes them
+  // else guarantees those records are fresh; the agents panel refreshes them
   // on its own schedule, and when it does not, a 0% written hours ago stays
   // 0%. So Burn Bar asks for them on its own clock.
   readonly property int limitsRefreshSec: boundedInt("limitsRefreshSec", 300, 60, 3600)
   // A record older than three refresh intervals (never under 15 min) is stale.
   readonly property int limitsStaleMs: Math.max(900, 3 * limitsRefreshSec) * 1000
   readonly property int windowMinutes: boundedInt("windowMinutes", 360, 30, 1440)
-  // Must match BarWidget.cellCount exactly — the widget draws one cell per
+  // Must match BarWidget.cellCount exactly: the widget draws one cell per
   // bucket, so a mismatch makes the strip cover less time than it claims.
   // The strip asks for one bucket per cell it can actually draw at its
   // current width; 0 means nothing has asked yet, so honour the setting.
@@ -253,7 +253,7 @@ Item {
   // purpose. Local load is a now-signal, not a budget.
   readonly property int localCells: boundedInt("localCells", 9, 4, 20)
 
-  // Latest (right-most in time) bucket per agent — what "now" is burning.
+  // Latest (right-most in time) bucket per agent, what "now" is burning.
   readonly property real claudeLatest: buckets.length ? Number(buckets[buckets.length - 1].claude || 0) : 0
   readonly property real codexLatest: buckets.length ? Number(buckets[buckets.length - 1].codex || 0) : 0
   readonly property real grokLatest: buckets.length ? Number(buckets[buckets.length - 1].grok || 0) : 0
@@ -367,7 +367,7 @@ Item {
     // Quickshell never emits exited() for a command that could not start (no
     // python3, say): running just flips back to false. Verified on 0.3.1.
     // Without this the strip's idle animation would call a missing runtime
-    // healthy — the exact silent outage 1.1 claimed to have fixed.
+    // healthy: the exact silent outage 1.1 claimed to have fixed.
     onRunningChanged: {
       if (running || launched) return
       watchdog.stop()
@@ -385,7 +385,7 @@ Item {
         root.collectorBroken = true
       }
       // The fault is cleared by apply(), once a snapshot has actually been
-      // read and validated — not here, where a zero exit says nothing about
+      // read and validated, not here, where a zero exit says nothing about
       // whether what it wrote can be parsed.
       historyFile.reload()
       if (root.collectPending) root.collect()
@@ -574,7 +574,7 @@ Item {
     // Fire an impact pulse only when the live bucket actually grew, so a
     // no-op refresh does not make the widget twitch. On a bucket rollover the
     // live value resets toward zero, so compare against 0 for the new bucket
-    // instead of the previous bucket's total — otherwise the first burn of
+    // instead of the previous bucket's total, otherwise the first burn of
     // every bucket is silently swallowed.
     var latestT = root.buckets.length ? Number(root.buckets[root.buckets.length - 1].t || 0) : 0
     var rolled = latestT !== root.lastBucketT
@@ -797,7 +797,7 @@ Item {
     root.localCpu = Math.max(0, Math.min(100, Number(data.cpu || 0)))
     root.localGpu = Math.max(0, Math.min(100, Number(data.gpu || 0)))
     root.localModelCount = Number(data.modelCount || 0)
-    // No resident model, no inference — whatever else is using the GPU.
+    // No resident model, no inference, whatever else is using the GPU.
     root.localActive = root.localOnline && root.localModelCount > 0
       && (data.active === true || root.localLoad >= root.localThreshold)
     root.localModel = String(data.model || "").slice(0, 128)
@@ -831,7 +831,7 @@ Item {
     root.pushLocalSample(root.localOnline ? root.localLoad : 0)
   }
 
-  // Newest sample lands at index 0 — the widget draws local time flowing
+  // Newest sample lands at index 0; the widget draws local time flowing
   // rightward away from the core, mirroring how Codex reads.
   function pushLocalSample(value) {
     var ring = root.localHistory.slice(0, Math.max(0, root.localCells - 1))
@@ -846,7 +846,7 @@ Item {
     root.localTimeHistory = when
     root.localPeakLoad = Math.max(root.localPeakLoad, Number(value) || 0)
     root.localPeakPowerW = Math.max(root.localPeakPowerW, root.localPowerW)
-    // A pulse means the runner just got busier, not merely that it is busy —
+    // A pulse means the runner just got busier, not merely that it is busy,
     // otherwise a steady 90% load would strobe the widget forever.
     if (value > previous + 2 && value >= root.localThreshold) root.localPulse++
   }

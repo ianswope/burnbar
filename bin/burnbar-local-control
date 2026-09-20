@@ -130,7 +130,7 @@ def capabilities(base: str, model: str) -> list[str]:
 def warm(base: str, model: str) -> None:
     """Load a model and pin it. An embedding-only model is refused by
     /api/generate ("does not support generate"), so it is warmed through
-    /api/embed with an empty input instead — verified to pin it just the same."""
+    /api/embed with an empty input instead, verified to pin it just the same."""
     caps = capabilities(base, model)
     if not caps or "completion" in caps:
         request(base, "/api/generate", {"model": model, "prompt": "", "stream": False, "keep_alive": -1})
