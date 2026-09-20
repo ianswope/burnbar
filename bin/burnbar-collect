@@ -1312,7 +1312,10 @@ def pace_for(row, key, live):
     measure) or 0 (a moment that does not apply), never an invented number."""
     pct = row.get("percent")
     resets = parse_iso_ms(row.get("resetsAt"))
-    out = {"windowMs": 0, "elapsed": -1, "ratio": -1, "allowancePerHour": -1,
+    # resetsMs identifies WHICH window instance this is. A warning answered in
+    # one window must not stay answered into the next, and backOnPaceAt cannot
+    # play that role: it moves every time the percentage does.
+    out = {"windowMs": 0, "resetsMs": 0, "elapsed": -1, "ratio": -1, "allowancePerHour": -1,
            "ratePerHour": -1, "projected": -1, "dryAt": 0, "backOnPaceAt": 0,
            "todayUsed": -1, "todayAllowance": -1, "overDaily": False}
     if not isinstance(pct, (int, float)) or pct < 0 or not resets:
@@ -1327,6 +1330,7 @@ def pace_for(row, key, live):
     if window <= 0 or left_ms <= 0:
         return out
     out["windowMs"] = window
+    out["resetsMs"] = int(resets)
     elapsed = min(1.0, max(0.0, (window - left_ms) / float(window)))
     out["elapsed"] = elapsed
     hours_left = left_ms / 3600_000.0

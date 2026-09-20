@@ -75,9 +75,9 @@ BarWidget {
   // Presence comes from the collector. Until the first snapshot lands the
   // strip stays empty rather than inventing Claude/Codex/Grok lanes that
   // this machine may not use.
-  readonly property bool showClaude: svc ? svc.claudePresent : false
-  readonly property bool showCodex: svc ? svc.codexPresent : false
-  readonly property bool showGrok: svc ? svc.grokPresent : false
+  readonly property bool showClaude: (svc ? svc.claudePresent : false) && focusOk("claude")
+  readonly property bool showCodex: (svc ? svc.codexPresent : false) && focusOk("codex")
+  readonly property bool showGrok: (svc ? svc.grokPresent : false) && focusOk("grok")
   readonly property int cloudAgents: (showClaude ? 1 : 0) + (showCodex ? 1 : 0) + (showGrok ? 1 : 0) + (showKimi ? 1 : 0)
   readonly property bool grokExtra: showGrok && showClaude && showCodex
   readonly property bool grokAsRight: showGrok && showClaude && !showCodex
@@ -86,7 +86,7 @@ BarWidget {
   // model id is the only thing that separates them. The lane stays hidden until
   // a Kimi-model turn actually appears, so a machine that has never run it sees
   // no change at all. It sits beside Grok as a second narrow band.
-  readonly property bool showKimi: svc ? svc.kimiPresent : false
+  readonly property bool showKimi: (svc ? svc.kimiPresent : false) && focusOk("kimi")
   readonly property bool kimiExtra: showKimi && showClaude && showCodex
   // The narrowest strip that still gives every cell a whole pixel and a gap.
   // A configured width below it is raised rather than honoured: overlapping
@@ -116,7 +116,7 @@ BarWidget {
   readonly property bool showGauges: setting("showGauges", true) !== false
   // Local settings stay in the plugin schema so a GPU box can be pointed at,
   // but the lane itself only appears when a compute GPU was actually found.
-  readonly property bool showLocal: setting("showLocal", true) !== false && (svc ? svc.hasComputeGpu : false)
+  readonly property bool showLocal: setting("showLocal", true) !== false && (svc ? svc.hasComputeGpu : false) && focusOk("local")
   readonly property bool emberFlicker: setting("emberFlicker", true) !== false
   readonly property bool sparks: setting("sparks", true) !== false
 
@@ -492,6 +492,37 @@ BarWidget {
     return value === undefined || value === null ? fallback : value
   }
 
+  // Settings the widget changes itself (which lane the icon shows) go back
+  // through the bar, the same way every other inline widget setting does. A
+  // third-party bar may hand out a facade with no updateEntryInline, so the
+  // change still applies in memory and simply does not outlive the session.
+  function persist(values) {
+    var entry = { id: moduleName }
+    for (var existing in settings) if (existing !== "id") entry[existing] = settings[existing]
+    for (var key in values) entry[key] = values[key]
+    settings = entry
+    if (bar && bar.shell && typeof bar.shell.updateEntryInline === "function")
+      bar.shell.updateEntryInline(moduleName, entry)
+  }
+
+  // What the icon is showing: "" is every lane, otherwise the one subscription
+  // Fred cycled to with a right click.
+  readonly property string focusAgent: String(setting("focus", "") || "")
+  function focusOk(id) { return focusAgent === "" || focusAgent === id }
+
+  // Right click walks: everything, then each subscription this machine
+  // actually uses, then back to everything.
+  function cycleFocus() {
+    var order = [""]
+    if (svc && svc.claudePresent) order.push("claude")
+    if (svc && svc.codexPresent) order.push("codex")
+    if (svc && svc.grokPresent) order.push("grok")
+    if (svc && svc.kimiPresent) order.push("kimi")
+    if (svc && svc.hasComputeGpu) order.push("local")
+    var at = order.indexOf(focusAgent)
+    persist({ focus: order[(at < 0 ? 0 : at + 1) % order.length] })
+  }
+
   function syncServiceSettings() { if (svc) svc.settings = settings || ({}) }
   onSvcChanged: syncServiceSettings()
   onSettingsChanged: syncServiceSettings()
@@ -699,23 +730,81 @@ BarWidget {
     return String(Math.round(v))
   }
 
+  // Escalation stages, and they only exist while a window is over pace: being
+  // nearly spent at the END of a window you spent evenly is not news. A warning
+  // you have already seen and clicked away is not news either, but the NEXT
+  // stage is - which is the whole point of numbering them.
+  //   1 over pace   2 way over (1.5x)   3 badly over (2.5x)   4 spent out early
+  function paceStage(ratio, percent) {
+    var r = Number(ratio), p = Number(percent)
+    if (!(r > 1.0)) return 0
+    if (p >= 1.0) return 4
+    if (r > 2.5) return 3
+    if (r > 1.5) return 2
+    return 1
+  }
+
+  // What has been clicked away: { key: { resets, stage } }. Kept on disk so a
+  // shell restart does not re-open a warning Fred already answered.
+  property var paceAck: ({})
+  readonly property string paceAckPath: (Quickshell.env("XDG_STATE_HOME")
+    || Quickshell.env("HOME") + "/.local/state") + "/omarchy/burnbar/pace-ack.json"
+
+  FileView {
+    id: paceAckFile
+    path: root.paceAckPath
+    watchChanges: true
+    printErrors: false
+    onFileChanged: reload()
+    onLoaded: {
+      try {
+        var parsed = JSON.parse(text())
+        root.paceAck = (parsed && typeof parsed === "object") ? parsed : ({})
+      } catch (e) { root.paceAck = ({}) }
+    }
+    onLoadFailed: root.paceAck = ({})
+  }
+
+  // Clicking the strip answers the warning it is showing: it fades, and stays
+  // gone until this window reaches a WORSE stage or its window rolls over.
+  function acknowledgePace() {
+    var w = root.worstPace
+    if (!w || w.stage <= 0 || w.key === "") return
+    var next = {}
+    for (var k in root.paceAck) next[k] = root.paceAck[k]
+    next[w.key] = { resets: w.resets, stage: w.stage }
+    root.paceAck = next
+    try { paceAckFile.setText(JSON.stringify(next)) } catch (e) { /* a warning is not worth a crash */ }
+  }
+
   // The worst window on this machine, when one is past its even-spend pace.
   // Empty when everything is on track, which is the point: the chip below only
   // exists while it has something to say.
   readonly property var worstPace: {
-    var none = { text: "", short: "", third: "", mult: "", color: urgent, ratio: 0 }
+    var none = { text: "", short: "", third: "", mult: "", color: urgent, ratio: 0, stage: 0, key: "", resets: 0 }
     if (!svc) return none
-    var rows = [["CLAUDE", svc.claudeWeeklyPace], ["CODEX", svc.codexWeeklyPace],
-                ["GROK", svc.grokWeeklyPace], ["KIMI", svc.kimiMonthlyPace]]
+    var rows = [["CLAUDE", svc.claudeWeeklyPace, "claude|weekly", Math.min(1, svc.claudeWeekly)],
+                ["CODEX", svc.codexWeeklyPace, "codex|weekly", Math.min(1, svc.codexWeekly)],
+                ["GROK", svc.grokWeeklyPace, "grok|weekly", Math.min(1, svc.grokWeekly)],
+                ["KIMI", svc.kimiMonthlyPace, "kimi|monthly", svc.kimiMonthly]]
     var best = none
     for (var i = 0; i < rows.length; i++) {
       var pace = rows[i][1]
       if (!pace) continue
       var r = Number(pace.ratio)
       if (!(r > 1.0) || r <= best.ratio) continue
+      var stage = paceStage(r, rows[i][3])
+      var key = rows[i][2]
+      // The window instance, not a moving target: backOnPaceAt shifts with every
+      // percentage change and would re-open a warning that was already answered.
+      var resets = Number(pace.resetsMs) || 0
+      // Answered already, and nothing has got worse since: stay quiet.
+      var seen = root.paceAck ? root.paceAck[key] : null
+      if (seen && Number(seen.stage) >= stage && Number(seen.resets) === resets) continue
       var mult = (r >= 10 ? Math.round(r) : r.toFixed(1)) + "x"
       best = { text: rows[i][0] + "  " + mult + " OVER",
                short: rows[i][0] + "  OVER", third: mult + " OVER", mult: mult,
+               stage: stage, key: key, resets: resets,
                color: r > 1.5 ? urgent : Qt.lighter(urgent, 1.35), ratio: r }
     }
     return best
@@ -1203,24 +1292,20 @@ BarWidget {
       }
 
       // ── over budget, in words, on top of everything ─────────────────────
-      // Being past an even spend is not a subtlety to encode in a tint. While
-      // it is true the strip says which service and by how much, over the
-      // cells, and it pulses. When nothing is over, the chip does not exist.
-      // It takes the longest label that FITS, down to the bare multiplier, so a
-      // narrow strip gets a smaller headline rather than a clipped one.
-      Rectangle {
+      // While a window is past an even spend the strip says which service and
+      // by how much, over the cells, and it pulses. Clicking the strip answers
+      // it: the chip fades out and stays gone until that window reaches a WORSE
+      // stage (1.5x, 2.5x, spent out) or its window rolls over. The holder owns
+      // the fade so it cannot fight the pulse, which lives on the pill.
+      Item {
         id: overChip
-        visible: root.worstPace.text !== "" && width > 0
         z: 50
         anchors.left: parent.left
         anchors.leftMargin: Style.spaceReal(2)
         anchors.verticalCenter: parent.verticalCenter
 
+        readonly property bool showing: root.worstPace.text !== ""
         readonly property real pad: Style.spaceReal(7)
-        // Nearly the whole strip, measured on the widget rather than on the
-        // container the chip happens to sit in. While a window is over budget
-        // the alarm outranks the history behind it: on a crowded bar the strip
-        // yields to ~200px, and half of that could not carry a single word.
         readonly property real maxWidth: Math.max(Style.spaceReal(52), root.stripWidth - Style.spaceReal(6))
         readonly property string label: measureFull.implicitWidth + pad <= maxWidth ? root.worstPace.text
           : measureShort.implicitWidth + pad <= maxWidth ? root.worstPace.short
@@ -1229,9 +1314,27 @@ BarWidget {
 
         height: Math.max(Style.spaceReal(10), Math.min(parent.height - Style.spaceReal(3), Style.spaceReal(13)))
         width: Math.min(maxWidth, chipText.implicitWidth + pad)
-        radius: height / 2
-        color: root.worstPace.color
-        border.width: 0
+        opacity: showing ? 1 : 0
+        visible: opacity > 0.01
+        // Answered warnings fade rather than blink out: the eye should see it
+        // go, so a click feels like it did something.
+        Behavior on opacity { NumberAnimation { duration: 450; easing.type: Easing.OutCubic } }
+
+        Rectangle {
+          id: pill
+          anchors.fill: parent
+          radius: height / 2
+          color: root.worstPace.color
+          border.width: 0
+
+          SequentialAnimation on opacity {
+            running: overChip.visible && root.visible
+            loops: Animation.Infinite
+            onRunningChanged: if (!running) pill.opacity = 1
+            NumberAnimation { to: 0.55; duration: 900; easing.type: Easing.InOutQuad }
+            NumberAnimation { to: 1.0; duration: 900; easing.type: Easing.InOutQuad }
+          }
+        }
 
         Text {
           id: chipText
@@ -1268,14 +1371,6 @@ BarWidget {
           font.family: chipText.font.family
           font.pixelSize: chipText.font.pixelSize
           font.bold: true
-        }
-
-        SequentialAnimation on opacity {
-          running: overChip.visible && root.visible
-          loops: Animation.Infinite
-          onRunningChanged: if (!running) overChip.opacity = 1
-          NumberAnimation { to: 0.55; duration: 900; easing.type: Easing.InOutQuad }
-          NumberAnimation { to: 1.0; duration: 900; easing.type: Easing.InOutQuad }
         }
       }
 
@@ -1732,7 +1827,19 @@ BarWidget {
       if (root.bar) root.bar.hideTooltip(root)
       root.hoverZone = root.zoneNone
       if (code === Qt.MiddleButton) { if (root.svc) { root.svc.refreshLimits(); root.svc.collect(); root.svc.pollLocal() } }
-      else root.toggle()
+      else if (code === Qt.RightButton) {
+        // Changing what the icon shows is also an answer to what it is warning
+        // about: the chip fades until that subscription gets worse.
+        root.acknowledgePace()
+        root.cycleFocus()
+      }
+      else {
+        // The click that opens the cockpit is also the answer to whatever the
+        // strip was warning about: you looked, so it stops shouting until the
+        // next stage.
+        root.acknowledgePace()
+        root.toggle()
+      }
     }
   }
 

@@ -1,5 +1,29 @@
 # Changelog
 
+## 1.23.0 — 2026-09-20
+
+### Added
+- **A warning you have answered goes quiet until it gets worse.** Fred: *"once I
+  click it it should fade away but still hit the next stage of usage."* Clicking
+  the strip (or right-clicking it) acknowledges the warning it is showing: the
+  chip fades out and stays gone until THAT subscription reaches a worse stage or
+  its window rolls over. The stages only exist while a window is over pace:
+  1 over, 2 way over (1.5x), 3 badly over (2.5x), 4 spent out early. Being
+  nearly spent at the end of a window you spent evenly is not a warning.
+  Acknowledgements are per subscription and live in
+  `pace-ack.json`, so a shell restart does not re-open a question already
+  answered.
+- **Right-click changes what the icon shows.** It walks through every lane, then
+  each subscription this machine actually uses (Claude, Codex, Grok, Kimi, the
+  local GPU), then back to all of them. The choice persists through the bar the
+  same way every other inline widget setting does.
+
+### Fixed
+- The pace block now carries `resetsMs`, the identity of the window instance.
+  Acknowledgement needed it: `backOnPaceAt` moves every time the percentage
+  does, so keying on it would have re-opened a warning seconds after it was
+  answered.
+
 ## 1.22.0 — 2026-09-20
 
 ### Changed
