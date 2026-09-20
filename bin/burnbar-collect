@@ -1167,6 +1167,223 @@ def probe_measured_at(agent):
         return 0
 
 
+# ── budget pace: am I over, and will I make it to the reset? ─────────────────
+# Fred, 2026-09-20: "tell me when I'm over budget ... if I will make it to my
+# next reset if I keep consuming at the same rate ... when I get back into
+# 'making it'."
+#
+# On budget means EVEN PACE across the window: a tenth of the way in, a tenth of
+# the allowance is a fair spend. Everything here falls out of four numbers per
+# row - used fraction p, time left r, window length L, and a rate measured from
+# our own samples:
+#
+#   elapsed    e = (L - r) / L
+#   pace       R = p / e           1.0 is exactly on pace, above it is over
+#   allowance  s = (1 - p) / r     what may still be burned per hour and make it
+#   forecast   P = p + rate * r    above 1.0 means the window runs dry early
+#   dry at     now + (1 - p) / rate
+#   on pace    again at reset - L * (1 - p), and only if the burning stops
+#
+# Every percentage is the provider's own; nothing is invented. A row whose rate
+# cannot be measured says so (-1) instead of guessing: Grok writes its figure
+# once per Grok Bot launch, which is enough for R and not for a rate.
+SAMPLES_FILE = OUT_DIR / "limit-samples.jsonl"
+SAMPLE_MAX_AGE_MS = 40 * 86400_000     # a monthly window plus slack
+SAMPLE_MIN_GAP_MS = 5 * 60_000         # the collector ticks every few seconds
+RATE_WINDOW_MS = 120 * 60_000          # the rate is measured over 2h of samples
+RATE_MIN_SPAN_MS = 10 * 60_000         # ... and needs a real span, not two ticks
+DAILY_MIN_WINDOW_MS = 36 * 3600_000    # "today's budget" is meaningless in a 5h window
+
+PACE = {"samples": {}, "next": []}
+
+
+def window_ms_for(label, resets_ms, prev_resets_ms):
+    """How long the window is. The label carries it whenever the provider says
+    so ("Session (5-hour)", "Weekly (7-day)"); otherwise the distance to the
+    previous reset is the measurement, which is why samples keep that reset."""
+    text = str(label or "").lower()
+    m = re.search(r"(\d+)\s*-\s*(hour|day)", text)
+    if m:
+        return int(m.group(1)) * (3600_000 if m.group(2) == "hour" else 86400_000)
+    if "week" in text:
+        return 7 * 86400_000
+    if "month" in text:
+        # A month is not 30 days everywhere: step back one calendar month from
+        # the reset so a February window is February long.
+        if resets_ms:
+            end = datetime.datetime.fromtimestamp(resets_ms / 1000, datetime.timezone.utc)
+            y, mo = (end.year, end.month - 1) if end.month > 1 else (end.year - 1, 12)
+            day = end.day
+            while day > 28:
+                try:
+                    start = end.replace(year=y, month=mo, day=day)
+                    break
+                except ValueError:
+                    day -= 1
+            else:
+                start = end.replace(year=y, month=mo, day=day)
+            return max(86400_000, int((end - start).total_seconds() * 1000))
+        return 30 * 86400_000
+    if "session" in text:
+        return 5 * 3600_000
+    if "daily" in text or "day" in text:
+        return 86400_000
+    if prev_resets_ms and resets_ms > prev_resets_ms:
+        return resets_ms - prev_resets_ms
+    return 0
+
+
+def load_samples():
+    """{key: [(ts, percent, resetsMs)]} oldest first, pruned to what can still
+    be asked about. A malformed line is skipped, never fatal."""
+    out = {}
+    try:
+        data = SAMPLES_FILE.read_bytes()
+    except OSError:
+        return out
+    floor = now_ms - SAMPLE_MAX_AGE_MS
+    for raw in data.split(b"\n"):
+        if not raw:
+            continue
+        try:
+            rec = json.loads(raw)
+            ts = int(rec["ts"])
+            key = str(rec["key"])[:96]
+            pct = float(rec["pct"])
+            resets = int(rec.get("resets") or 0)
+        except MALFORMED:
+            continue
+        if ts < floor or ts > now_ms + FUTURE_SLACK_MS or not (0 <= pct <= 1):
+            continue
+        out.setdefault(key, []).append((ts, pct, resets))
+    for v in out.values():
+        v.sort()
+    return out
+
+
+def save_samples():
+    """Rewrite the file with what was kept plus this run's new samples. It is
+    small (one line per window per 5 minutes) and rewriting keeps the prune
+    honest, so there is no cursor to get out of step."""
+    lines = []
+    for key, points in PACE["samples"].items():
+        for ts, pct, resets in points:
+            lines.append(json.dumps({"ts": ts, "key": key, "pct": round(pct, 6), "resets": resets}))
+    lines.extend(PACE["next"])
+    if not lines:
+        return
+    try:
+        write_atomic(SAMPLES_FILE, "\n".join(lines) + "\n")
+    except Exception:
+        pass
+
+
+def recent_rate_per_hour(points):
+    """Least squares slope over the last RATE_WINDOW_MS, as fraction per hour.
+    None when the samples cannot carry a rate: fewer than two, too short a span,
+    or a percentage that went DOWN inside the span, which is a reset, not a
+    negative burn."""
+    if len(points) < 2:
+        return None
+    floor = points[-1][0] - RATE_WINDOW_MS
+    pts = [(t, p) for t, p, _ in points if t >= floor]
+    if len(pts) < 2 or pts[-1][0] - pts[0][0] < RATE_MIN_SPAN_MS:
+        return None
+    for i in range(1, len(pts)):
+        if pts[i][1] < pts[i - 1][1] - 1e-9:
+            return None
+    n = len(pts)
+    mt = sum(t for t, _ in pts) / n
+    mp = sum(p for _, p in pts) / n
+    denom = sum((t - mt) ** 2 for t, _ in pts)
+    if denom <= 0:
+        return None
+    slope = sum((t - mt) * (p - mp) for t, p in pts) / denom
+    return max(0.0, slope * 3600_000)
+
+
+def local_midnight_ms():
+    d = datetime.datetime.fromtimestamp(now_ms / 1000)
+    return int(d.replace(hour=0, minute=0, second=0, microsecond=0).timestamp() * 1000)
+
+
+def pace_for(row, key, live):
+    """The pace block for one limit row. Unknowns are -1 (a rate we cannot
+    measure) or 0 (a moment that does not apply), never an invented number."""
+    pct = row.get("percent")
+    resets = parse_iso_ms(row.get("resetsAt"))
+    out = {"windowMs": 0, "elapsed": -1, "ratio": -1, "allowancePerHour": -1,
+           "ratePerHour": -1, "projected": -1, "dryAt": 0, "backOnPaceAt": 0,
+           "todayUsed": -1, "todayAllowance": -1, "overDaily": False}
+    if not isinstance(pct, (int, float)) or pct < 0 or not resets:
+        return out
+    points = PACE["samples"].get(key) or []
+    prev_resets = 0
+    for _, _, r in points:
+        if r and r < resets:
+            prev_resets = max(prev_resets, r)
+    window = window_ms_for(row.get("label"), resets, prev_resets)
+    left_ms = resets - now_ms
+    if window <= 0 or left_ms <= 0:
+        return out
+    out["windowMs"] = window
+    elapsed = min(1.0, max(0.0, (window - left_ms) / float(window)))
+    out["elapsed"] = elapsed
+    hours_left = left_ms / 3600_000.0
+    out["allowancePerHour"] = max(0.0, (1.0 - pct) / hours_left) if hours_left > 0 else 0.0
+    # Ratio needs an elapsed window to divide by. In the first moments of a
+    # window any spend divides by ~0 and reads as infinite; hold it until the
+    # window is one percent old.
+    if elapsed >= 0.01:
+        out["ratio"] = pct / elapsed
+    # Only the rows this machine samples can carry a rate.
+    rate = recent_rate_per_hour([p for p in points if p[2] == resets]) if live else None
+    if rate is not None:
+        out["ratePerHour"] = rate
+        projected = pct + rate * hours_left
+        out["projected"] = projected
+        if rate > 0 and projected > 1.0:
+            out["dryAt"] = int(now_ms + ((1.0 - pct) / rate) * 3600_000)
+    # Stopping now, the window catches up with what was spent at this moment.
+    if out["ratio"] > 1.0:
+        out["backOnPaceAt"] = int(resets - window * (1.0 - pct))
+    if window >= DAILY_MIN_WINDOW_MS:
+        midnight = local_midnight_ms()
+        before = [p for p in points if p[0] <= midnight and p[2] == resets]
+        if before:
+            at_midnight = before[-1][1]
+            out["todayUsed"] = max(0.0, pct - at_midnight)
+            left_then = max(1.0, (resets - midnight) / 3600_000.0)
+            # An even pace spends today the 24-hour share of what was left.
+            out["todayAllowance"] = max(0.0, (1.0 - at_midnight) * min(1.0, 24.0 / left_then))
+            out["overDaily"] = out["todayUsed"] > out["todayAllowance"] > 0
+    return out
+
+
+def with_pace(agent_payload, agent_name):
+    """Attach pace to every limit row, and remember this run's percentages."""
+    rows = agent_payload.get("limits")
+    if not isinstance(rows, list):
+        return agent_payload
+    live = agent_payload.get("limitsLive") is not False
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        key = "%s|%s" % (agent_name, str(row.get("label") or "")[:64])
+        row["pace"] = pace_for(row, key, live)
+        pct = row.get("percent")
+        resets = parse_iso_ms(row.get("resetsAt"))
+        if not isinstance(pct, (int, float)) or pct < 0 or not resets:
+            continue
+        points = PACE["samples"].get(key) or []
+        last = points[-1] if points else None
+        # One line per window per five minutes, plus every real change: the
+        # collector ticks every few seconds and this file is read whole.
+        if last is None or last[2] != resets or abs(last[1] - pct) > 1e-9 or now_ms - last[0] >= SAMPLE_MIN_GAP_MS:
+            PACE["next"].append(json.dumps({"ts": now_ms, "key": key, "pct": round(float(pct), 6), "resets": resets}))
+    return agent_payload
+
+
 def limits_for(agent):
     """Return (limits, measured_at_ms, status_text) for one agent record."""
     try:
@@ -1418,6 +1635,7 @@ def with_kimi_plan(agent_payload):
 
 refresh_kimi_plan()
 refresh_kimi_usage()
+PACE["samples"] = load_samples()
 all_burn = claude.total + codex.total + grok.total + kimi.total + local.total
 payload = {
     "generatedAt": now_ms,
@@ -1425,15 +1643,15 @@ payload = {
     "bucketMinutes": BUCKET_MS / 60_000,
     "bucketCount": BUCKETS,
     "buckets": buckets,
-    "claude": with_limits(claude.payload(), "claude"),
-    "codex": with_limits(codex.payload(), "codex"),
+    "claude": with_pace(with_limits(claude.payload(), "claude"), "claude"),
+    "codex": with_pace(with_limits(codex.payload(), "codex"), "codex"),
     # Grok is a SNAPSHOT, not a live probe: nothing re-probes it, and Grok Bot
     # writes "billing: fetched credits config" only when it starts (44 lines in
     # six days on gus, 2026-09-18). Judging it by measurement age blanked the
     # weekly row within 15 minutes and left it blank for days; its own billing
     # window (resetsAt) is what says whether the figure still describes now.
-    "grok": dict(with_grok_limits(grok.payload()), limitsLive=False),
-    "kimi": with_kimi_plan(kimi.payload()),
+    "grok": with_pace(dict(with_grok_limits(grok.payload()), limitsLive=False), "grok"),
+    "kimi": with_pace(with_kimi_plan(kimi.payload()), "kimi"),
     # Local tokens over the same exact window, and the share of everything
     # that burned on this machine which never went to a frontier model.
     "local": dict(local.payload(), available=local_available, reason=local_reason,
@@ -1490,6 +1708,10 @@ try:
     write_atomic(CACHE_FILE, json.dumps({"v": CACHE_VERSION, "files": next_cache}, allow_nan=False))
 except (OSError, ValueError):
     pass  # the cache is an optimisation; losing it only costs one slow run
+
+# The percentage samples the pace maths reads next run. Written after the
+# payload: a sample the widget never saw is worse than one written a tick late.
+save_samples()
 
 if "--print" in sys.argv:
     print(json.dumps(payload, indent=2))

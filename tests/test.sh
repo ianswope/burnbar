@@ -143,6 +143,11 @@ ok "a Kimi turn is not billed to Claude"
 
 # Grok has no stock probe, so its record freezes while its log keeps moving.
 # Picking between two sources has to go on evidence, not on argument order.
+# Budget pace: on-pace is used% == elapsed%, and every unknown stays unknown.
+python3 -m unittest discover -s tests -p 'test_pace_math.py' -q >/dev/null \
+  || fail "pace math tests"
+ok "pace: ratio, allowance, projection, dry time and back-on-pace arithmetic"
+
 python3 -m unittest discover -s tests -p 'test_limits_selection.py' -q >/dev/null \
   || fail "limit source selection tests"
 ok "plan limits prefer an open window over a reset one, then the newer measurement"
