@@ -510,17 +510,18 @@ BarWidget {
   readonly property string focusAgent: String(setting("focus", "") || "")
   function focusOk(id) { return focusAgent === "" || focusAgent === id }
 
-  // Right click walks: everything, then each subscription this machine
-  // actually uses, then back to everything.
-  function cycleFocus() {
-    var order = [""]
-    if (svc && svc.claudePresent) order.push("claude")
-    if (svc && svc.codexPresent) order.push("codex")
-    if (svc && svc.grokPresent) order.push("grok")
-    if (svc && svc.kimiPresent) order.push("kimi")
-    if (svc && svc.hasComputeGpu) order.push("local")
-    var at = order.indexOf(focusAgent)
-    persist({ focus: order[(at < 0 ? 0 : at + 1) % order.length] })
+  // What the right-click menu offers to re-arm, and what it says it will.
+  readonly property int acknowledgedCount: {
+    var n = 0
+    for (var k in (paceAck || ({}))) n++
+    return n
+  }
+
+  // Put every answered warning back on the table, without having to overspend
+  // further to earn it.
+  function clearPaceAck() {
+    paceAck = ({})
+    try { paceAckFile.setText("{}") } catch (e) { /* a warning is not worth a crash */ }
   }
 
   function syncServiceSettings() { if (svc) svc.settings = settings || ({}) }
@@ -1164,10 +1165,97 @@ BarWidget {
       Behavior on opacity { NumberAnimation { duration: 300 } }
     }
 
+    // ── over budget, in words, on top of everything ─────────────────────
+    // While a window is past an even spend the strip says which service and
+    // by how much, BESIDE the cells rather than over them: the history is the
+    // reason the plugin exists and a warning must not be a curtain across it. Clicking the strip answers
+    // it: the chip fades out and stays gone until that window reaches a WORSE
+    // stage (1.5x, 2.5x, spent out) or its window rolls over. The holder owns
+    // the fade so it cannot fight the pulse, which lives on the pill.
+    Item {
+      id: overChip
+      z: 50
+      anchors.left: parent.left
+      anchors.leftMargin: Style.spaceReal(2)
+      anchors.verticalCenter: parent.verticalCenter
+
+      readonly property bool showing: root.worstPace.text !== ""
+      readonly property real pad: Style.spaceReal(7)
+      readonly property real maxWidth: Math.max(Style.spaceReal(52), root.stripWidth * 0.42)
+      readonly property string label: measureFull.implicitWidth + pad <= maxWidth ? root.worstPace.text
+        : measureShort.implicitWidth + pad <= maxWidth ? root.worstPace.short
+        : measureThird.implicitWidth + pad <= maxWidth ? root.worstPace.third
+        : root.worstPace.mult
+
+      height: Math.max(Style.spaceReal(10), Math.min(parent.height - Style.spaceReal(3), Style.spaceReal(13)))
+      width: Math.min(maxWidth, chipText.implicitWidth + pad)
+      opacity: showing ? 1 : 0
+      visible: opacity > 0.01
+      // Answered warnings fade rather than blink out: the eye should see it
+      // go, so a click feels like it did something.
+      Behavior on opacity { NumberAnimation { duration: 450; easing.type: Easing.OutCubic } }
+
+      Rectangle {
+        id: pill
+        anchors.fill: parent
+        radius: height / 2
+        color: root.worstPace.color
+        border.width: 0
+
+        SequentialAnimation on opacity {
+          running: overChip.visible && root.visible
+          loops: Animation.Infinite
+          onRunningChanged: if (!running) pill.opacity = 1
+          NumberAnimation { to: 0.55; duration: 900; easing.type: Easing.InOutQuad }
+          NumberAnimation { to: 1.0; duration: 900; easing.type: Easing.InOutQuad }
+        }
+      }
+
+      Text {
+        id: chipText
+        anchors.centerIn: parent
+        text: overChip.label
+        color: "#11141a"
+        font.family: root.bar ? root.bar.fontFamily : Style.font.family
+        font.pixelSize: Style.font.caption
+        font.bold: true
+      }
+
+      // Never drawn: they exist so the chip can ask how wide each candidate
+      // label would be before choosing one.
+      Text {
+        id: measureFull
+        visible: false
+        text: root.worstPace.text
+        font.family: chipText.font.family
+        font.pixelSize: chipText.font.pixelSize
+        font.bold: true
+      }
+      Text {
+        id: measureShort
+        visible: false
+        text: root.worstPace.short
+        font.family: chipText.font.family
+        font.pixelSize: chipText.font.pixelSize
+        font.bold: true
+      }
+      Text {
+        id: measureThird
+        visible: false
+        text: root.worstPace.third
+        font.family: chipText.font.family
+        font.pixelSize: chipText.font.pixelSize
+        font.bold: true
+      }
+    }
+
     Item {
       id: graph
-      anchors.centerIn: parent
-      width: parent.width - Style.space(6)
+      // The strip starts after the warning badge, never under it.
+      anchors.left: parent.left
+      anchors.leftMargin: Style.space(3) + (overChip.visible ? overChip.width + Style.spaceReal(4) : 0)
+      anchors.verticalCenter: parent.verticalCenter
+      width: parent.width - Style.space(6) - (overChip.visible ? overChip.width + Style.spaceReal(4) : 0)
       height: Math.max(Style.space(12), Math.round(parent.height * 0.62))
 
       readonly property int gaugeWidth: root.showGauges ? Style.space(3) : 0
@@ -1288,89 +1376,6 @@ BarWidget {
             opacity: parent.hovered ? 1.0 : 0.45
             Behavior on opacity { NumberAnimation { duration: 160 } }
           }
-        }
-      }
-
-      // ── over budget, in words, on top of everything ─────────────────────
-      // While a window is past an even spend the strip says which service and
-      // by how much, over the cells, and it pulses. Clicking the strip answers
-      // it: the chip fades out and stays gone until that window reaches a WORSE
-      // stage (1.5x, 2.5x, spent out) or its window rolls over. The holder owns
-      // the fade so it cannot fight the pulse, which lives on the pill.
-      Item {
-        id: overChip
-        z: 50
-        anchors.left: parent.left
-        anchors.leftMargin: Style.spaceReal(2)
-        anchors.verticalCenter: parent.verticalCenter
-
-        readonly property bool showing: root.worstPace.text !== ""
-        readonly property real pad: Style.spaceReal(7)
-        readonly property real maxWidth: Math.max(Style.spaceReal(52), root.stripWidth - Style.spaceReal(6))
-        readonly property string label: measureFull.implicitWidth + pad <= maxWidth ? root.worstPace.text
-          : measureShort.implicitWidth + pad <= maxWidth ? root.worstPace.short
-          : measureThird.implicitWidth + pad <= maxWidth ? root.worstPace.third
-          : root.worstPace.mult
-
-        height: Math.max(Style.spaceReal(10), Math.min(parent.height - Style.spaceReal(3), Style.spaceReal(13)))
-        width: Math.min(maxWidth, chipText.implicitWidth + pad)
-        opacity: showing ? 1 : 0
-        visible: opacity > 0.01
-        // Answered warnings fade rather than blink out: the eye should see it
-        // go, so a click feels like it did something.
-        Behavior on opacity { NumberAnimation { duration: 450; easing.type: Easing.OutCubic } }
-
-        Rectangle {
-          id: pill
-          anchors.fill: parent
-          radius: height / 2
-          color: root.worstPace.color
-          border.width: 0
-
-          SequentialAnimation on opacity {
-            running: overChip.visible && root.visible
-            loops: Animation.Infinite
-            onRunningChanged: if (!running) pill.opacity = 1
-            NumberAnimation { to: 0.55; duration: 900; easing.type: Easing.InOutQuad }
-            NumberAnimation { to: 1.0; duration: 900; easing.type: Easing.InOutQuad }
-          }
-        }
-
-        Text {
-          id: chipText
-          anchors.centerIn: parent
-          text: overChip.label
-          color: "#11141a"
-          font.family: root.bar ? root.bar.fontFamily : Style.font.family
-          font.pixelSize: Style.font.caption
-          font.bold: true
-        }
-
-        // Never drawn: they exist so the chip can ask how wide each candidate
-        // label would be before choosing one.
-        Text {
-          id: measureFull
-          visible: false
-          text: root.worstPace.text
-          font.family: chipText.font.family
-          font.pixelSize: chipText.font.pixelSize
-          font.bold: true
-        }
-        Text {
-          id: measureShort
-          visible: false
-          text: root.worstPace.short
-          font.family: chipText.font.family
-          font.pixelSize: chipText.font.pixelSize
-          font.bold: true
-        }
-        Text {
-          id: measureThird
-          visible: false
-          text: root.worstPace.third
-          font.family: chipText.font.family
-          font.pixelSize: chipText.font.pixelSize
-          font.bold: true
         }
       }
 
@@ -1828,17 +1833,18 @@ BarWidget {
       root.hoverZone = root.zoneNone
       if (code === Qt.MiddleButton) { if (root.svc) { root.svc.refreshLimits(); root.svc.collect(); root.svc.pollLocal() } }
       else if (code === Qt.RightButton) {
-        // Changing what the icon shows is also an answer to what it is warning
-        // about: the chip fades until that subscription gets worse.
+        // A menu, not a cycle: every view this strip can show, at once, with
+        // each subscription's verdict beside it. Opening it also answers the
+        // warning, which is why the chip fades as the menu appears.
         root.acknowledgePace()
-        root.cycleFocus()
+        root.openMenu()
       }
       else {
         // The click that opens the cockpit is also the answer to whatever the
         // strip was warning about: you looked, so it stops shouting until the
         // next stage.
         root.acknowledgePace()
-        root.toggle()
+        root.toggleCockpit()
       }
     }
   }
@@ -1847,6 +1853,18 @@ BarWidget {
   function open() { panel.controller.show(); if (svc) { svc.refreshLimits(); svc.collect(); svc.pollLocal() } }
   function close() { panel.controller.hide() }
   function toggle() { opened ? close() : open() }
+  // Left click is always the cockpit, even if the menu was the last thing open.
+  function toggleCockpit() {
+    if (opened && panel.mode === "cockpit") { close(); return }
+    panel.mode = "cockpit"
+    if (!opened) open()
+  }
+  // Right click is always the menu, and a second right click puts it away.
+  function openMenu() {
+    if (opened && panel.mode === "menu") { close(); return }
+    panel.mode = "menu"
+    if (!opened) open()
+  }
   function closeForPopoutSwitch() { close() }
   readonly property bool popoutSwitchClosing: false
 

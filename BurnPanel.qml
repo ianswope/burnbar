@@ -26,6 +26,38 @@ Panel {
   required property var widget
   readonly property var svc: widget.svc
 
+  // The panel shows the cockpit, or the small menu a right click asks for.
+  // One KeyboardPanel, two contents: a second panel for the same owner would
+  // fight this one for focus.
+  property string mode: "cockpit"
+
+  // Everything the icon can show, with the current pick marked and each
+  // subscription's own verdict beside it, so the menu doubles as a summary.
+  function viewOptions() {
+    void panel.tick
+    var w = panel.widget, s = panel.svc
+    var out = [{ id: "", label: "All lanes", accent: panel.foreground, note: "" }]
+    if (s && s.claudePresent) out.push({ id: "claude", label: "Claude", accent: w.claudeHot, note: paceNote(s.claudeWeeklyPace) })
+    if (s && s.codexPresent) out.push({ id: "codex", label: "Codex", accent: w.codexHot, note: paceNote(s.codexWeeklyPace) })
+    if (s && s.grokPresent) out.push({ id: "grok", label: "Grok", accent: w.grokHot, note: paceNote(s.grokWeeklyPace) })
+    if (s && s.kimiPresent) out.push({ id: "kimi", label: "Kimi", accent: w.kimiHot, note: paceNote(s.kimiMonthlyPace) })
+    if (s && s.hasComputeGpu) out.push({ id: "local", label: "Local GPU", accent: w.localHot, note: "" })
+    for (var i = 0; i < out.length; i++) out[i].current = (String(w.focusAgent || "") === out[i].id)
+    return out
+  }
+
+  function paceNote(pace) {
+    if (!pace) return ""
+    var r = Number(pace.ratio)
+    if (!(r >= 0)) return ""
+    return r > 1.0 ? (r >= 10 ? Math.round(r) : r.toFixed(1)) + "x over" : "on track"
+  }
+
+  function chooseView(id) {
+    panel.widget.persist({ focus: String(id || "") })
+    panel.widget.close()
+  }
+
   readonly property color foreground: widget.bar ? widget.bar.foreground : Color.foreground
   readonly property color dim: Qt.darker(foreground, 1.5)
   readonly property color faint: Util.alpha(foreground, 0.10)
@@ -115,6 +147,9 @@ Panel {
       revealAnim.restart()
       counterEpoch++
       refreshLocalModels()
+    } else {
+      // Closing forgets the menu: the next left click is the cockpit again.
+      mode = "cockpit"
     }
   }
 
@@ -686,10 +721,14 @@ Panel {
     bar: panel.widget.bar
     open: panel.opened
     focusTarget: keyCatcher
-    contentWidth: fittedContentWidth(panel.panelWidth)
+    contentWidth: panel.mode === "menu"
+      ? fittedContentWidth(Style.space(330))
+      : fittedContentWidth(panel.panelWidth)
     // Never a Flickable in here: the cap is the screen, and everything below
     // is sized to fit inside it.
-    contentHeight: fittedContentHeight(content.implicitHeight, Style.space(960))
+    contentHeight: panel.mode === "menu"
+      ? fittedContentHeight(menuContent.implicitHeight, Style.space(600))
+      : fittedContentHeight(content.implicitHeight, Style.space(960))
 
     PanelKeyCatcher {
       id: keyCatcher
@@ -701,8 +740,101 @@ Panel {
         if (text === "r" || text === "R") panel.refreshAll()
       }
 
+      // ── the right-click menu ───────────────────────────────────────────
+      // Every option at once, rather than a cycle you have to walk blind.
+      ColumnLayout {
+        id: menuContent
+        visible: panel.mode === "menu"
+        width: parent.width
+        spacing: Style.space(4)
+
+        PanelSectionHeader {
+          Layout.fillWidth: true
+          text: "SHOW ON THE ICON"
+          foreground: panel.foreground
+          fontFamily: panel.fontFamily
+        }
+
+        Repeater {
+          model: panel.viewOptions()
+          delegate: Rectangle {
+            id: optionRow
+            required property var modelData
+            Layout.fillWidth: true
+            implicitHeight: Style.space(30)
+            radius: Style.space(4)
+            color: optionHover.hovered ? Util.alpha(panel.foreground, 0.12)
+              : modelData.current ? Util.alpha(panel.foreground, 0.06) : "transparent"
+            HoverHandler { id: optionHover }
+
+            RowLayout {
+              anchors.fill: parent
+              anchors.leftMargin: Style.space(10)
+              anchors.rightMargin: Style.space(10)
+              spacing: Style.space(8)
+              Body {
+                text: optionRow.modelData.current ? "●" : "○"
+                color: optionRow.modelData.current ? optionRow.modelData.accent : panel.dim
+                Layout.preferredWidth: Style.space(14)
+              }
+              Body {
+                text: optionRow.modelData.label
+                color: optionRow.modelData.accent
+                Layout.fillWidth: true
+              }
+              Caption {
+                text: optionRow.modelData.note
+                color: String(optionRow.modelData.note).indexOf("over") >= 0 ? Color.urgent : panel.dim
+              }
+            }
+
+            MouseArea {
+              anchors.fill: parent
+              cursorShape: Qt.PointingHandCursor
+              onClicked: panel.chooseView(optionRow.modelData.id)
+            }
+          }
+        }
+
+        PanelSectionHeader {
+          Layout.fillWidth: true
+          text: "WARNINGS"
+          foreground: panel.foreground
+          fontFamily: panel.fontFamily
+        }
+
+        // Answered warnings stay answered until a worse stage. This is how to
+        // ask for them all back without waiting to overspend further.
+        Rectangle {
+          Layout.fillWidth: true
+          implicitHeight: Style.space(30)
+          radius: Style.space(4)
+          color: rearmHover.hovered ? Util.alpha(panel.foreground, 0.12) : "transparent"
+          HoverHandler { id: rearmHover }
+          RowLayout {
+            anchors.fill: parent
+            anchors.leftMargin: Style.space(10)
+            anchors.rightMargin: Style.space(10)
+            spacing: Style.space(8)
+            Body { text: "↺"; color: panel.dim; Layout.preferredWidth: Style.space(14) }
+            Body { text: "Warn me again"; color: panel.foreground; Layout.fillWidth: true }
+            Caption {
+              text: panel.widget.acknowledgedCount > 0
+                ? panel.widget.acknowledgedCount + " dismissed" : "nothing dismissed"
+              color: panel.dim
+            }
+          }
+          MouseArea {
+            anchors.fill: parent
+            cursorShape: Qt.PointingHandCursor
+            onClicked: { panel.widget.clearPaceAck(); panel.widget.close() }
+          }
+        }
+      }
+
       ColumnLayout {
         id: content
+        visible: panel.mode === "cockpit"
         width: parent.width
         spacing: Style.space(10)
 

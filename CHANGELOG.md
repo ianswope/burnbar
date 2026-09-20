@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.24.0 — 2026-09-20
+
+### Fixed
+- **The over-budget chip was a curtain across the strip.** It was drawn inside
+  the graph and, on a crowded bar, covered the lanes, gauges and history it was
+  complaining about. Fred: *"looks like we lost ALL our original burn bar
+  information."* The badge now sits BESIDE the strip as a sibling, and the graph
+  starts after it, so the warning and the burn history share the widget instead
+  of one hiding the other. It takes at most 42% of the strip and shortens its
+  own label to fit: "CODEX 8.7x OVER", "CODEX OVER", "8.7x OVER", "8.7x".
+- **The widget failed to load entirely** once the menu landed: BurnPanel already
+  had an `onOpenedChanged`, and QML allows one handler per signal in a scope, so
+  the second one made the whole type unavailable ("Property value set multiple
+  times") and the bar drew nothing, with the only evidence in the shell's own
+  log rather than the plugin's. The mode reset folded into the existing handler.
+
+### Added
+- **Right-click opens a menu rather than cycling.** Every view at once: all
+  lanes, or any single subscription, with the current pick marked and each
+  subscription's verdict beside it. Plus "Warn me again", which re-arms every
+  dismissed warning without waiting to overspend further.
+
 ## 1.23.0 — 2026-09-20
 
 ### Added
