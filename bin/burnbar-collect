@@ -630,6 +630,11 @@ def grok_points_from_updates(path):
         meta = params.get("_meta") if isinstance(params.get("_meta"), dict) else {}
         if not meta and isinstance(d.get("_meta"), dict):
             meta = d.get("_meta")
+        # count() reads a MISSING usage field as zero, which is right for an
+        # optional cache counter and wrong here: a record with no totalTokens
+        # would drag this prompt's minimum to 0 and bill the whole context.
+        if meta.get("totalTokens") is None:
+            continue
         tt = count(meta.get("totalTokens"))
         if tt is None:
             continue
@@ -663,12 +668,20 @@ def grok_points_from_updates(path):
     return prune(points)
 
 
+# The newest write to ANY Grok session file, including ones too old to scan.
+# Grok's quota is a snapshot taken when Grok starts, so the only honest way to
+# know whether that snapshot still describes the plan is to know whether Grok
+# has been used since, however long ago the snapshot was taken.
+GROK_NEWEST = {"ms": 0}
+
+
 def scan_grok(path):
     """Cache-aware Grok updates.jsonl reader (full reparse when the file moves)."""
     try:
         st = path.stat()
     except OSError:
         return []
+    GROK_NEWEST["ms"] = max(GROK_NEWEST["ms"], int(st.st_mtime * 1000))
     if st.st_mtime * 1000 < scan_floor:
         return []
     key = str(path)
@@ -732,7 +745,11 @@ def grok_limits_from_log():
     reset_at = str(period.get("end") or latest.get("billingPeriodEnd") or "")[:40]
     try:
         # Grok logs creditUsagePercent on a 0..100 scale; Burn Bar stores 0..1.
-        percent = norm_percent(float(latest.get("creditUsagePercent", 0)) / 100.0)
+        # A config without the figure is UNKNOWN: defaulting it to 0 published a
+        # confident, green 0% for a plan nobody had measured.
+        raw_percent = latest.get("creditUsagePercent")
+        percent = -1.0 if raw_percent is None or isinstance(raw_percent, bool) \
+            else norm_percent(float(raw_percent) / 100.0)
     except (TypeError, ValueError, OverflowError):
         percent = -1.0
     limits = [{"label": "Weekly (7-day)", "percent": percent, "resetsAt": reset_at}]
@@ -833,7 +850,7 @@ if not grok_present and GROK_LOG.is_file():
 # ── local (Ollama) tokens, from the ollama-meter journal on the Ollama box ───
 # One line per request, written by nano/ollama-meter.py (journalctl -o short-unix):
 #   1788649667.804220 nano python3[9143]: meter ts=1788649667803 path=/api/generate \
-#       model=llama3.2:3b status=200 prompt=33 eval=53 ms=2744 client=100.101.176.48
+#       model=llama3.2:3b status=200 prompt=33 eval=53 ms=2744 client=100.64.0.2
 # prompt is prompt_eval_count: tokens actually evaluated; Ollama does not
 # report cache hits, and eval is eval_count. -1 means the response never
 # carried the number (an error, a cut-off stream). Only status 200 counts.
@@ -1083,12 +1100,18 @@ else:
                 local_available = False
                 local_reason = "%s has no %s unit and %s has logged no requests" % (
                     METER_HOST, METER_UNIT, OLLAMA_UNIT)
-if err:
-    local_points = prune(kept)
-elif local_source == "ollama":
-    local_points = prune(kept + parse_ollama_journal(lines, state))
-else:
-    local_points = prune(kept + parse_journal(lines, state))
+# Guarded like every transcript scan: the parsers trust the SHAPE of the cached
+# state, and a cache whose nested maps were corrupted raised here, outside any
+# try, and took the whole run (every cloud lane included) down with it.
+try:
+    if err:
+        local_points = prune(kept)
+    elif local_source == "ollama":
+        local_points = prune(kept + parse_ollama_journal(lines, state))
+    else:
+        local_points = prune(kept + parse_journal(lines, state))
+except Exception:
+    state, local_points = {}, prune(kept if isinstance(kept, list) else [])
 for pt in local_points:
     try:
         local.add(pt)
@@ -1414,9 +1437,12 @@ def pace_for(row, key, live):
         out["todayCeiling"] = ceiling
         # A rate near zero divides into "stop in 165 hours", which is not advice.
         # The clock is only worth printing when it lands inside the window.
+        # And only when today's share really would run out today: at an even
+        # pace this comes to about 24 hours, which told every on-track sub to
+        # "stop in 23h". A slice that outlasts its own 24 hours needs no clock.
         if rate is not None and rate > 0.0005:
             hours = ceiling / rate
-            if hours * 3600_000 < left_ms:
+            if hours < 24.0 and hours * 3600_000 < left_ms:
                 out["stopInMs"] = int(hours * 3600_000)
                 out["stopAtMs"] = int(now_ms + hours * 3600_000)
 
@@ -1435,7 +1461,10 @@ def pace_for(row, key, live):
             ceiling = out["todayCeiling"]
             if out["overDaily"] and ceiling > 0:
                 over = out["todayUsed"] - out["todayAllowance"]
-                out["recoverInMs"] = int((over / (ceiling / 24.0)) * 3600_000)
+                recover = int((over / (ceiling / 24.0)) * 3600_000)
+                # Later than the reset is not a recovery time, it is the reset.
+                if recover < left_ms:
+                    out["recoverInMs"] = recover
     return out
 
 
@@ -1729,7 +1758,8 @@ payload = {
     # six days on gus, 2026-09-18). Judging it by measurement age blanked the
     # weekly row within 15 minutes and left it blank for days; its own billing
     # window (resetsAt) is what says whether the figure still describes now.
-    "grok": with_pace(dict(with_grok_limits(grok.payload()), limitsLive=False), "grok"),
+    "grok": with_pace(dict(with_grok_limits(grok.payload()), limitsLive=False,
+                           lastWriteAt=GROK_NEWEST["ms"]), "grok"),
     "kimi": with_pace(with_kimi_plan(kimi.payload()), "kimi"),
     # Local tokens over the same exact window, and the share of everything
     # that burned on this machine which never went to a frontier model.

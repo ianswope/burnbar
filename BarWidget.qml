@@ -440,6 +440,16 @@ BarWidget {
     return h > 0 ? (r > 0 ? h + "h" + r + "m" : h + "h") : m + "m"
   }
 
+  // Guidance under the numbers: where this sub stands, and whether it is the
+  // one to reach for. The same words the cockpit uses.
+  function adviceLines(id) {
+    // Bare: the quota line above this one already says when a snapshot was taken.
+    var st = standingText(id, Date.now(), true)
+    var g = guidance
+    var mark = g && g.count >= 2 && g.pick === id ? "\n▶ the one to use " + (g.urgent ? "now" : "next") : ""
+    return (st !== "" ? "\n" + st : "") + mark
+  }
+
   function zoneTooltip(zone) {
     if (!svc) return "Burn Bar: starting up"
     // Before the first history.json is parsed every total is zero, and a
@@ -454,20 +464,25 @@ BarWidget {
       return "CLAUDE  ·  " + compact(svc.claudeTotal) + " tokens / last " + span
         + "\nnow " + compact(svc.claudeLatest) + " this bucket  ·  " + svc.claudeSessions + " sessions"
         + "\nweekly quota " + quotaText(svc.claudeWeekly, svc.claudeLimitsMeasuredAt)
+        + adviceLines("claude")
     if (zone === zoneCodex)
       return "CODEX  ·  " + compact(svc.codexTotal) + " tokens / last " + span
         + "\nnow " + compact(svc.codexLatest) + " this bucket  ·  " + svc.codexSessions + " sessions"
         + "\nweekly quota " + quotaText(svc.codexWeekly, svc.codexLimitsMeasuredAt)
+        + adviceLines("codex")
     if (zone === zoneKimi)
       return "KIMI  ·  " + compact(svc.kimiTotal) + " tokens / last " + span
         + "\nnow " + compact(svc.kimiLatest) + " this bucket  ·  " + svc.kimiSessions + " sessions"
         + "\n" + (svc.kimiPlanTier !== "" ? svc.kimiPlanTier + " plan" : "plan unknown")
-        + "  ·  Kimi publishes no quota"
+        + "  ·  monthly quota " + quotaText(svc.kimiMonthly, svc.kimiLimitsMeasuredAt)
+        + adviceLines("kimi")
     if (zone === zoneGrok)
       return "GROK  ·  " + compact(svc.grokTotal) + " tokens / last " + span
         + "\nnow " + compact(svc.grokLatest) + " this bucket  ·  " + svc.grokSessions + " sessions"
         + "\nweekly quota " + quotaText(svc.grokWeekly, svc.grokLimitsMeasuredAt)
+        + (svc.grokWeekly >= 0 && asOfText("grok") !== "" ? "  ·  " + asOfText("grok") : "")
         + (svc.grokLimitsStatus !== "" ? "\n" + svc.grokLimitsStatus : "")
+        + adviceLines("grok")
     if (zone === zoneLocal)
       return svc.localHost.toUpperCase() + "  ·  " + (!svc.localOnline
           ? "Ollama offline" + (svc.localError !== "" ? "\n" + svc.localError : "")
@@ -760,7 +775,10 @@ BarWidget {
   function codexLevel(i) {
     var b = root.buckets
     if (!b || !b.length) return 0
-    var idx = b.length - 1 - i
+    // Mirrored only when it HAS a partner. Alone, the lane is drawn newest-last
+    // (see newestLast on codexLane), so the cells must be filled that way too:
+    // a Codex-only machine showed its history backwards.
+    var idx = root.cloudAgents === 1 ? b.length - root.cellCount + i : b.length - 1 - i
     return root.norm(idx >= 0 && idx < b.length ? Number(b[idx].codex || 0) : 0, root.codexRef)
   }
 
@@ -806,8 +824,12 @@ BarWidget {
   //   1 over pace   2 way over (1.5x)   3 badly over (2.5x)   4 spent out early
   function paceStage(ratio, percent) {
     var r = Number(ratio), p = Number(percent)
-    if (!(r > 1.0)) return 0
-    if (p >= 1.0) return 4
+    // Within 5% of an even spend is on pace everywhere: the panel already
+    // refused to print a multiplier there while the badge said "1.0x OVER".
+    if (!(r > 1.05)) return 0
+    // 99.5% rounds to "100%" everywhere it is printed, so it is spent here too:
+    // a headline saying 100% over a badge still breathing "slow down" disagrees.
+    if (p >= 0.995) return 4
     if (r > 2.5) return 3
     if (r > 1.5) return 2
     return 1
@@ -852,6 +874,7 @@ BarWidget {
   readonly property var worstPace: {
     var none = { text: "", short: "", third: "", mult: "", color: urgent, ratio: 0, stage: 0, key: "", resets: 0 }
     if (!svc) return none
+    void svc.limitsTick   // the rest time counts down even when no new sample lands
     var rows = [["CLAUDE", svc.claudeWeeklyPace, "claude|weekly", Math.min(1, svc.claudeWeekly)],
                 ["CODEX", svc.codexWeeklyPace, "codex|weekly", Math.min(1, svc.codexWeekly)],
                 ["GROK", svc.grokWeeklyPace, "grok|weekly", Math.min(1, svc.grokWeekly)],
@@ -860,8 +883,11 @@ BarWidget {
     for (var i = 0; i < rows.length; i++) {
       var pace = rows[i][1]
       if (!pace) continue
+      // A lane the user unticked has no card and no cells, so it gets no badge
+      // either: with Codex hidden the strip still said "SPENT" about Codex.
+      if (!focusOk(rows[i][2].split("|")[0])) continue
       var r = Number(pace.ratio)
-      if (!(r > 1.0) || r <= best.ratio) continue
+      if (!(r > 1.05) || r <= best.ratio) continue
       var stage = paceStage(r, rows[i][3])
       var key = rows[i][2]
       // The window instance, not a moving target: backOnPaceAt shifts with every
@@ -871,8 +897,13 @@ BarWidget {
       var seen = root.paceAck ? root.paceAck[key] : null
       if (seen && Number(seen.stage) >= stage && Number(seen.resets) === resets) continue
       var mult = (r >= 10 ? Math.round(r) : r.toFixed(1)) + "x"
-      best = { text: rows[i][0] + "  " + mult + " OVER",
-               short: rows[i][0] + "  OVER", third: mult + " OVER", mult: mult,
+      // What to DO, not how bad: "7.6x OVER" made Fred ask whether 1.0x meant
+      // on target. A multiplier is data; "rest it 7 hours" is guidance. The
+      // colour and the pulse still carry the severity.
+      var live = liveFor(key.split("|")[0], Date.now())
+      var word = !live ? mult + " OVER" : live.spent ? "SPENT" : "REST " + spanShort(live.comeBackMs)
+      best = { text: rows[i][0] + "  " + word,
+               short: word, third: !live || live.spent ? word : spanShort(live.comeBackMs), mult: mult,
                stage: stage, key: key, resets: resets,
                color: r > 1.5 ? urgent : Qt.lighter(urgent, 1.35), ratio: r }
     }
@@ -884,6 +915,349 @@ BarWidget {
     if (percent >= 0.75) return gaugeWarn
     return gaugeGood
   }
+
+  // ── guidance ───────────────────────────────────────────────────────────────
+  // Fred, 2026-09-20: "We dont want data, we want guidance to the user about
+  // what to do AND the data." Three questions, answered in plain words:
+  //   · am I ahead, and by how much?   (banked: shown only when ahead)
+  //   · if I am behind, when can I come back?   (a countdown, never a ratio)
+  //   · with more than one subscription, which one should I reach for next?
+  // Budget means an even spend across the window, so everything here falls out
+  // of two numbers: how much of the plan is used, and how much of the clock.
+
+  // Where one window stands RIGHT NOW. The collector's percentage only moves
+  // when a provider reports, but the clock never stops: a subscription left
+  // alone gets further ahead every second, so elapsed is worked out from the
+  // reset and the present, not read from the last collector run. Pure.
+  function paceLive(percent, resetsMs, windowMs, nowMs) {
+    var p = Number(percent), reset = Number(resetsMs), span = Number(windowMs), now = Number(nowMs)
+    if (!(p >= 0) || !(reset > 0) || !(span > 0) || !(now > 0) || now >= reset) return null
+    p = Math.min(1, p)
+    var left = reset - now
+    var e = Math.max(0, Math.min(1, 1 - left / span))
+    var out = { used: p, elapsed: e, leftMs: left, windowMs: span, resetsMs: reset,
+                banked: 0, bankedMs: 0, behind: 0, over: false, comeBackAt: 0, comeBackMs: 0,
+                room: 0, spent: p >= 0.995 }
+    if (out.spent) {
+      // Decided FIRST. A plan can be spent while still "ahead" of the clock (the
+      // last hour of a week at 99.6%), and leaving the come-back time unset there
+      // printed a date in 1970. Spent only ever comes back at its reset.
+      out.behind = Math.max(0, p - e)
+      out.over = true
+      out.comeBackAt = reset
+      out.comeBackMs = left
+    } else if (e > p) {
+      // The share of the plan an even spend would have used by now and did not.
+      out.banked = e - p
+      out.bankedMs = out.banked * span
+    } else if (p > e) {
+      out.behind = p - e
+      // "Over" is the same judgement the verdict pill makes: more than 5% past
+      // an even spend, and by at least a whole percent of the plan. Inside that
+      // grace a sub is on pace, not told to go away.
+      out.over = out.behind > 0.01 && (e <= 0 || p / e > 1.05)
+      // Stop now and the even-spend line catches up when elapsed reaches used.
+      out.comeBackAt = Math.min(reset, reset - span * (1 - p))
+      out.comeBackMs = Math.max(0, out.comeBackAt - now)
+    }
+    // What is left of the plan over what is left of the clock. 1 is exactly on
+    // pace, 2 means the rest of the window can take twice an even spend. The
+    // same figure for a week and for a month, so they can be compared, and it
+    // climbs on its own as a reset nears with budget unspent.
+    out.room = e < 1 ? (1 - p) / (1 - e) : 0
+    return out
+  }
+
+  // Which subscription to reach for next. rows: [{ id, live, fresh, blocked }]
+  // where live is paceLive(), fresh says the figure can be vouched for, and
+  // blocked says a short session window is full. Pure, so it is tested.
+  //   · one subscription: nothing to choose between, so nothing is said.
+  //   · only a sub that is AHEAD is ever suggested; the most room wins, which
+  //     turns into earliest-deadline-first as a reset nears with budget unspent.
+  //   · the last answer sticks until another beats it clearly, so the advice
+  //     does not flap between two near-equal subs on every refresh.
+  function guidePick(rows, previousId) {
+    var MIN_BANK = 0.02, STICK = 1.15
+    // "Use it or lose it" is about the calendar, not the window: 15% of a month
+    // is four and a half days, and crying wolf that early gets the chip ignored.
+    var LOSE_IT_MS = 72 * 3600000, LOSE_IT_SHARE = 0.15, LOSE_IT_LEFT = 0.10
+    var out = { count: 0, pick: "", next: "", urgent: false, room: 0, rest: [], ahead: 0 }
+    var list = rows || []
+    var ok = [], i
+    for (i = 0; i < list.length; i++) {
+      var r = list[i]
+      if (!r || !r.id) continue
+      out.count++
+      if (!r.live || !r.fresh) continue
+      if (r.live.over || r.live.spent)
+        out.rest.push({ id: r.id, comeBackAt: r.live.comeBackAt, spent: r.live.spent, behind: r.live.behind })
+      // A snapshot may have been outrun by use nobody measured, so it has to
+      // be further ahead before it is worth acting on. And the sub already
+      // being suggested keeps the job down to half the bar, so advice does not
+      // blink on and off around the threshold.
+      var need = r.minBank > 0 ? r.minBank : MIN_BANK
+      if (r.id === previousId) need = need * 0.5
+      if (r.live.spent || r.blocked || !(r.live.banked >= need)) continue
+      ok.push(r)
+    }
+    out.ahead = ok.length
+    out.rest.sort(function(a, b) { return a.comeBackAt - b.comeBackAt })
+    if (out.count < 2 || ok.length === 0) return out
+    ok.sort(function(a, b) {
+      if (b.live.room !== a.live.room) return b.live.room - a.live.room
+      if (b.live.banked !== a.live.banked) return b.live.banked - a.live.banked
+      return a.live.leftMs - b.live.leftMs
+    })
+    if (previousId && previousId !== ok[0].id) {
+      for (i = 1; i < ok.length; i++) {
+        if (ok[i].id !== previousId) continue
+        // The challenger has to be clearly better, not better by a rounding.
+        if (ok[0].live.room < ok[i].live.room * STICK) ok.unshift(ok.splice(i, 1)[0])
+        break
+      }
+    }
+    out.pick = ok[0].id
+    out.room = ok[0].live.room
+    out.urgent = ok[0].live.leftMs <= Math.min(LOSE_IT_MS, ok[0].live.windowMs * LOSE_IT_SHARE)
+      && (1 - ok[0].live.used) >= LOSE_IT_LEFT
+    out.next = ok.length > 1 ? ok[1].id : ""
+    return out
+  }
+
+  // A running clock for the card: "3d 09:12:45", "7:13:22", "13:22". Banked time
+  // climbs one second per second while a sub is left alone and a come-back time
+  // counts down, and seeing it move is the point. Pure.
+  function clockSpan(ms) {
+    var total = Math.max(0, Math.floor(Number(ms) / 1000))
+    if (!(total >= 0)) return "0:00"
+    var d = Math.floor(total / 86400), h = Math.floor((total % 86400) / 3600)
+    var m = Math.floor((total % 3600) / 60), sec = total % 60
+    var two = function(n) { return (n < 10 ? "0" : "") + n }
+    if (d > 0) return d + "d " + two(h) + ":" + two(m) + ":" + two(sec)
+    if (h > 0) return h + ":" + two(m) + ":" + two(sec)
+    return m + ":" + two(sec)
+  }
+  // The largest unit only, for the chip on the bar: "7H", "2D", "45M". Pure.
+  function spanShort(ms) {
+    var mins = Math.max(1, Math.round(Number(ms) / 60000))
+    if (!(mins >= 1)) return "1M"
+    if (mins >= 1440) return Math.round(mins / 1440) + "D"
+    if (mins >= 60) return Math.round(mins / 60) + "H"
+    return mins + "M"
+  }
+
+  // "3d 10h", "6h 40m", "45m": a span a person can plan around. Two units at
+  // most, because "3d 10h 22m" is a stopwatch, not advice. Pure.
+  function spanWords(ms) {
+    var mins = Math.max(0, Math.round(Number(ms) / 60000))
+    if (!(mins >= 1)) return "under a minute"
+    var d = Math.floor(mins / 1440), h = Math.floor((mins % 1440) / 60), m = mins % 60
+    if (d > 0) return h > 0 ? d + "d " + h + "h" : d + "d"
+    if (h > 0) return m > 0 ? h + "h " + m + "m" : h + "h"
+    return m + "m"
+  }
+
+  function subName(id) {
+    return id === "claude" ? "Claude" : id === "codex" ? "Codex" : id === "grok" ? "Grok" : id === "kimi" ? "Kimi" : ""
+  }
+  function subColor(id) {
+    return id === "claude" ? claudeHot : id === "codex" ? codexHot : id === "grok" ? grokHot : kimiHot
+  }
+  function subLimits(id) {
+    if (!svc) return []
+    return (id === "claude" ? svc.claudeLimits : id === "codex" ? svc.codexLimits
+      : id === "grok" ? svc.grokLimits : id === "kimi" ? svc.kimiLimits : []) || []
+  }
+  function subMeta(id) {
+    if (!svc) return { measuredAt: 0, live: true, lastAt: 0, present: false }
+    return id === "claude" ? { measuredAt: svc.claudeLimitsMeasuredAt, live: svc.claudeLimitsLive, lastAt: svc.claudeLastAt, present: svc.claudePresent }
+      : id === "codex" ? { measuredAt: svc.codexLimitsMeasuredAt, live: svc.codexLimitsLive, lastAt: svc.codexLastAt, present: svc.codexPresent }
+      : id === "grok" ? { measuredAt: svc.grokLimitsMeasuredAt, live: svc.grokLimitsLive, lastAt: svc.grokLastAt, present: svc.grokPresent }
+      : { measuredAt: svc.kimiLimitsMeasuredAt, live: svc.kimiLimitsLive, lastAt: svc.kimiLastAt, present: svc.kimiPresent }
+  }
+  function isSessionLabel(label) { return /session|5-hour/i.test(String(label || "")) }
+
+  // The window a subscription is judged by: the weekly one where there is one,
+  // otherwise the monthly pool, otherwise the first that is not a short session
+  // window. A 5-hour window is never the budget: it refills before lunch.
+  function primaryLimit(id) {
+    var rows = subLimits(id), i
+    for (i = 0; i < rows.length; i++)
+      if (/^weekly/i.test(String(rows[i].label || ""))) return rows[i]
+    for (i = 0; i < rows.length; i++)
+      if (/monthly \(total\)/i.test(String(rows[i].label || ""))) return rows[i]
+    for (i = 0; i < rows.length; i++)
+      if (!isSessionLabel(rows[i].label)) return rows[i]
+    return null
+  }
+  // Can this figure be stood behind at all? Same withholding rules as the
+  // gauges: a stale record, a rolled-over window or an unreadable percentage
+  // has no pace, and so no advice.
+  function limitUsable(id, limit) {
+    if (!svc || !limit) return false
+    var meta = subMeta(id)
+    if (svc.limitsStale(meta.measuredAt, meta.live)) return false
+    if (svc.limitExpired(limit)) return false
+    return Number(limit.percent) >= 0
+  }
+  // A snapshot (Grok logs its credits only when Grok starts) cannot be
+  // re-measured, so it is never treated as exact: it needs five times the margin
+  // before it is suggested, and the advice says when it was taken. If Grok has
+  // been used since, the percentage can only have gone up by an amount nobody
+  // measured, and the words say that too. lastWriteAt sees use that is older
+  // than the history window, which lastAt cannot.
+  function isSnapshot(id) { return subMeta(id).live === false }
+  function snapshotOutrun(id) {
+    var meta = subMeta(id)
+    if (meta.live !== false) return false
+    var seen = Math.max(Number(meta.lastAt) || 0, id === "grok" && svc ? Number(svc.grokLastWriteAt) || 0 : 0)
+    return seen > Number(meta.measuredAt) + 600000
+  }
+  function asOfText(id) {
+    if (!isSnapshot(id)) return ""
+    var t = Number(subMeta(id).measuredAt) || 0
+    if (!(t > 0)) return ""
+    return "as of " + Qt.formatDateTime(new Date(t), "ddd h:mm AP") + (snapshotOutrun(id) ? ", used since" : "")
+  }
+  // A short session window that is nearly full blocks a sub right now even when
+  // its week is wide open. The 5-hour rows are hidden by default; they still
+  // count here, because sending someone into a wall is not guidance.
+  function sessionBlock(id) {
+    var rows = subLimits(id)
+    for (var i = 0; i < rows.length; i++) {
+      if (!isSessionLabel(rows[i].label) || !limitUsable(id, rows[i])) continue
+      var full = Number(rows[i].percent)
+      var rate = rows[i].pace ? Number(rows[i].pace.ratePerHour) : 0
+      // Full, or filling fast enough to be full inside half an hour: sending
+      // someone to a sub that locks them out in ten minutes is not guidance.
+      if (full >= 0.9 || (rate > 0 && (1 - full) / rate < 0.5))
+        return Date.parse(String(rows[i].resetsAt || "")) || 1
+    }
+    return 0
+  }
+  function subBurning(id) {
+    if (!svc) return false
+    return (id === "claude" ? svc.claudeTrailing5 : id === "codex" ? svc.codexTrailing5
+      : id === "grok" ? svc.grokTrailing5 : id === "kimi" ? svc.kimiTrailing5 : 0) > 0
+  }
+  // The moment a percentage is true FOR. A provider's figure only moves when it
+  // is re-measured, so running the clock past that moment while tokens are
+  // leaving would let "banked" climb between probes and then jump back down.
+  //   · resting: the present. Nothing is being spent, the figure still holds,
+  //     and banked time really does grow a second every second.
+  //   · burning: the last measurement. The clocks hold still until it is
+  //     re-measured, and the words say "if you stop".
+  //   · a snapshot that has been used since: the snapshot's own moment, which
+  //     is exactly what "as of Sat 9:20 PM" claims.
+  function standingAt(id, nowMs) {
+    var now = Number(nowMs) || Date.now()
+    var measured = Number(subMeta(id).measuredAt) || 0
+    if (measured > 0 && measured < now && (subBurning(id) || snapshotOutrun(id))) return measured
+    return now
+  }
+  function liveFor(id, nowMs) {
+    var limit = primaryLimit(id)
+    if (!limitUsable(id, limit) || !limit.pace) return null
+    var reset = Number(limit.pace.resetsMs) || Date.parse(String(limit.resetsAt || ""))
+    return paceLive(limit.percent, reset, limit.pace.windowMs, standingAt(id, nowMs))
+  }
+  function windowWord(limit) {
+    var label = String((limit && limit.label) || "")
+    return /week/i.test(label) ? "week" : /month/i.test(label) ? "month" : /session|5-hour/i.test(label) ? "session" : "window"
+  }
+
+  // The advice itself. Local is never a candidate: it is not a subscription,
+  // and this is about where you stand on your plans, not where work should run.
+  // Hidden lanes are left out too: a sub the user unticked is one they do not
+  // want to hear about.
+  property var guidance: ({ count: 0, pick: "", next: "", urgent: false, room: 0, rest: [], ahead: 0 })
+  function refreshGuidance() {
+    var ids = ["claude", "codex", "grok", "kimi"], rows = [], now = Date.now()
+    for (var i = 0; i < ids.length; i++) {
+      var id = ids[i]
+      if (!subMeta(id).present || !focusOk(id)) continue
+      // A snapshot cannot be re-measured, so it has to be further ahead before it
+      // is worth acting on, and further still once it has been used since.
+      rows.push({ id: id, live: liveFor(id, now), fresh: true, blocked: sessionBlock(id) > 0,
+                  minBank: !isSnapshot(id) ? 0 : snapshotOutrun(id) ? 0.25 : 0.10 })
+    }
+    guidance = guidePick(rows, guidance ? guidance.pick : "")
+  }
+  Timer { interval: 30000; running: true; repeat: true; triggeredOnStart: true; onTriggered: root.refreshGuidance() }
+  Connections {
+    target: root.svc
+    ignoreUnknownSignals: true
+    function onGeneratedAtChanged() { root.refreshGuidance() }
+  }
+  onFocusLanesChanged: refreshGuidance()
+
+  // Headline and reason, shared by the cockpit banner and the tooltips so the
+  // bar and the panel can never give different advice.
+  function guideHeadline() {
+    var g = guidance
+    if (!g || g.count < 2) return ""
+    // Already on the right one: say so, rather than telling them to switch to
+    // what they are using.
+    if (g.pick !== "" && pickBurning()) return "Keep using " + subName(g.pick)
+    if (g.pick !== "") return "Use " + subName(g.pick) + (g.urgent ? " now" : " next")
+    if (g.rest.length > 0) return "Nothing has spare budget"
+    return "Everything is on pace"
+  }
+  function pickBurning() { return guidance && guidance.pick !== "" && subBurning(guidance.pick) }
+  function guideReason(nowMs) {
+    var g = guidance
+    if (!g || g.count < 2) return ""
+    var now = Number(nowMs) || Date.now()
+    if (g.pick !== "") {
+      var live = liveFor(g.pick, now)
+      if (!live) return ""
+      var word = windowWord(primaryLimit(g.pick))
+      var pct = Math.round(live.banked * 100) + "%"
+      if (g.urgent)
+        return "use it or lose it: it resets in " + spanWords(live.leftMs) + " with "
+          + Math.round((1 - live.used) * 100) + "% of its " + word + " unspent"
+      var asOf = asOfText(g.pick)
+      return pct + " of its " + word + " is banked, about " + spanWords(live.bankedMs)
+        + " ahead  ·  resets in " + spanWords(live.leftMs)
+        + (asOf !== "" ? "  ·  " + asOf : "")
+    }
+    if (g.rest.length > 0) {
+      var first = g.rest[0]
+      return "first back on pace: " + subName(first.id) + ", "
+        + (first.spent ? "at its reset " : "") + Qt.formatDateTime(new Date(first.comeBackAt), "ddd h:mm AP")
+        + " (in " + spanWords(first.comeBackAt - now) + ")"
+    }
+    return "use whichever you like: spend evenly and every plan makes it"
+  }
+  // One line for one subscription: banked when ahead, a way back when behind.
+  // Never both, and never "banked" on a sub that is behind.
+  function standingText(id, nowMs, bare) {
+    var now = Number(nowMs) || Date.now()
+    var live = liveFor(id, now)
+    if (!live) return ""
+    if (live.spent) return "spent  ·  back at the reset in " + spanWords(live.comeBackMs)
+    if (live.over)
+      return "come back in " + spanWords(live.comeBackMs) + " if you stop now ("
+        + Qt.formatDateTime(new Date(live.comeBackAt), "ddd h:mm AP") + ")"
+    if (live.banked >= 0.01)
+      return Math.round(live.banked * 100) + "% banked, about " + spanWords(live.bankedMs) + " ahead"
+        + (bare !== true && asOfText(id) !== "" ? "  ·  " + asOfText(id) : "")
+    return "on pace"
+  }
+
+  // The chip on the strip when there is no warning to show: the sub to use.
+  readonly property bool showAdvice: setting("advice", true) !== false
+  function toggleAdvice() { persist({ advice: !showAdvice }) }
+  readonly property var adviceChip: {
+    var none = { text: "", short: "", third: "", mult: "", color: urgent, advice: true }
+    var g = guidance
+    if (!showAdvice || !g || g.count < 2 || g.pick === "" || pickBurning()) return none
+    var name = subName(g.pick).toUpperCase()
+    return { text: "USE " + name, short: name, third: name, mult: name.charAt(0),
+             color: subColor(g.pick), advice: true }
+  }
+  // A warning outranks advice: what to stop comes before what to start.
+  readonly property var stripChip: worstPace.text !== "" ? worstPace : adviceChip
 
   // ── state ─────────────────────────────────────────────────────────────────
   readonly property bool broken: svc ? svc.collectorBroken : false
@@ -898,7 +1272,8 @@ BarWidget {
   readonly property bool idle: !broken && (!ready
     || ((!showClaude || (svc ? svc.claudeLatest : 0) <= 0)
         && (!showCodex || (svc ? svc.codexLatest : 0) <= 0)
-        && (!showGrok || (svc ? svc.grokLatest : 0) <= 0)))
+        && (!showGrok || (svc ? svc.grokLatest : 0) <= 0)
+        && (!showKimi || (svc ? svc.kimiLatest : 0) <= 0)))
 
   // One number for "how hard is this machine working right now", across all
   // three agents. Drives every global effect: under-glow, sparks, frame rate.
@@ -979,6 +1354,13 @@ BarWidget {
       NumberAnimation { target: root; property: "grokFlash"; to: 0; duration: 700; easing.type: Easing.OutCubic }
     }
   }
+  // Kimi lands burn like everyone else. It had a flash property and nothing
+  // that ever drove it, so its lane never reacted to new tokens.
+  SequentialAnimation {
+    id: kimiImpact
+    NumberAnimation { target: root; property: "kimiFlash"; to: 1; duration: 90; easing.type: Easing.OutQuad }
+    NumberAnimation { target: root; property: "kimiFlash"; to: 0; duration: 700; easing.type: Easing.OutCubic }
+  }
   SequentialAnimation {
     id: localImpact
     NumberAnimation { target: root; property: "localFlash"; to: 1; duration: 80; easing.type: Easing.OutQuad }
@@ -990,6 +1372,7 @@ BarWidget {
     function onClaudePulseChanged() { claudeImpact.restart() }
     function onCodexPulseChanged() { codexImpact.restart() }
     function onGrokPulseChanged() { grokImpact.restart() }
+    function onKimiPulseChanged() { kimiImpact.restart() }
     function onLocalPulseChanged() { localImpact.restart() }
   }
 
@@ -1170,7 +1553,7 @@ BarWidget {
       anchors.horizontalCenter: parent.horizontalCenter
       width: parent.width
       radius: width / 2
-      height: gauge.unknown ? 0 : Math.max(1, parent.height * Math.min(1, gauge.percent))
+      height: gauge.unknown || !(gauge.percent > 0) ? 0 : Math.max(1, parent.height * Math.min(1, gauge.percent))
       visible: !gauge.unknown
       color: gauge.paceColor
       border.width: 0
@@ -1247,13 +1630,13 @@ BarWidget {
       anchors.leftMargin: Style.spaceReal(2)
       anchors.verticalCenter: parent.verticalCenter
 
-      readonly property bool showing: root.worstPace.text !== ""
+      readonly property bool showing: root.stripChip.text !== ""
       readonly property real pad: Style.spaceReal(7)
       readonly property real maxWidth: Math.max(Style.spaceReal(52), root.stripWidth * 0.42)
-      readonly property string label: measureFull.implicitWidth + pad <= maxWidth ? root.worstPace.text
-        : measureShort.implicitWidth + pad <= maxWidth ? root.worstPace.short
-        : measureThird.implicitWidth + pad <= maxWidth ? root.worstPace.third
-        : root.worstPace.mult
+      readonly property string label: measureFull.implicitWidth + pad <= maxWidth ? root.stripChip.text
+        : measureShort.implicitWidth + pad <= maxWidth ? root.stripChip.short
+        : measureThird.implicitWidth + pad <= maxWidth ? root.stripChip.third
+        : root.stripChip.mult
 
       height: Math.max(Style.spaceReal(10), Math.min(parent.height - Style.spaceReal(3), Style.spaceReal(13)))
       width: Math.min(maxWidth, chipText.implicitWidth + pad)
@@ -1267,11 +1650,12 @@ BarWidget {
         id: pill
         anchors.fill: parent
         radius: height / 2
-        color: root.worstPace.color
+        color: root.stripChip.color
         border.width: 0
 
         SequentialAnimation on opacity {
-          running: overChip.visible && root.visible
+          // Only a warning pulses. Advice sits still: it is an offer, not an alarm.
+          running: overChip.visible && root.visible && root.stripChip.advice !== true
           loops: Animation.Infinite
           onRunningChanged: if (!running) pill.opacity = 1
           NumberAnimation { to: 0.55; duration: 900; easing.type: Easing.InOutQuad }
@@ -1294,7 +1678,7 @@ BarWidget {
       Text {
         id: measureFull
         visible: false
-        text: root.worstPace.text
+        text: root.stripChip.text
         font.family: chipText.font.family
         font.pixelSize: chipText.font.pixelSize
         font.bold: true
@@ -1302,7 +1686,7 @@ BarWidget {
       Text {
         id: measureShort
         visible: false
-        text: root.worstPace.short
+        text: root.stripChip.short
         font.family: chipText.font.family
         font.pixelSize: chipText.font.pixelSize
         font.bold: true
@@ -1310,7 +1694,7 @@ BarWidget {
       Text {
         id: measureThird
         visible: false
-        text: root.worstPace.third
+        text: root.stripChip.third
         font.family: chipText.font.family
         font.pixelSize: chipText.font.pixelSize
         font.bold: true
@@ -1409,6 +1793,7 @@ BarWidget {
           { zone: root.zoneClaude, from: 0, span: graph.claudeZoneWidth, on: root.showClaude },
           { zone: root.zoneCodex, from: graph.claudeZoneWidth, span: graph.codexZoneWidth, on: root.showCodex },
           { zone: root.zoneGrok, from: graph.grokZoneStart, span: graph.grokZoneWidth, on: root.showGrok },
+          { zone: root.zoneKimi, from: graph.kimiZoneStart, span: graph.kimiZoneWidth, on: root.showKimi },
           { zone: root.zoneLocal, from: graph.localZoneStart, span: graph.localZoneWidth, on: root.showLocal }
         ]
         delegate: Item {
@@ -1704,7 +2089,11 @@ BarWidget {
         visible: root.showLocal
         width: graph.ruleWidth
         height: parent.height
-        anchors.left: root.showGauges ? grokGauge.right : grokLane.right
+        // After the LAST cloud lane. Kimi is laid out after Grok, so anchoring
+        // here to Grok alone painted the local lane over Kimi's cells whenever
+        // both were on, while the tooltip still named Kimi.
+        anchors.left: root.showKimi ? (root.showGauges ? kimiGauge.right : kimiLane.right)
+          : (root.showGauges ? grokGauge.right : grokLane.right)
         anchors.verticalCenter: parent.verticalCenter
 
         Rectangle {

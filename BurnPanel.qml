@@ -38,10 +38,10 @@ Panel {
     void panel.tick
     var w = panel.widget, s = panel.svc
     var out = [{ id: "", label: "All lanes", accent: panel.foreground, note: "" }]
-    if (s && s.claudePresent) out.push({ id: "claude", label: "Claude", accent: w.claudeHot, note: paceNote(s.claudeWeeklyPace) })
-    if (s && s.codexPresent) out.push({ id: "codex", label: "Codex", accent: w.codexHot, note: paceNote(s.codexWeeklyPace) })
-    if (s && s.grokPresent) out.push({ id: "grok", label: "Grok", accent: w.grokHot, note: paceNote(s.grokWeeklyPace) })
-    if (s && s.kimiPresent) out.push({ id: "kimi", label: "Kimi", accent: w.kimiHot, note: paceNote(s.kimiMonthlyPace) })
+    if (s && s.claudePresent) out.push({ id: "claude", label: "Claude", accent: w.claudeHot, note: paceNote("claude") })
+    if (s && s.codexPresent) out.push({ id: "codex", label: "Codex", accent: w.codexHot, note: paceNote("codex") })
+    if (s && s.grokPresent) out.push({ id: "grok", label: "Grok", accent: w.grokHot, note: paceNote("grok") })
+    if (s && s.kimiPresent) out.push({ id: "kimi", label: "Kimi", accent: w.kimiHot, note: paceNote("kimi") })
     if (s && s.hasComputeGpu) out.push({ id: "local", label: "Local GPU", accent: w.localHot, note: "" })
     var lanes = w.focusLanes || []
     // With nothing singled out every subscription IS showing, so every box is
@@ -51,15 +51,16 @@ Panel {
     return out
   }
 
-  function paceNote(pace) {
-    if (!pace) return ""
-    var r = Number(pace.ratio)
-    if (!(r >= 0)) return ""
-    // 1.0x IS on target, so a figure that rounds to 1.0 must not be printed as
-    // "1.0x over" - it contradicts the number beside it. Only a real overspend
-    // gets a multiplier.
-    if (r < 1.05) return r > 0.9 ? "at pace" : "on track"
-    return (r >= 10 ? Math.round(r) : r.toFixed(1)) + "x over"
+  // Where a sub stands, in the same words the cards use. It used to print a
+  // multiplier ("2.0x over"); Fred asked whether 1.0x meant on target, which is
+  // the whole case against multipliers. A rest time is something you can act on.
+  function paceNote(id) {
+    var live = panel.widget.liveFor(id, Date.now())
+    if (!live) return ""
+    if (live.spent) return "spent until it resets"
+    if (live.over) return "rest it " + panel.widget.spanWords(live.comeBackMs)
+    if (live.banked >= 0.01) return Math.round(live.banked * 100) + "% banked"
+    return "on pace"
   }
 
   // Ticking a lane leaves the menu open: picking two of four should not cost
@@ -169,7 +170,10 @@ Panel {
       revealAnim.restart()
       counterEpoch++
       refreshLocalModels()
+      if (widget) widget.refreshGuidance()
+      fitCheck.restart()
     } else {
+      squeeze = 0
       // Closing forgets the menu: the next left click is the cockpit again.
       mode = "cockpit"
     }
@@ -219,7 +223,7 @@ Panel {
     var r = Number(limit.pace.ratio)
     if (!(r >= 0)) return { word: "", color: panel.dim }
     if (r > 1.5) return { word: "WAY OVER", color: Color.urgent }
-    if (r > 1.0) return { word: "OVER", color: Qt.lighter(Color.urgent, 1.35) }
+    if (r > 1.05) return { word: "OVER", color: Qt.lighter(Color.urgent, 1.35) }
     if (r > 0.9) return { word: "AT PACE", color: panel.foreground }
     return { word: "ON TRACK", color: panel.widget.gaugeColor(0.2) }
   }
@@ -235,11 +239,10 @@ Panel {
     var r = Number(p.ratio)
     if (!(r >= 0)) return { text: "", urgent: false }
     var over = r > 1.0
-    var used = Math.round(Number(limit.percent) * 100)
-    var gone = Math.round(Number(p.elapsed) * 100)
-    // Used against elapsed is the whole idea, so say both in the same breath
-    // rather than making a multiplier stand for them.
-    var parts = [used + "% spent, " + gone + "% of the window gone"]
+    // How far ahead or behind is the standing line's job now (banked, or a
+    // way back), so this sentence is only what follows from it: how fast you
+    // may go, where that ends, and when to stop today.
+    var parts = []
 
     var a = Number(p.allowancePerHour)
     if (a >= 0) {
@@ -259,13 +262,6 @@ Panel {
       else if (Number(p.projected) >= 0)
         parts.push("at this rate ends at " + Math.round(Number(p.projected) * 100) + "%")
     }
-
-    // Back on pace only says something when it is EARLIER than the reset. At
-    // 100% the two are the same moment, and the row already prints the reset.
-    var back = Number(p.backOnPaceAt)
-    var resets = Date.parse(String(limit.resetsAt || ""))
-    if (back > 0 && (!isFinite(resets) || back < resets - 60_000))
-      parts.push("back on pace " + dayClockText(new Date(back).toISOString()) + " if you stop")
 
     // The rate says how fast; this says when to put it down so tomorrow still
     // has its own share of what is left.
@@ -402,12 +398,13 @@ Panel {
   function splitTotal(split) {
     return Number(split.input || 0) + Number(split.cacheWrite || 0) + Number(split.output || 0)
   }
-  // Cache reads as a share of everything the model touched. It is a token
-  // share, not money: cache hits are billed too, at a lower rate.
+  // Cache reads as a share of everything the model took IN. Output is not
+  // input: counting it in the denominator understated what the label claims.
+  // It is a token share, not money: cache hits are billed too, at a lower rate.
   function cacheShare(split) {
-    var billed = splitTotal(split)
+    var taken = Number(split.input || 0) + Number(split.cacheWrite || 0)
     var read = Number(split.cacheRead || 0)
-    return billed + read > 0 ? read / (billed + read) : 0
+    return taken + read > 0 ? read / (taken + read) : 0
   }
 
   // ── local model control ───────────────────────────────────────────────────
@@ -773,6 +770,53 @@ Panel {
   // facts - how strong (0 is dark), what colour, whether it breathes - so a
   // card has one glow to draw and SETUP decides what it is about.
   readonly property string glowMode: widget.glowMode
+
+  // ── fit ───────────────────────────────────────────────────────────────────
+  // The cockpit never scrolls, and it must never CLIP either: clipping is worse,
+  // because nothing tells you rows are missing. 2.1 added a guidance line to
+  // every card and the footer fell off the bottom of a 1080p laptop. So the
+  // panel measures the screen it opens on and tightens itself: shorter graphs,
+  // closer rows, a one-line footer. `density` starts from the room available
+  // and `squeeze` raises it if the real content still does not fit (a plan with
+  // five quota windows, a long model list). It only ever tightens while open,
+  // so it cannot oscillate, and it relaxes again on the next open.
+  readonly property real roomUnits: kpanel.availableCardHeight > 0
+    ? (kpanel.availableCardHeight - kpanel.verticalContentInset) / Math.max(0.5, Style.spaceReal(1)) : 9999
+  property int squeeze: 0
+  readonly property int density: Math.max(roomUnits >= 960 ? 0 : roomUnits >= 830 ? 1 : 2, squeeze)
+  function tight(roomy, snug, packed) { return density === 0 ? roomy : density === 1 ? snug : packed }
+  Timer {
+    id: fitCheck
+    interval: 150
+    onTriggered: {
+      if (!panel.opened || panel.mode !== "cockpit" || panel.squeeze >= 2) return
+      var room = kpanel.availableCardHeight - kpanel.verticalContentInset
+      if (room > 0 && content.implicitHeight > room) { panel.squeeze++; fitCheck.restart() }
+    }
+  }
+
+  // ── guidance ──────────────────────────────────────────────────────────────
+  // What to do, before any of the data. The arithmetic lives in the widget so
+  // the chip on the bar, the tooltips and this panel can never disagree; the
+  // panel only re-reads it each second so "banked" and "come back in" move in
+  // real time while it is open.
+  readonly property var guidance: widget.guidance
+  readonly property bool guideShown: guidance.count >= 2
+  readonly property string guideHeadline: { void panel.tick; return widget.guideHeadline() }
+  readonly property string guideReason: { void panel.tick; return widget.guideReason(Date.now()) }
+  readonly property color guideTone: guidance.pick !== "" ? widget.subColor(guidance.pick)
+    : guidance.rest.length > 0 ? Qt.lighter(Color.urgent, 1.35) : widget.gaugeColor(0.2)
+  // Everyone who is not the pick, in one breath: who is next, and when each
+  // sub that needs a rest is back.
+  readonly property string guideAside: {
+    void panel.tick
+    var g = guidance, parts = []
+    if (g.pick === "") return ""
+    if (g.next !== "") parts.push("then " + widget.subName(g.next))
+    for (var i = 0; i < g.rest.length; i++)
+      parts.push(widget.subName(g.rest[i].id) + " back " + Qt.formatDateTime(new Date(g.rest[i].comeBackAt), "ddd h:mm AP"))
+    return parts.join("  ·  ")
+  }
   readonly property var glowOptions: [
     { id: "pace",  label: "Over pace",    note: "faster than the plan allows" },
     { id: "burn",  label: "Burning now",  note: "tokens moved in the last 5 min" },
@@ -965,8 +1009,11 @@ Panel {
     property real percent: -1
     property real projected: -1
     property color tone: panel.foreground
+    // The far end of the time axis in words: without it a first-time reader
+    // sees a sparkline, not a window that runs out at a reset.
+    property string endText: ""
     Layout.fillWidth: true
-    implicitHeight: Style.space(108)
+    implicitHeight: Style.space(panel.tight(108, 84, 62))
 
     function px(x) { return Math.max(0, Math.min(1, Number(x) || 0)) * bd.width }
     function py(y) { return bd.height - Math.max(0, Math.min(1, Number(y) || 0)) * bd.height }
@@ -1132,14 +1179,29 @@ Panel {
       y: -height / 2 + 1
       color: Color.urgent
     }
+    AxisEnds { endText: bd.endText }
   }
 
   // One subscription's burn over the window, as heat-ramped bars from a floor.
+  component AxisEnds: Item {
+    id: ax
+    // Only the reset end is labelled. A start label sat in the bottom-left
+    // corner, which is exactly where the line of a barely-touched plan runs.
+    property string endText: ""
+    anchors.fill: parent
+    Caption {
+      anchors.right: parent.right; anchors.bottom: parent.bottom
+      anchors.rightMargin: Style.space(4); anchors.bottomMargin: 1
+      text: ax.endText
+      opacity: 0.7
+    }
+  }
+
   component BurnBars: Item {
     id: bb
     property string agent: "claude"
     Layout.fillWidth: true
-    implicitHeight: Style.space(52)
+    implicitHeight: Style.space(panel.tight(52, 40, 30))
     readonly property int n: panel.buckets.length
     readonly property real slot: n > 0 ? width / n : width
     readonly property real peak: Math.max(1, Number(panel.sv(bb.agent, "Peak", 1)))
@@ -1278,8 +1340,11 @@ Panel {
     property string agent: "claude"
 
     readonly property color accent: panel.agentHot(agent)
-    readonly property var windows: { void panel.tick; return panel.agentWindows(agent) }
-    readonly property var primary: { void panel.tick; return panel.primaryWindow(agent) }
+    // No tick here: a fresh array every second made the Repeater below tear
+    // down and rebuild every window row once a second. The rows read the tick
+    // themselves for their countdowns.
+    readonly property var windows: panel.agentWindows(agent)
+    readonly property var primary: panel.primaryWindow(agent)
     readonly property bool primaryUnknown: panel.windowUnknown(agent, primary)
     readonly property var pace: primary && primary.pace && !primaryUnknown ? primary.pace : null
     readonly property var verdict: panel.paceVerdict(primary, primaryUnknown)
@@ -1297,6 +1362,9 @@ Panel {
     readonly property var models: panel.sortedModels(panel.sv(agent, "ByModel", ({})))
     readonly property string tier: agent === "kimi" ? String(panel.sv("kimi", "PlanTier", "")) : ""
     readonly property var glow: panel.glowFor(agent, primary, primaryUnknown)
+    // Where this sub stands this second, and whether it is the one to use.
+    readonly property var live: { void panel.tick; return panel.widget.liveFor(agent, Date.now()) }
+    readonly property bool isPick: panel.guideShown && panel.guidance.pick === agent
     readonly property bool lit: visible && Number(glow.strength) > 0
     readonly property var trust: {
       void panel.tick
@@ -1341,8 +1409,8 @@ Panel {
     ColumnLayout {
       id: body
       anchors.fill: parent
-      anchors.margins: Style.space(13)
-      spacing: Style.space(8)
+      anchors.margins: Style.space(panel.tight(13, 11, 10))
+      spacing: Style.space(panel.tight(8, 6, 4))
 
       // ── name · tier · verdict ──────────────────────────────────────────
       RowLayout {
@@ -1359,6 +1427,66 @@ Panel {
         Caption { text: card.tier !== "" ? card.tier + " plan" : ""; visible: card.tier !== "" }
         Item { Layout.fillWidth: true }
         Pill { text: card.verdict.word; tone: card.verdict.color }
+      }
+
+      // ── what to do about it ────────────────────────────────────────────
+      // Banked when ahead, a way back when behind, never both. Fred: "how much
+      // you have banked real time always if you are ahead, not shown if behind"
+      // and "a timer that shows when you can come back". It reads the clock
+      // every second, so a sub left alone visibly earns its budget back.
+      Rectangle {
+        id: standing
+        visible: card.live !== null
+        Layout.fillWidth: true
+        implicitHeight: Style.space(panel.tight(32, 30, 28))
+        radius: Style.space(6)
+        readonly property bool behind: card.live !== null && (card.live.spent || card.live.over)
+        // Tokens are leaving right now, so the clocks are held at the last
+        // measurement instead of running on a percentage that is going stale.
+        readonly property bool held: card.live !== null && panel.widget.subBurning(card.agent)
+        readonly property bool rough: panel.widget.snapshotOutrun(card.agent)
+        readonly property bool ahead: card.live !== null && !behind && card.live.banked >= 0.01
+        readonly property color tone: behind ? (card.live.spent || card.live.behind > 0.05 ? Color.urgent : Qt.lighter(Color.urgent, 1.35))
+          : ahead ? panel.widget.gaugeColor(0.2) : panel.foreground
+        color: Util.alpha(tone, 0.10)
+        border.width: 1
+        border.color: Util.alpha(tone, card.isPick ? 0.9 : 0.3)
+        RowLayout {
+          anchors.fill: parent
+          anchors.leftMargin: Style.space(10)
+          anchors.rightMargin: Style.space(8)
+          spacing: Style.space(8)
+          Text {
+            textFormat: Text.PlainText
+            color: standing.tone
+            font.family: panel.fontFamily
+            font.pixelSize: Style.font.body
+            font.bold: true
+            text: !card.live ? ""
+              : card.live.spent ? "BACK AT THE RESET"
+              : standing.behind ? "COME BACK IN " + panel.widget.clockSpan(card.live.comeBackMs)
+              : standing.ahead ? "BANKED " + (standing.rough ? "~" : "") + Math.round(card.live.banked * 100) + "%"
+              : "ON PACE"
+          }
+          Caption {
+            Layout.fillWidth: true
+            text: !card.live ? ""
+              : card.live.spent ? Qt.formatDateTime(new Date(card.live.comeBackAt), "ddd h:mm AP") + "  ·  in " + panel.widget.clockSpan(card.live.comeBackMs)
+              // The come-back time assumes no further burn. Said out loud,
+              // because read while still working it is wrong within minutes.
+              // The condition leads, because it is what gets cut last on a
+              // narrow card and it is the part that keeps the promise honest.
+              : standing.behind ? "if you stop  ·  " + Qt.formatDateTime(new Date(card.live.comeBackAt), "ddd h:mm AP")
+                  + "  ·  " + Math.max(1, Math.round(card.live.behind * 100)) + "% over"
+              // Banked time climbs a second every second while the sub is left
+              // alone, so it is printed as a clock: that is what "it slowly comes
+              // back to budget" looks like.
+              : standing.ahead ? panel.widget.clockSpan(card.live.bankedMs) + " in the bank"
+                  + (standing.rough ? "  ·  used since it was measured" : standing.held ? "  ·  holds while you burn" : "")
+              : "spend evenly and it lasts"
+          }
+          Pill { visible: card.isPick; text: panel.guidance.urgent ? "USE NOW" : "USE NEXT"; tone: card.accent }
+        }
       }
 
       // ── the headline: budget or tokens, click to flip ──────────────────
@@ -1403,9 +1531,9 @@ Panel {
             }
           }
           Caption {
-            text: "⇄"
+            // A bare arrow was the whole affordance; it now names where it goes.
+            text: "⇄ " + (panel.heroMode === "budget" ? "tokens" : "budget")
             color: heroFlip.containsMouse ? panel.foreground : panel.dim
-            font.pixelSize: Style.font.body
           }
         }
         MouseArea {
@@ -1435,6 +1563,10 @@ Panel {
         percent: card.primary && !card.primaryUnknown ? Number(card.primary.percent) : -1
         projected: card.pace && Number(card.pace.ratePerHour) > 0.00005 ? Number(card.pace.projected) : -1
         tone: card.verdict.word !== "" ? card.verdict.color : card.accent
+        // A week reads best as a day and an hour, a month as a date.
+        readonly property string axisFormat: card.pace && Number(card.pace.windowMs) > 8 * 86400000 ? "MMM d" : "ddd h AP"
+        endText: card.pace && Number(card.pace.resetsMs) > 0
+          ? "reset " + Qt.formatDateTime(new Date(Number(card.pace.resetsMs)), axisFormat) : ""
       }
       Body {
         visible: card.sentence.text !== ""
@@ -1511,9 +1643,9 @@ Panel {
         visible: card.active
         Layout.fillWidth: true
         spacing: Style.space(8)
-        MiniStat { label: "5 MIN"; value: panel.rateNow(card.agent); tone: card.accent }
-        MiniStat { label: "1 HOUR"; value: panel.rateHour(card.agent) }
-        MiniStat { label: panel.widget.windowLabel(panel.windowMinutes).toUpperCase(); value: panel.rateWindow(card.agent) }
+        MiniStat { label: "/MIN NOW"; value: panel.rateNow(card.agent); tone: card.accent }
+        MiniStat { label: "/MIN 1H"; value: panel.rateHour(card.agent) }
+        MiniStat { label: "/MIN " + panel.widget.windowLabel(panel.windowMinutes).toUpperCase(); value: panel.rateWindow(card.agent) }
       }
       BurnBars { agent: card.agent; visible: card.active }
 
@@ -1684,7 +1816,7 @@ Panel {
                 label: modelData.label
                 note: modelData.note
                 tone: modelData.accent
-                noteUrgent: String(modelData.note).indexOf("over") >= 0
+                noteUrgent: /^rest|^spent/.test(String(modelData.note))
                 onActivated: panel.chooseView(modelData.id)
               }
             }
@@ -1702,7 +1834,9 @@ Panel {
               fontFamily: panel.fontFamily
             }
             SetupRow {
-              mark: "↺"
+              // The same refresh glyph the header button uses: the plain arrow is not
+              // in the panel font and rendered as a stray hook.
+              mark: "󰑐"
               label: "Warn me again"
               note: panel.widget.acknowledgedCount > 0
                 ? panel.widget.acknowledgedCount + " dismissed" : "nothing dismissed"
@@ -1827,6 +1961,13 @@ Panel {
               onActivated: panel.flip("showGauges", true)
             }
             SetupRow {
+              mark: panel.optOn("advice", true) ? "☑" : "☐"
+              on: panel.optOn("advice", true)
+              label: "Suggest a sub"
+              note: "when nothing is over pace"
+              onActivated: panel.flip("advice", true)
+            }
+            SetupRow {
               mark: panel.optOn("showLocal", true) ? "☑" : "☐"
               on: panel.optOn("showLocal", true)
               label: "Local GPU lane"
@@ -1875,7 +2016,10 @@ Panel {
         id: content
         visible: panel.mode === "cockpit"
         width: parent.width
-        spacing: Style.space(10)
+        spacing: Style.space(panel.tight(10, 7, 5))
+        // The content grew (a window row appeared, a model list filled in):
+        // check again that it still fits the screen.
+        onImplicitHeightChanged: if (panel.opened) fitCheck.restart()
 
         // ── hero ─────────────────────────────────────────────────────────────
         PanelHero {
@@ -1887,25 +2031,30 @@ Panel {
             + ((panel.svc
               ? (panel.showClaude ? panel.svc.claudeTurns : 0)
                 + (panel.showCodex ? panel.svc.codexTurns : 0)
-                + (panel.showGrok ? panel.svc.grokTurns : 0) : 0)) + " turns  ·  "
+                + (panel.showGrok ? panel.svc.grokTurns : 0)
+                + (panel.showKimi ? panel.svc.kimiTurns : 0) : 0)) + " turns  ·  "
             + ((panel.svc
               ? (panel.showClaude ? panel.svc.claudeSessions : 0)
                 + (panel.showCodex ? panel.svc.codexSessions : 0)
-                + (panel.showGrok ? panel.svc.grokSessions : 0) : 0)) + " sessions"
+                + (panel.showGrok ? panel.svc.grokSessions : 0)
+                + (panel.showKimi ? panel.svc.kimiSessions : 0) : 0)) + " sessions"
             + (panel.showLocal && panel.localTokens ? "  ·  " + Math.round(panel.offload * 100) + "% kept on " + panel.boxName : "")
           detail: panel.svc
             ? panel.widget.compact(
                 (panel.showClaude ? panel.rateNow("claude") : 0)
                 + (panel.showCodex ? panel.rateNow("codex") : 0)
-                + (panel.showGrok ? panel.rateNow("grok") : 0)) + "/min last 5m  ·  "
+                + (panel.showGrok ? panel.rateNow("grok") : 0)
+                + (panel.showKimi ? panel.rateNow("kimi") : 0)) + "/min last 5m  ·  "
               + panel.widget.compact(
                 (panel.showClaude ? panel.rateHour("claude") : 0)
                 + (panel.showCodex ? panel.rateHour("codex") : 0)
-                + (panel.showGrok ? panel.rateHour("grok") : 0)) + "/min last hour  ·  "
+                + (panel.showGrok ? panel.rateHour("grok") : 0)
+                + (panel.showKimi ? panel.rateHour("kimi") : 0)) + "/min last hour  ·  "
               + "active " + panel.agoText(Math.max(
                 panel.showClaude ? panel.svc.claudeLastAt : 0,
                 panel.showCodex ? panel.svc.codexLastAt : 0,
-                panel.showGrok ? panel.svc.grokLastAt : 0))
+                panel.showGrok ? panel.svc.grokLastAt : 0,
+                panel.showKimi ? panel.svc.kimiLastAt : 0))
             : ""
           foreground: panel.widget.claudeHot
           fontFamily: panel.fontFamily
@@ -1963,6 +2112,47 @@ Panel {
         // never a scrollbar. The model is a fixed list - a list rebuilt on every
         // tick would destroy and recreate the cards, and a recreated Counter
         // snaps straight to its target instead of counting up.
+        // ── guidance: what to do, before any of the data ───────────────────
+        // Only with two or more subscriptions: one sub leaves nothing to choose
+        // between. Never the local GPU: this is about where you stand on your
+        // plans, not about where work should run.
+        Rectangle {
+          id: guideBar
+          visible: panel.guideShown && panel.guideHeadline !== ""
+          Layout.fillWidth: true
+          implicitHeight: visible ? Style.space(panel.tight(38, 34, 30)) : 0
+          radius: Style.cornerRadius
+          color: Util.alpha(panel.guideTone, 0.10)
+          border.width: 1
+          border.color: Util.alpha(panel.guideTone, 0.45)
+          opacity: panel.reveal
+          RowLayout {
+            anchors.fill: parent
+            anchors.leftMargin: Style.space(14)
+            anchors.rightMargin: Style.space(14)
+            spacing: Style.space(12)
+            Text {
+              textFormat: Text.PlainText
+              text: (panel.guidance.pick !== "" ? "▶  " : "◷  ") + panel.guideHeadline.toUpperCase()
+              color: panel.guideTone
+              font.family: panel.fontFamily
+              font.pixelSize: Style.font.title
+              font.bold: true
+            }
+            Body {
+              Layout.fillWidth: true
+              text: panel.guideReason
+              elide: Text.ElideRight
+            }
+            Caption {
+              visible: text !== ""
+              text: panel.guideAside
+              elide: Text.ElideRight
+              Layout.maximumWidth: guideBar.width * 0.42
+            }
+          }
+        }
+
         RowLayout {
           id: cards
           Layout.fillWidth: true
@@ -2332,6 +2522,7 @@ Panel {
           Caption {
             text: "collected " + panel.agoText(panel.svc ? panel.svc.generatedAt : 0)
               + "  ·  R refresh  ·  Esc close"
+              + (panel.density > 0 && panel.pluginVersion !== "" ? "  ·  Burn Bar v" + panel.pluginVersion : "")
           }
         }
 
@@ -2339,6 +2530,8 @@ Panel {
         // panel, but always there; you should never have to open a file to
         // learn which Burn Bar you are looking at.
         RowLayout {
+          // On a short screen this row folds into the one above it.
+          visible: panel.density === 0
           Layout.fillWidth: true
           spacing: Style.space(6)
           Caption {

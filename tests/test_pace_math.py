@@ -103,6 +103,31 @@ class WindowIdTests(unittest.TestCase):
         self.assertNotEqual(ns["window_id"](base), ns["window_id"](base + 60_000))
 
 
+class ReviewFixTests(unittest.TestCase):
+    """Defects an outside review (Grok 4.6 and Kimi k3, 2026-09-20) found and
+    this file now holds shut."""
+
+    def week(self, used, gone, rate_points=None):
+        ns = load()
+        resets = ns["window_id"](NOW + int(7 * DAY * (1 - gone)))
+        if rate_points:
+            ns["PACE"]["samples"]["claude|Weekly (7-day)"] = [(t, p, resets) for t, p in rate_points]
+        row = {"label": "Weekly (7-day)", "percent": used, "resetsAt": iso(resets)}
+        return ns["pace_for"](row, "claude|Weekly (7-day)", True)
+
+    def test_an_on_pace_sub_is_not_told_to_stop_in_a_day(self):
+        # Burning at exactly an even pace, today's share lasts about 24 hours.
+        # "Stop in 23h" is not advice; only a stop that lands inside the day is.
+        even = (1.0 / 7) / 24                      # share of the plan per hour
+        p = self.week(0.50, 0.50, [(NOW - 2 * HOUR, 0.50 - 2 * even), (NOW, 0.50)])
+        self.assertEqual(p["stopInMs"], -1)
+
+    def test_a_fast_burn_still_gets_its_stop_time(self):
+        p = self.week(0.30, 0.50, [(NOW - 2 * HOUR, 0.20), (NOW, 0.30)])   # 5%/h
+        self.assertGreater(p["stopInMs"], 0)
+        self.assertLess(p["stopInMs"], 24 * HOUR)
+
+
 class BurndownSeriesTests(unittest.TestCase):
     """The line a 2.0 card draws: x is the window elapsed, y the plan spent."""
 

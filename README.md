@@ -1,17 +1,74 @@
 # Burn Bar
 
-An Omarchy bar widget that renders every model **this machine actually uses**:
-Claude, Codex, Grok, and local Ollama when a compute GPU is present, as one
-live thermal instrument in a single bar slot, with a click-to-open cockpit
-that shows what, how much, how fast, how close to the plan limit, and what
-the GPU is doing about it.
+An Omarchy bar widget for everyone paying for more than one AI subscription. It
+reads what **this machine actually uses** (Claude, Codex, Grok, Kimi, and local
+Ollama when a compute GPU is present) and turns it into one live thermal strip
+in the bar, plus a click-to-open cockpit. Since 2.1 it does not stop at data: it
+tells you **what to do**. Which sub has budget in the bank, which one needs a
+rest and until when, and which one to reach for next.
 
-![Burn Bar cockpit: cloud spend on the left, the Ollama box on the right](docs/cockpit.png)
+![The Burn Bar cockpit: a guidance banner, then one card per subscription](docs/img/cockpit.png)
 
-Everything in that screenshot is real: 10.5M tokens burned in six hours
-across 113 sessions, a cache that served 192.8M reads, and a GPU holding one
-warm model at 38 W. Nothing was drawn by hand. (The screenshot predates
-1.5.0, when the local column moved to a Jetson; the layout is the same.)
+Everything in these screenshots is real. They were captured from the plugin
+itself, running on one day of recorded usage from the author's own machine:
+16.1M tokens in 24 hours across 2,404 turns and 75 sessions. Claude had spent
+10% of its week with 5% of the week gone. Codex was at 100% with six days still
+to run. Grok had spent 3% with half its week behind it. Nothing was drawn by
+hand; the captions and callouts are the only things added.
+
+## What it tells you to do
+
+![The guidance banner and the what-to-do line that leads every card](docs/img/guidance.png)
+
+Budget means an **even spend across the window**. Two numbers decide
+everything: how much of the plan is used, and how much of the clock. From those:
+
+- **BANKED 49%**, with a clock: `3d 10:03:03 in the bank`. You are ahead. The
+  figure is the share of the plan an even spend would have used by now and you
+  did not. Leave a sub alone and the clock climbs a second every second, which
+  is what "take time off and it comes back to budget" looks like. Shown only
+  when you are ahead, never when you are behind.
+- **COME BACK IN 8:36:42**, `if you stop · Sun 10:55 PM · 5% over`. You are
+  behind. It counts down to the moment the even-spend line catches up with what
+  you have already burned. The condition is printed because it is a promise that
+  only holds if you stop.
+- **BACK AT THE RESET**, with the reset and a countdown. The plan is spent, and
+  nothing brings it back sooner.
+- **ON PACE**. Within 5% of an even spend. Carry on.
+
+Above the cards, one banner answers the question you actually opened the panel
+with: **USE GROK NEXT**, and why (`49% of its week is banked, about 3d 10h
+ahead · resets in 3d 8h`), then who is next and when each resting sub is back.
+When a reset is close with budget unspent it becomes **USE GROK NOW: use it or
+lose it**. When you are already burning the right one it says **KEEP USING
+GROK** instead of telling you to switch to what you are on.
+
+![Two subscriptions get a pick; one subscription gets none](docs/img/needs-a-choice.png)
+
+The rules it keeps, so the advice is worth acting on:
+
+- **It needs a choice.** Two or more subscriptions, or it says nothing. One sub
+  leaves nothing to choose between.
+- **Never the local GPU.** This is about where you stand on your plans, not
+  about where work should run.
+- **Only a sub that is ahead is ever suggested.** The winner is the one with the
+  most plan left against the clock it has left, which compares a week and a
+  month on the same scale and turns into earliest-deadline-first as a reset
+  nears.
+- **A lane you unticked is left out.** No card, no cells, no badge, no advice.
+- **A full 5-hour session window blocks a sub**, even with its week wide open,
+  and so does one that will be full inside half an hour. Sending you into a
+  wall is not guidance.
+- **A snapshot is not treated as exact.** Grok only reports its quota when Grok
+  starts, so that figure needs five times the margin before it is suggested,
+  more again once Grok has been used since, and the words say when it was
+  measured (`as of Sun 1:50 PM, used since`, and `BANKED ~49%`).
+- **The clocks hold still while you burn.** A provider's percentage only moves
+  when it is re-measured, so running the clock past that moment would let
+  "banked" climb and then jump back. It ticks while you rest and holds while
+  you work.
+- **It does not flap.** The current pick keeps the job until another is clearly
+  better, not better by a rounding.
 
 ## Install
 
@@ -45,7 +102,16 @@ collectors, which contact your providers with the sign-ins you already have.
 
 ## The strip
 
-![Burn Bar in the Omarchy bar, right of the clock](docs/bar.png)
+![The strip with its two chips: a warning when something is over pace, advice when nothing is](docs/img/strip-chips.png)
+
+The chip beside the cells speaks guidance, not multipliers. While a sub is past
+an even spend it says what to do about it: `CLAUDE  REST 8H`, or `SPENT`. Click
+it and it fades, and stays gone until that sub reaches a worse stage or its
+window rolls over. With nothing to warn about it names the sub to use next, in
+that sub's colour. Turn the advice off in SETUP if you only want warnings.
+
+![Hovering a lane: the numbers, then where that sub stands](docs/img/tooltips.png)
+
 
 ```
 CLAUDE ◄── time ──┤ now ├── time ──► CODEX  │  GROK ──►  ║  NANO ──► seconds
@@ -99,21 +165,28 @@ Motion is data, never decoration:
 
 ## The cockpit
 
-Left click the strip. One card per subscription, side by side at equal width,
-and the panel never scrolls: width is the remedy, never a scrollbar. A
-subscription that is not ticked in SETUP has no card, and one that burned
-nothing in the window folds its burn half down to a single line. The local GPU
-is a card like the rest.
+Left click the strip. A guidance banner, then one card per subscription, side
+by side at equal width. The panel never scrolls and never clips: it measures the
+screen it opens on and tightens itself (shorter graphs, closer rows, a one-line
+footer) on a 1080p laptop, and tightens again if a plan with many quota windows
+still would not fit. A subscription that is not ticked in SETUP has no card, and
+one that burned nothing in the window folds its burn half down to a single line.
+The local GPU is a card like the rest.
+
+![Anatomy of a subscription card](docs/img/anatomy.png)
 
 **Header.** Tokens burned in the exact trailing window (fresh input, cache
 writes and output; cache reads are left out, and they are billed too, at a
-lower rate), turns and sessions across the cloud agents, the share kept on
-localhost, a SETUP button and a refresh button.
+lower rate), turns and sessions across every cloud agent shown, the share kept
+on localhost, a SETUP button and a refresh button.
 
 **A subscription card**, top to bottom:
 
-- *Name and verdict.* ON TRACK, AT PACE, OVER or WAY OVER: the one word the
-  card is really about.
+- *Name and verdict.* ON TRACK, AT PACE, OVER or WAY OVER. Over starts 5% past
+  an even spend, the same line the badge and the glow use, so the three never
+  disagree.
+- *What to do.* The line described above: banked, come back, back at the reset,
+  or on pace. It leads the card because it is the first thing you want to know.
 - *Headline.* Budget (how much of the plan is spent) or tokens (raw burn in
   the window). Click it to flip, or pick one in SETUP. A subscription whose
   quota cannot be measured falls back to tokens.
@@ -121,31 +194,65 @@ localhost, a SETUP button and a refresh button.
   solid line is what actually happened, and a dashed projection carries the
   current rate to the reset or to the moment the plan runs dry. A line above
   the diagonal is over budget.
-- *The sentence.* Spent against elapsed, what you can spend per hour and still
-  make it, when the plan runs dry at this rate, when you are back on pace if
-  you stop, and when to stop today so tomorrow keeps its own share.
+- *The instruction.* What you can spend per hour and still make it, when the
+  plan runs dry at this rate, and when to stop today so tomorrow keeps its own
+  share (only when today's share really would run out today).
 - *Windows.* Every limit the provider reports, each with a gauge, the reset
-  time and a tick for where an even spend would be. 5-hour session windows are
-  hidden unless you turn them on in SETUP. A window whose reset has passed
-  reads "rolled over" with the percentage withheld, and a record that is stale
-  or carries a status ("Sign-in expired") says so in red.
-- *Burn.* Tokens per minute over the last five minutes, the last hour and the
-  whole window, with one bar per bucket on the same heat ramp as the strip.
+  time and a tick for where an even spend would be. A window whose reset has
+  passed reads "rolled over" with the percentage withheld, and a record that is
+  stale or carries a status ("Sign-in expired") says so in red.
+- *Burn.* Tokens per minute now, over the last hour and over the whole window,
+  with one bar per bucket on the same heat ramp as the strip.
 - *Token mix.* Input, cache write and output, with cache reads on their own
   line and their share of everything the model took in. That is a token share,
   not a cost saving.
 - *By model.* Spend split by model with share bars.
 
-**The glow.** A card lights up for one reason, which you choose in SETUP:
-over pace (the default), burning now, budget spent, time to stop, or off. Over
-pace climbs amber to red and breathes while there is still something to slow
-down; a window that is already spent out burns steady. Burning now also lights
-the local GPU card while the GPU is working.
+The four places a subscription can stand, from the same capture:
 
-**SETUP.** Every option in one place, three columns, no scrolling:
-subscriptions (tick any), card headline, card glow, budget windows, history
-window, warnings, and the toggles for the strip on the bar. Each row writes
-through the bar, so it survives a restart.
+| Behind | Spent | Ahead | On pace |
+|---|---|---|---|
+| ![Claude: come back in 8:36:42](docs/img/card-behind.png) | ![Codex: back at the reset](docs/img/card-spent.png) | ![Grok: banked 49%, use next](docs/img/card-ahead.png) | ![Kimi: on pace](docs/img/card-onpace.png) |
+
+**Tokens instead of budget.** The same cards with the headline flipped:
+
+![The cards with tokens as the headline](docs/img/headline-tokens.png)
+
+**5-hour session windows** are hidden by default, because the weekly and
+monthly windows are the ones that bite. Turn them on in SETUP and they take
+their place above the rest. Hidden or not, a full one still stops its sub from
+being suggested.
+
+![The same cards with 5-hour session windows turned on](docs/img/session-windows.png)
+
+### The glow
+
+A card lights up for one reason, which you choose in SETUP. One reason at a
+time on purpose: a glow that could mean four things tells you nothing from
+across the room. Over pace climbs amber to red and breathes while there is
+still something to slow down; a window that is already spent burns steady.
+Burning now also lights the local GPU card while the GPU is working.
+
+![Three real captures of the same moment: over pace, burning now, budget spent](docs/img/glow-reasons.png)
+
+### SETUP
+
+Every option in one place, three columns, no scrolling. Each row writes through
+the bar, so it survives a restart. The notes beside each subscription are the
+same guidance the cards give.
+
+![The SETUP page](docs/img/setup.png)
+
+### The local GPU card
+
+<img src="docs/img/local-card.png" alt="The LOCALHOST card on an RTX 5070 laptop" width="360" align="right">
+
+It has no plan to run out of, so it leads with what it kept off the frontier
+models instead. It is never suggested as a sub to use, and it only glows for
+"burning now". This one is an RTX 5070 laptop at idle: 5 W, 57 degrees, 13
+models installed, none warm.
+
+<br clear="right">
 
 **Local column**
 
@@ -271,7 +378,7 @@ box, forwards everything byte for byte, streams relayed chunk by chunk,
 and writes one journal line per request with the counts off the way out:
 
 ```
-meter ts=1788649667803 path=/api/generate model=llama3.2:3b status=200 prompt=33 eval=53 ms=2744 client=100.101.176.48
+meter ts=1788649667803 path=/api/generate model=llama3.2:3b status=200 prompt=33 eval=53 ms=2744 client=100.64.0.2
 ```
 
 Whatever asks, this widget, a voice server, `ollama run`, is counted the
@@ -351,6 +458,7 @@ Set from the Omarchy plugin settings UI, or in `shell.json`.
 | `hero` | `budget` | Card headline: `budget` or `tokens` |
 | `glow` | `pace` | What lights a card up: `pace`, `burn`, `spent`, `stop` or `off` |
 | `showSession` | false | Show 5-hour session windows on the cards |
+| `advice` | true | With two or more subscriptions, name the one to use next on the strip when nothing is over pace. The local GPU is never suggested |
 | `maxWidth` | 2400 | Ceiling for the fill, px |
 | `stretchGap` | 14 | Breathing room kept between the strip and the neighbour it grows towards, px |
 | `bars` | 12 | Cells per cloud agent (the collector makes exactly this many buckets) |
@@ -403,7 +511,9 @@ skipped, the offload share.
 
 ## Changes
 
-See [CHANGELOG.md](CHANGELOG.md). Current version: 1.8.0.
+See [CHANGELOG.md](CHANGELOG.md). The running version is printed at the foot of
+the cockpit, read from the manifest, so it cannot go stale the way a number
+typed here did.
 
 ## Credits
 
@@ -411,4 +521,6 @@ Omarchy is [DHH](https://github.com/dhh)'s and Basecamp's desktop; Burn Bar is
 a plugin on top of it and claims none of the underlying shell. The local lane
 grew out of the earlier `local-intelligence` plugin and absorbed it in 1.2.0;
 in 1.5.0 it moved to a Jetson down the hall. Written by Larry and Dex, two
-AIs on Fred Nix's laptops, with Fred Nix. MIT.
+AIs on Fred Nix's laptops, with Fred Nix. 2.1 was reviewed before release by
+Grok 4.6 and Kimi k3, which found 22 real defects between them; every finding
+and what was done with it is in [docs/review-2.1.md](docs/review-2.1.md). MIT.
