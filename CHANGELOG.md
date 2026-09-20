@@ -1,5 +1,63 @@
 # Changelog
 
+## 2.0.0 (2026-09-20)
+
+The cockpit is rebuilt around one idea: a subscription is one card, and the card
+holds everything about it.
+
+### Added
+- **One card per subscription.** Fred: *"Each sub should have a section that
+  cleanly displays all the info about it in one large card."* Budget, burndown,
+  the plain-English pace sentence, every quota window, burn rate, token mix and
+  the model breakdown now live together instead of being spread over separate
+  sections. Cards sit side by side at equal width and the panel never scrolls. A
+  subscription that is not ticked has no card, and one that burned nothing in
+  the window folds its burn half down to a single line.
+- **A burndown graph on every card.** The dashed diagonal is an even spend
+  across the window. The solid line is what actually happened, from the
+  collector's own samples, and a dashed projection carries the current rate
+  forward to the reset or to the moment the plan runs dry. A line above the
+  diagonal is over budget, at a glance.
+- **The headline is yours to pick.** Budget (how much of the plan is spent, and
+  will it last) or tokens (raw burn in the window). Click a headline to flip it,
+  or set it in SETUP. Budget is the default, and a subscription whose quota
+  cannot be measured falls back to tokens rather than printing a dash at
+  display size.
+- **Cards glow, and you choose why.** Fred: *"I also want the subscriptions card
+  to glow and the reason for the glow is something the user can select within
+  setup."* One reason at a time, because a glow that could mean four things says
+  nothing from across the room: **over pace** (the default; amber, then red,
+  breathing while there is still something to slow down, steady once the window
+  is spent), **burning now** (the subscription's own colour while tokens are
+  moving, which also lights the local GPU card), **budget spent** (brighter as
+  the window fills), **time to stop** (within an hour of today's share, or past
+  it), or **off**. The glow is the card's own outline blurred into light, drawn
+  just outside the edge so the text inside stays on a clean background, and it
+  only animates while the panel is open.
+- **A SETUP page.** Fred: *"move the sub selection away from right click and add
+  it to SETUP button where all options are available across all features."*
+  Subscriptions, card headline, card glow, budget windows, history window,
+  warnings and every toggle for the strip on the bar, three columns wide on one
+  screen. Every row writes through the bar, so it is the same change the shell's
+  own settings page would make and it survives a restart.
+
+### Changed
+- **5-hour session windows are off by default.** Fred: *"I really dont care
+  about the 5hr window so make that optional to TURN ON."* The weekly and
+  monthly windows are the ones that bite. Turn the session windows back on in
+  SETUP.
+- **Right-click only answers a warning now.** Choosing what is shown moved to
+  SETUP with everything else.
+- **With every subscription showing, every box is ticked.** A row of empty boxes
+  under a ticked "All lanes" read as a contradiction. Unticking one from there
+  now means everything except that one.
+- No long dashes in anything the plugin says: tooltips, the fault line, the
+  manifest and the collector's usage text.
+
+### Tests
+- The burndown series (normalised, ends on the present, never mixes windows, is
+  thinned rather than shipped whole, and still draws with no samples).
+
 ## 1.27.0 — 2026-09-20
 
 ### Added

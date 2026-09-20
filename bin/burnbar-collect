@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""burnbar-collect — buckets Claude + Codex + Grok token burn into a rolling window.
+"""burnbar-collect: buckets Claude + Codex + Grok token burn into a rolling window.
 
 Reads the raw agent transcripts (the only place per-turn token deltas carry
 timestamps) and writes one small JSON the QML widget watches.
@@ -114,7 +114,7 @@ def str_arg(flag, fallback, limit=64):
     return fallback
 
 
-USAGE = """burnbar-collect — bucket Claude, Codex and Grok token burn into a rolling window.
+USAGE = """burnbar-collect: bucket Claude, Codex and Grok token burn into a rolling window.
 
 usage: burnbar-collect [--window MIN] [--buckets N] [--no-local]
                        [--meter-host HOST] [--meter-unit UNIT] [--print]
@@ -1336,6 +1336,23 @@ def window_id(resets_ms):
 
 
 
+SERIES_MAX_POINTS = 48
+
+
+def burndown_series(points, resets, window, pct_now):
+    """This window's own samples as [x, y] pairs in 0..1, thinned to at most
+    SERIES_MAX_POINTS and always ending on the present moment, so the line the
+    card draws stops exactly where the hero number says you are."""
+    start = resets - window
+    mine = [(t, p) for t, p, r in points if r == resets and start <= t <= now_ms]
+    if len(mine) > SERIES_MAX_POINTS - 1:
+        step = len(mine) / float(SERIES_MAX_POINTS - 1)
+        mine = [mine[int(i * step)] for i in range(SERIES_MAX_POINTS - 1)]
+    out = [[round((t - start) / float(window), 5), round(p, 5)] for t, p in mine]
+    out.append([round(min(1.0, max(0.0, (now_ms - start) / float(window))), 5), round(float(pct_now), 5)])
+    return out
+
+
 def pace_for(row, key, live):
     """The pace block for one limit row. Unknowns are -1 (a rate we cannot
     measure) or 0 (a moment that does not apply), never an invented number."""
@@ -1349,7 +1366,11 @@ def pace_for(row, key, live):
            "todayUsed": -1, "todayAllowance": -1, "overDaily": False,
            # Today's share of what is left, and when to put this subscription
            # down so tomorrow still has its own.
-           "todayCeiling": -1, "stopInMs": -1, "stopAtMs": 0, "recoverInMs": -1}
+           "todayCeiling": -1, "stopInMs": -1, "stopAtMs": 0, "recoverInMs": -1,
+           # The burndown the 2.0 cards draw: [[x, y]] with x the fraction of
+           # the window elapsed and y the fraction of the plan spent, so the
+           # even-pace line is simply the diagonal and "above it" means over.
+           "series": []}
     if not isinstance(pct, (int, float)) or pct < 0 or not resets:
         return out
     points = PACE["samples"].get(key) or []
@@ -1363,6 +1384,7 @@ def pace_for(row, key, live):
         return out
     out["windowMs"] = window
     out["resetsMs"] = int(resets)
+    out["series"] = burndown_series(points, resets, window, pct)
     elapsed = min(1.0, max(0.0, (window - left_ms) / float(window)))
     out["elapsed"] = elapsed
     hours_left = left_ms / 3600_000.0

@@ -65,6 +65,9 @@ Item {
   property bool grokLimitsLive: false
   property string grokLimitsStatus: ""
   property var grokByModel: ({})
+  // Codex had a split and no by-model: every other subscription carries both,
+  // and a 2.0 card draws the same sections for all of them.
+  property var codexByModel: ({})
   property var grokSplit: ({})
   property int grokTurns: 0
   property real grokFirstAt: 0
@@ -368,7 +371,7 @@ Item {
     onRunningChanged: {
       if (running || launched) return
       watchdog.stop()
-      root.lastError = "python3 not found — Burn Bar needs it to read agent usage"
+      root.lastError = "python3 not found: Burn Bar needs it to read agent usage"
       root.collectorBroken = true
     }
     stderr: SplitParser {
@@ -480,6 +483,7 @@ Item {
       root.claudeByModel = c.byModel && typeof c.byModel === "object" ? c.byModel : ({})
       root.claudeSplit = c.split && typeof c.split === "object" ? c.split : ({})
       root.codexSplit = x.split && typeof x.split === "object" ? x.split : ({})
+      root.codexByModel = x.byModel && typeof x.byModel === "object" ? x.byModel : ({})
       root.claudeTurns = num(c.turns)
       root.codexTurns = num(x.turns)
       root.claudeFirstAt = num(c.firstAt)

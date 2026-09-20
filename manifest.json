@@ -2,10 +2,10 @@
   "schemaVersion": 1,
   "id": "nixfred.burnbar",
   "name": "Burn Bar",
-  "version": "1.27.0",
+  "version": "2.0.0",
   "author": "nixfred",
   "license": "MIT",
-  "description": "Live thermal heat map of the AIs this machine actually uses — Claude, Codex, Grok, and local Ollama when a GPU is present — with weekly quota gauges and the share of tokens kept off frontier models.",
+  "description": "Live thermal heat map of the AIs this machine actually uses (Claude, Codex, Grok, Kimi, and local Ollama when a GPU is present), with budget pacing per subscription, quota gauges, and the share of tokens kept off frontier models.",
   "kinds": [
     "service",
     "bar-widget"
@@ -16,7 +16,7 @@
   },
   "barWidget": {
     "displayName": "Burn Bar",
-    "description": "Token spend as a heat map — lanes appear for the AIs this machine uses. Claude burns left, Codex right, Grok after Codex, and a live GPU lane only when a discrete GPU is detected.",
+    "description": "Token spend as a heat map. Lanes appear for the AIs this machine uses. Claude burns left, Codex right, Grok after Codex, and a live GPU lane only when a discrete GPU is detected.",
     "category": "AI",
     "aliases": [
       "tokens",
@@ -62,14 +62,36 @@
         "description": "The narrowest the strip will go, and its fixed width when Fill is off. Raised automatically when the configured cells would not fit.",
         "min": 110,
         "max": 400,
-        "defaultValue": 158
+        "defaultValue": 150
       },
       {
         "key": "stretch",
         "type": "boolean",
         "label": "Fill the room beside it (off by default)",
         "description": "Grow from the minimum to take whatever space is free between this widget and the next section of the bar, the way the Now Playing deck does on the left.",
-        "defaultValue": true
+        "defaultValue": false
+      },
+      {
+        "key": "hero",
+        "type": "enum",
+        "label": "Card headline",
+        "options": ["budget", "tokens"],
+        "defaultValue": "budget",
+        "description": "What each subscription card leads with: how much of the plan is spent and whether it will last, or raw tokens burned."
+      },
+      {
+        "key": "glow",
+        "type": "enum",
+        "label": "Card glow",
+        "options": ["pace", "burn", "spent", "stop", "off"],
+        "defaultValue": "pace",
+        "description": "What makes a subscription card glow: burning over pace, burning right now, how much of the budget is spent, time to stop for the day, or never."
+      },
+      {
+        "key": "showSession",
+        "type": "boolean",
+        "label": "Show 5-hour session windows",
+        "description": "Off by default: the weekly and monthly windows are the ones that bite."
       },
       {
         "key": "maxPerLane",

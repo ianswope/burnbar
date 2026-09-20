@@ -441,14 +441,14 @@ BarWidget {
   }
 
   function zoneTooltip(zone) {
-    if (!svc) return "Burn Bar — starting up"
+    if (!svc) return "Burn Bar: starting up"
     // Before the first history.json is parsed every total is zero, and a
     // confident "0 tokens" while burning is a lie. The plugin withholds
     // unknown quotas for the same reason; a tooltip is no different. This is
     // the state Fred caught seconds after a shell restart, 2026-09-20.
-    if (!svc.ready) return "Burn Bar — collecting…"
+    if (!svc.ready) return "Burn Bar: collecting…"
     if (broken && zone !== zoneLocal)
-      return "CLOUD FAULT — " + (svc.lastError || "collector failed")
+      return "CLOUD FAULT: " + (svc.lastError || "collector failed")
     var span = windowLabel(svc.windowMinutes || 360)
     if (zone === zoneClaude)
       return "CLAUDE  ·  " + compact(svc.claudeTotal) + " tokens / last " + span
@@ -535,15 +535,35 @@ BarWidget {
   }
   function focusOk(id) { return focusLanes.length === 0 || focusLanes.indexOf(id) >= 0 }
 
+  // The cockpit's two view choices live with the lanes, because the same right
+  // click menu sets all three. "budget" leads each card with how much of the
+  // plan is gone and whether it will last; "tokens" leads with raw burn.
+  readonly property string heroMode: String(setting("hero", "budget")) === "tokens" ? "tokens" : "budget"
+  function setHeroMode(mode) { persist({ hero: mode === "tokens" ? "tokens" : "budget" }) }
+  // Fred, 2026-09-20: "I really don't care about the 5hr window so make that
+  // optional to TURN ON but not on by default."
+  readonly property bool showSessionWindows: setting("showSession", false) === true
+  function toggleSessionWindows() { persist({ showSession: !showSessionWindows }) }
+
+  // What a card's glow MEANS, chosen in SETUP. One reason at a time on purpose:
+  // a glow that could mean four things says nothing from across the room.
+  readonly property var glowReasons: ["pace", "burn", "spent", "stop", "off"]
+  readonly property string glowMode: glowReasons.indexOf(String(setting("glow", "pace"))) >= 0
+    ? String(setting("glow", "pace")) : "pace"
+  function setGlowMode(mode) { persist({ glow: glowReasons.indexOf(mode) >= 0 ? mode : "pace" }) }
+
   // Tick or untick one lane. Ticking every lane, or unticking the last one,
   // both mean "all of them": an empty strip helps nobody.
   function toggleLane(id) {
     if (String(id || "") === "") { persist({ lanes: "", focus: "" }); return }
-    var next = focusLanes.slice()
+    // "All" is every box ticked, so unticking one from there means everything
+    // EXCEPT that one - which is what a row of ticked checkboxes promises.
+    var all = knownLanes()
+    var next = focusLanes.length === 0 ? all.slice() : focusLanes.slice()
     var at = next.indexOf(id)
     if (at >= 0) next.splice(at, 1)
     else next.push(id)
-    if (next.length === 0 || next.length >= knownLanes().length) persist({ lanes: "", focus: "" })
+    if (next.length === 0 || next.length >= all.length) persist({ lanes: "", focus: "" })
     else persist({ lanes: next.join(","), focus: "" })
   }
 
@@ -1881,11 +1901,11 @@ BarWidget {
       root.hoverZone = root.zoneNone
       if (code === Qt.MiddleButton) { if (root.svc) { root.svc.refreshLimits(); root.svc.collect(); root.svc.pollLocal() } }
       else if (code === Qt.RightButton) {
-        // A menu, not a cycle: every view this strip can show, at once, with
-        // each subscription's verdict beside it. Opening it also answers the
-        // warning, which is why the chip fades as the menu appears.
+        // Right click answers the warning and nothing else. Choosing what the
+        // strip shows moved to SETUP in the cockpit (Fred, 2026-09-20), where
+        // every option lives together instead of hiding behind a button most
+        // people never press.
         root.acknowledgePace()
-        root.openMenu()
       }
       else {
         // The click that opens the cockpit is also the answer to whatever the
@@ -1901,16 +1921,15 @@ BarWidget {
   function open() { panel.controller.show(); if (svc) { svc.refreshLimits(); svc.collect(); svc.pollLocal() } }
   function close() { panel.controller.hide() }
   function toggle() { opened ? close() : open() }
-  // Left click is always the cockpit, even if the menu was the last thing open.
+  // Left click is always the cockpit, even if SETUP was the last thing open.
   function toggleCockpit() {
     if (opened && panel.mode === "cockpit") { close(); return }
     panel.mode = "cockpit"
     if (!opened) open()
   }
-  // Right click is always the menu, and a second right click puts it away.
-  function openMenu() {
-    if (opened && panel.mode === "menu") { close(); return }
-    panel.mode = "menu"
+  // SETUP is a page of the cockpit, reached from its own button.
+  function openSetup() {
+    panel.mode = "setup"
     if (!opened) open()
   }
   function closeForPopoutSwitch() { close() }

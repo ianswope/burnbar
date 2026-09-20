@@ -1,6 +1,8 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
+import QtQuick.Shapes
+import QtQuick.Effects
 import Quickshell
 import Quickshell.Io
 import qs.Commons
@@ -26,9 +28,8 @@ Panel {
   required property var widget
   readonly property var svc: widget.svc
 
-  // The panel shows the cockpit, or the small menu a right click asks for.
-  // One KeyboardPanel, two contents: a second panel for the same owner would
-  // fight this one for focus.
+  // The panel shows the cockpit, or SETUP. One KeyboardPanel, two contents: a
+  // second panel for the same owner would fight this one for focus.
   property string mode: "cockpit"
 
   // Everything the icon can show, with the current pick marked and each
@@ -42,11 +43,11 @@ Panel {
     if (s && s.grokPresent) out.push({ id: "grok", label: "Grok", accent: w.grokHot, note: paceNote(s.grokWeeklyPace) })
     if (s && s.kimiPresent) out.push({ id: "kimi", label: "Kimi", accent: w.kimiHot, note: paceNote(s.kimiMonthlyPace) })
     if (s && s.hasComputeGpu) out.push({ id: "local", label: "Local GPU", accent: w.localHot, note: "" })
-    // "All lanes" is ticked when nothing in particular is; every other row is
-    // ticked when that lane is in the set. Several can be ticked at once.
     var lanes = w.focusLanes || []
+    // With nothing singled out every subscription IS showing, so every box is
+    // ticked: a row of empty boxes under a ticked "All" reads as a contradiction.
     for (var i = 0; i < out.length; i++)
-      out[i].current = out[i].id === "" ? lanes.length === 0 : lanes.indexOf(out[i].id) >= 0
+      out[i].current = lanes.length === 0 || lanes.indexOf(out[i].id) >= 0
     return out
   }
 
@@ -64,6 +65,18 @@ Panel {
   // Ticking a lane leaves the menu open: picking two of four should not cost
   // two round trips through a right click.
   function chooseView(id) { panel.widget.toggleLane(id) }
+
+  // A boolean option as the widget reads it: defaults-on options are off only
+  // when explicitly false, defaults-off options are on only when explicitly true.
+  function optOn(name, fallback) {
+    var v = panel.widget.setting(name, fallback)
+    return fallback ? v !== false : v === true
+  }
+  function flip(name, fallback) {
+    var change = {}
+    change[name] = !optOn(name, fallback)
+    panel.widget.persist(change)
+  }
 
   readonly property color foreground: widget.bar ? widget.bar.foreground : Color.foreground
   readonly property color dim: Qt.darker(foreground, 1.5)
@@ -109,7 +122,9 @@ Panel {
   // not scrolled, so the data simply disappears with nothing to say it has.
   // Five cloud cards with a quota bar each, rather than four without: the row
   // was already tight at 1360 and a bar needs width to read as a bar.
-  readonly property int panelWidth: Style.space(1480)
+  // Width follows the cards. One subscription does not need 1500px and five do
+  // not fit in it; fittedContentWidth() still clamps to the screen.
+  readonly property int panelWidth: Style.space(Math.max(860, Math.min(2300, cardCount * 396 + 44)))
   readonly property int columnGap: Style.space(20)
 
   // Relative times ("3m ago", "evicts in 4m") go stale the moment they are
@@ -738,6 +753,853 @@ Panel {
     }
   }
 
+  // ══ 2.0: ONE CARD PER SUBSCRIPTION ════════════════════════════════════════
+  // Fred, 2026-09-20: "You have separate sections for diff information. Each
+  // sub should have a section that cleanly displays all the info about it in
+  // one large card ... burn rate in a section and cache in another. I like
+  // graphs. I like cool factor."  The 1.x cockpit was organised by KIND of
+  // number (limits here, rates there, cache somewhere else), so answering "how
+  // is Codex doing" meant reading four sections. 2.0 is organised by the thing
+  // you pay for. A subscription that is not ticked in the right-click menu has
+  // no card at all.
+  readonly property string heroMode: widget.heroMode
+  readonly property bool showSessionWindows: widget.showSessionWindows
+
+  // ── the glow ──────────────────────────────────────────────────────────────
+  // Fred, 2026-09-20: "I also want the subscriptions card to glow and the
+  // reason for the glow is something the user can select within setup." One
+  // reason at a time, on purpose: a glow that could mean four things says
+  // nothing from across the room. Every reason answers with the same three
+  // facts - how strong (0 is dark), what colour, whether it breathes - so a
+  // card has one glow to draw and SETUP decides what it is about.
+  readonly property string glowMode: widget.glowMode
+  readonly property var glowOptions: [
+    { id: "pace",  label: "Over pace",    note: "faster than the plan allows" },
+    { id: "burn",  label: "Burning now",  note: "tokens moved in the last 5 min" },
+    { id: "spent", label: "Budget spent", note: "brighter as the window fills" },
+    { id: "stop",  label: "Time to stop", note: "near today's share, or past it" },
+    { id: "off",   label: "No glow",      note: "" }
+  ]
+  function glowLabel() {
+    for (var i = 0; i < glowOptions.length; i++)
+      if (glowOptions[i].id === glowMode) return glowOptions[i].label.toLowerCase()
+    return ""
+  }
+  function glowFor(agent, limit, unknown) {
+    void panel.tick
+    var dark = { strength: 0, color: panel.foreground, breathe: false }
+    var mode = panel.glowMode
+    if (mode === "off") return dark
+    if (mode === "burn") {
+      // The only reason that needs no budget, so it also works for a
+      // subscription whose quota nobody can measure.
+      var now = rateNow(agent)
+      if (!(now > 0)) return dark
+      var usual = Math.max(1, rateHour(agent))
+      return { strength: Math.min(1, 0.4 + 0.6 * Math.min(1, now / (usual * 2))),
+               color: agentHot(agent), breathe: true }
+    }
+    // Everything below is about a budget. No measured budget, no glow: a card
+    // must never light up over a number that was guessed.
+    if (unknown || !limit) return dark
+    var pct = Math.max(0, Math.min(1, Number(limit.percent) || 0))
+    if (mode === "spent") {
+      if (pct <= 0.02) return dark
+      return { strength: Math.min(1, 0.15 + 0.85 * pct), color: widget.gaugeColor(pct), breathe: pct >= 0.9 }
+    }
+    var p = limit.pace
+    if (!p) return dark
+    var amber = Qt.lighter(Color.urgent, 1.35)
+    if (mode === "stop") {
+      if (p.overDaily === true) return { strength: 1, color: Color.urgent, breathe: true }
+      var stopIn = Number(p.stopInMs)
+      if (!(stopIn > 0) || stopIn > 3600000) return dark
+      return { strength: 0.45 + 0.55 * (1 - stopIn / 3600000), color: amber, breathe: false }
+    }
+    // pace: the same four stages the badge on the bar climbs through.
+    var stage = widget.paceStage(p.ratio, limit.percent)
+    if (stage <= 0) return dark
+    // Breathing means "you can still do something about this". A window that
+    // is already spent out burns steady: there is nothing left to slow down.
+    return { strength: [0, 0.5, 0.75, 1, 1][stage], color: stage >= 2 ? Color.urgent : amber, breathe: stage === 3 }
+  }
+
+  // Every per-agent figure the service carries is named <agent><Suffix>, so a
+  // card asks by name instead of repeating a four-way ternary thirty times.
+  function sv(agent, suffix, fallback) {
+    var s = panel.svc
+    if (!s) return fallback
+    var v = s[agent + suffix]
+    return (v === undefined || v === null) ? fallback : v
+  }
+  function agentName(a) {
+    return a === "claude" ? "Claude" : a === "codex" ? "Codex" : a === "grok" ? "Grok" : "Kimi"
+  }
+  function agentHot(a) {
+    var w = panel.widget
+    return a === "claude" ? w.claudeHot : a === "codex" ? w.codexHot : a === "grok" ? w.grokHot : w.kimiHot
+  }
+  function agentWarm(a) {
+    var w = panel.widget
+    return a === "claude" ? w.claudeWarm : a === "codex" ? w.codexWarm : a === "grok" ? w.grokWarm : w.kimiWarm
+  }
+  function agentCold(a) {
+    var w = panel.widget
+    return a === "claude" ? w.claudeCold : a === "codex" ? w.codexCold : a === "grok" ? w.grokCold : w.kimiCold
+  }
+  function agentShown(a) {
+    return a === "claude" ? showClaude : a === "codex" ? showCodex
+      : a === "grok" ? showGrok : a === "kimi" ? showKimi : false
+  }
+  readonly property int cardCount: (showClaude ? 1 : 0) + (showCodex ? 1 : 0) + (showGrok ? 1 : 0)
+    + (showKimi ? 1 : 0) + (showLocal ? 1 : 0)
+
+  // The 5-hour window is opt-in: it resets before it can hurt, and the weekly
+  // and monthly windows are the ones that actually end a working day.
+  function isSessionWindow(label) { return /session|5-hour/i.test(String(label || "")) }
+  function agentWindows(a) {
+    var rows = sv(a, "Limits", []) || []
+    var out = []
+    for (var i = 0; i < rows.length; i++) {
+      if (!panel.showSessionWindows && isSessionWindow(rows[i].label)) continue
+      out.push(rows[i])
+    }
+    return out
+  }
+  // The window a card is ABOUT: the weekly one where there is one, otherwise
+  // the monthly pool, otherwise whatever the provider offers first.
+  function primaryWindow(a) {
+    var rows = agentWindows(a)
+    var i
+    for (i = 0; i < rows.length; i++)
+      if (/^weekly/i.test(String(rows[i].label || ""))) return rows[i]
+    for (i = 0; i < rows.length; i++)
+      if (/monthly \(total\)/i.test(String(rows[i].label || ""))) return rows[i]
+    return rows.length > 0 ? rows[0] : null
+  }
+  function windowUnknown(a, limit) {
+    void panel.tick
+    if (!limit || !panel.svc) return true
+    if (panel.svc.limitsStale(sv(a, "LimitsMeasuredAt", 0), sv(a, "LimitsLive", true))) return true
+    if (panel.svc.limitExpired(limit)) return true
+    return !(Number(limit.percent) >= 0)
+  }
+  function windowShort(label) {
+    var t = String(label || "")
+    if (/monthly/i.test(t)) return "monthly"
+    if (/weekly/i.test(t)) return /fable/i.test(t) ? "Fable weekly" : "weekly"
+    if (isSessionWindow(t)) return "5-hour"
+    return t.toLowerCase()
+  }
+
+  // One setup option: a mark, a name, a note, and a click.
+  component SetupRow: Rectangle {
+    id: srow
+    property string mark: "☐"
+    property string label: ""
+    property string note: ""
+    property color tone: panel.foreground
+    property bool on: false
+    property bool noteUrgent: false
+    signal activated()
+    Layout.fillWidth: true
+    implicitHeight: Style.space(30)
+    radius: Style.space(4)
+    color: srowHover.hovered ? Util.alpha(panel.foreground, 0.12)
+      : srow.on ? Util.alpha(panel.foreground, 0.06) : "transparent"
+    HoverHandler { id: srowHover }
+    RowLayout {
+      anchors.fill: parent
+      anchors.leftMargin: Style.space(10)
+      anchors.rightMargin: Style.space(10)
+      spacing: Style.space(8)
+      Body {
+        text: srow.mark
+        color: srow.on ? srow.tone : panel.dim
+        Layout.preferredWidth: Style.space(14)
+      }
+      Body { text: srow.label; color: srow.tone; Layout.fillWidth: true }
+      Caption { text: srow.note; color: srow.noteUrgent ? Color.urgent : panel.dim }
+    }
+    MouseArea {
+      anchors.fill: parent
+      cursorShape: Qt.PointingHandCursor
+      onClicked: srow.activated()
+    }
+  }
+
+  // A rounded verdict chip: the one word a card is really about.
+  component Pill: Rectangle {
+    id: pill
+    property string text: ""
+    property color tone: panel.foreground
+    visible: text !== ""
+    implicitWidth: pillText.implicitWidth + Style.space(14)
+    implicitHeight: pillText.implicitHeight + Style.space(4)
+    radius: height / 2
+    color: Util.alpha(pill.tone, 0.16)
+    border.width: 1
+    border.color: Util.alpha(pill.tone, 0.55)
+    Text {
+      id: pillText
+      anchors.centerIn: parent
+      text: pill.text
+      textFormat: Text.PlainText
+      color: pill.tone
+      font.family: panel.fontFamily
+      font.pixelSize: Style.font.caption
+      font.bold: true
+    }
+  }
+
+  // The budget burndown. x is the window from its start to its reset, y is the
+  // plan from 0 to 100%, so an even spend is simply the diagonal and the whole
+  // verdict is visible as geometry: the line above the diagonal is overspend,
+  // the dashed continuation is where the present rate lands, and if that
+  // continuation hits the ceiling before the right edge, that is the moment the
+  // subscription runs dry.
+  component Burndown: Item {
+    id: bd
+    property var series: []
+    property real elapsed: -1
+    property real percent: -1
+    property real projected: -1
+    property color tone: panel.foreground
+    Layout.fillWidth: true
+    implicitHeight: Style.space(108)
+
+    function px(x) { return Math.max(0, Math.min(1, Number(x) || 0)) * bd.width }
+    function py(y) { return bd.height - Math.max(0, Math.min(1, Number(y) || 0)) * bd.height }
+
+    // What was actually sampled, always at least two points so a polyline has
+    // something to draw.
+    readonly property var linePoints: {
+      var pts = []
+      var s = bd.series || []
+      for (var i = 0; i < s.length; i++) pts.push(Qt.point(px(s[i][0]), py(s[i][1])))
+      if (pts.length === 0 && bd.elapsed >= 0 && bd.percent >= 0)
+        pts.push(Qt.point(px(bd.elapsed), py(bd.percent)))
+      if (pts.length === 1) pts.push(Qt.point(pts[0].x + 0.5, pts[0].y))
+      return pts
+    }
+    // Before the first sample the path is unknown in shape but not at its end:
+    // every window starts at zero. Drawn dim, so it reads as inferred.
+    readonly property var inferredPoints: {
+      var pts = [Qt.point(0, bd.height)]
+      var first = bd.linePoints.length > 0 ? bd.linePoints[0] : Qt.point(0, bd.height)
+      pts.push(Qt.point(first.x, first.y))
+      return pts
+    }
+    readonly property var fillPoints: {
+      var pts = [Qt.point(0, bd.height)]
+      for (var i = 0; i < bd.linePoints.length; i++) pts.push(bd.linePoints[i])
+      var last = bd.linePoints.length > 0 ? bd.linePoints[bd.linePoints.length - 1] : Qt.point(0, bd.height)
+      pts.push(Qt.point(last.x, bd.height))
+      pts.push(Qt.point(0, bd.height))
+      return pts
+    }
+    // Where the present rate lands. Past 100% the line stops at the ceiling,
+    // at the x where it crosses - the dry moment.
+    readonly property bool hasProjection: bd.projected >= 0 && bd.elapsed >= 0 && bd.percent >= 0
+      && bd.projected > bd.percent + 0.0005
+    readonly property real dryX: bd.projected > 1
+      ? bd.elapsed + (1 - bd.percent) * (1 - bd.elapsed) / Math.max(0.000001, bd.projected - bd.percent) : 1
+    readonly property var projectionPoints: [
+      Qt.point(px(bd.elapsed), py(bd.percent)),
+      Qt.point(px(bd.hasProjection ? bd.dryX : bd.elapsed), py(bd.hasProjection ? Math.min(1, bd.projected) : bd.percent))
+    ]
+
+    // Frame and quarter lines, faint: a graph needs a floor, not a cage.
+    Rectangle { anchors.fill: parent; radius: Style.space(4); color: Util.alpha(panel.foreground, 0.03) }
+    Repeater {
+      model: 3
+      delegate: Rectangle {
+        required property int index
+        y: Math.round(bd.height * (index + 1) / 4)
+        width: bd.width
+        height: 1
+        color: Util.alpha(panel.foreground, 0.06)
+      }
+    }
+
+    // Wipes in from the left on open, like every other trace in the cockpit.
+    Item {
+      anchors.left: parent.left
+      anchors.top: parent.top
+      anchors.bottom: parent.bottom
+      width: parent.width * panel.reveal
+      clip: true
+
+      Shape {
+        width: bd.width
+        height: bd.height
+        layer.enabled: true
+        layer.samples: 4
+
+        // Even pace: the diagonal.
+        ShapePath {
+          strokeColor: Util.alpha(panel.foreground, 0.38)
+          strokeWidth: 1
+          strokeStyle: ShapePath.DashLine
+          dashPattern: [4, 4]
+          fillColor: "transparent"
+          startX: 0
+          startY: bd.height
+          PathLine { x: bd.width; y: 0 }
+        }
+        // Spent so far, filled down to the floor.
+        ShapePath {
+          strokeColor: "transparent"
+          strokeWidth: 0
+          fillGradient: LinearGradient {
+            x1: 0; y1: 0; x2: 0; y2: bd.height
+            GradientStop { position: 0.0; color: Util.alpha(bd.tone, 0.40) }
+            GradientStop { position: 1.0; color: Util.alpha(bd.tone, 0.02) }
+          }
+          PathPolyline { path: bd.fillPoints }
+        }
+        // Start of window to first sample: inferred, so dim.
+        ShapePath {
+          strokeColor: Util.alpha(bd.tone, 0.35)
+          strokeWidth: 1.5
+          strokeStyle: ShapePath.DashLine
+          dashPattern: [2, 3]
+          fillColor: "transparent"
+          PathPolyline { path: bd.inferredPoints }
+        }
+        // The glow under the line, then the line.
+        ShapePath {
+          strokeColor: Util.alpha(bd.tone, 0.22)
+          strokeWidth: 7
+          fillColor: "transparent"
+          capStyle: ShapePath.RoundCap
+          joinStyle: ShapePath.RoundJoin
+          PathPolyline { path: bd.linePoints }
+        }
+        ShapePath {
+          strokeColor: bd.tone
+          strokeWidth: 2
+          fillColor: "transparent"
+          capStyle: ShapePath.RoundCap
+          joinStyle: ShapePath.RoundJoin
+          PathPolyline { path: bd.linePoints }
+        }
+        // At this rate.
+        ShapePath {
+          strokeColor: bd.hasProjection ? Util.alpha(bd.tone, 0.85) : "transparent"
+          strokeWidth: 1.5
+          strokeStyle: ShapePath.DashLine
+          dashPattern: [3, 3]
+          fillColor: "transparent"
+          PathPolyline { path: bd.projectionPoints }
+        }
+      }
+    }
+
+    // Now: a hairline, and a dot that breathes where you actually are.
+    Rectangle {
+      visible: bd.elapsed >= 0
+      x: Math.round(bd.px(bd.elapsed))
+      width: 1
+      height: bd.height
+      color: Util.alpha(panel.foreground, 0.25)
+    }
+    Rectangle {
+      id: nowDot
+      visible: bd.elapsed >= 0 && bd.percent >= 0
+      width: Style.space(8)
+      height: width
+      radius: width / 2
+      x: bd.px(bd.elapsed) - width / 2
+      y: bd.py(bd.percent) - height / 2
+      color: bd.tone
+      border.width: 1
+      border.color: panel.widget.whiteHot
+      SequentialAnimation on scale {
+        running: nowDot.visible && panel.opened
+        loops: Animation.Infinite
+        NumberAnimation { to: 1.35; duration: 900; easing.type: Easing.InOutQuad }
+        NumberAnimation { to: 0.9; duration: 900; easing.type: Easing.InOutQuad }
+      }
+    }
+    // The dry moment, when the present rate reaches the ceiling early.
+    Rectangle {
+      visible: bd.hasProjection && bd.projected > 1
+      width: Style.space(7)
+      height: width
+      radius: width / 2
+      x: bd.px(bd.dryX) - width / 2
+      y: -height / 2 + 1
+      color: Color.urgent
+    }
+  }
+
+  // One subscription's burn over the window, as heat-ramped bars from a floor.
+  component BurnBars: Item {
+    id: bb
+    property string agent: "claude"
+    Layout.fillWidth: true
+    implicitHeight: Style.space(52)
+    readonly property int n: panel.buckets.length
+    readonly property real slot: n > 0 ? width / n : width
+    readonly property real peak: Math.max(1, Number(panel.sv(bb.agent, "Peak", 1)))
+
+    Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: panel.faint }
+    Repeater {
+      model: bb.n
+      delegate: Item {
+        id: bar
+        required property int index
+        readonly property real v: Number((panel.buckets[index] || ({}))[bb.agent] || 0)
+        readonly property real level: Math.min(1, Math.pow(v / bb.peak, 0.6))
+        readonly property bool live: index === bb.n - 1
+        x: index * bb.slot
+        width: bb.slot
+        height: bb.height
+        Rectangle {
+          anchors.bottom: parent.bottom
+          anchors.horizontalCenter: parent.horizontalCenter
+          width: Math.max(2, bb.slot - 3)
+          height: Math.max(bar.v > 0 ? 2 : 0, (bb.height - 2) * bar.level) * panel.wipe(bar.index, bb.n)
+          radius: 2
+          color: panel.widget.heat(bar.level, panel.agentCold(bb.agent), panel.agentWarm(bb.agent), panel.agentHot(bb.agent))
+          opacity: 0.55 + 0.45 * (bar.index / Math.max(1, bb.n - 1))
+          Behavior on height { NumberAnimation { duration: 320; easing.type: Easing.OutCubic } }
+        }
+        // The live bucket breathes, as the live cell on the strip does.
+        Rectangle {
+          id: liveBox
+          visible: bar.live
+          anchors.horizontalCenter: parent.horizontalCenter
+          width: Math.max(2, bb.slot - 3)
+          height: bb.height
+          radius: 2
+          color: Util.alpha(panel.widget.whiteHot, panel.chartFlash * 0.25)
+          border.width: 1
+          border.color: panel.widget.whiteHot
+          property real breathe: 0.1
+          opacity: Math.min(1, breathe + panel.chartFlash)
+          SequentialAnimation on breathe {
+            running: bar.live && panel.opened
+            loops: Animation.Infinite
+            NumberAnimation { to: 0.45; duration: 900; easing.type: Easing.InOutQuad }
+            NumberAnimation { to: 0.06; duration: 900; easing.type: Easing.InOutQuad }
+          }
+        }
+      }
+    }
+  }
+
+  // A small labelled figure, three of which make a card's rate strip.
+  component MiniStat: ColumnLayout {
+    id: mini
+    property string label: ""
+    property real value: 0
+    property color tone: panel.foreground
+    spacing: 0
+    Layout.fillWidth: true
+    Counter {
+      target: mini.value
+      format: panel.widget.compact
+      color: mini.tone
+      font.pixelSize: Style.font.body
+      font.bold: true
+    }
+    Caption { text: mini.label; font.bold: true }
+  }
+
+  // ── the card ──────────────────────────────────────────────────────────────
+  // The glow itself: the card's own outline, blurred until it reads as light.
+  // Only the outline is drawn, never a filled shape - the cards are nearly
+  // transparent, and a filled halo behind one would flood it with colour. Half
+  // the light falls outside the card and half inside, which is what a lit edge
+  // does. `level` eases, so a card warms up and cools down instead of snapping.
+  component CardGlow: Item {
+    id: cg
+    property color tone: panel.foreground
+    property real strength: 0
+    property bool breathe: false
+    property real corner: Style.cornerRadius
+    property real eased: strength
+    property real breath: 1
+    readonly property real level: eased * breath
+    Behavior on eased { NumberAnimation { duration: 700; easing.type: Easing.InOutQuad } }
+    Behavior on tone { ColorAnimation { duration: 700 } }
+    anchors.fill: parent
+    z: -1
+    visible: level > 0.01
+    opacity: Math.min(1, level)
+
+    // Breathing runs only while the panel is open and this card is lit: a
+    // closed panel animating four blurs would be heat for nobody.
+    SequentialAnimation {
+      running: panel.opened && cg.breathe && cg.strength > 0
+      loops: Animation.Infinite
+      NumberAnimation { target: cg; property: "breath"; to: 0.5; duration: 1500; easing.type: Easing.InOutSine }
+      NumberAnimation { target: cg; property: "breath"; to: 1; duration: 1500; easing.type: Easing.InOutSine }
+      onStopped: cg.breath = 1
+    }
+
+    // The outline sits just OUTSIDE the card, so most of the light falls into
+    // the gap between cards and the text inside stays on a clean background.
+    Rectangle {
+      id: cgEdge
+      anchors.fill: parent
+      anchors.margins: -border.width
+      radius: cg.corner + border.width
+      color: "transparent"
+      border.width: Style.space(6)
+      border.color: cg.tone
+      visible: false
+    }
+    // Two passes of the same outline: a wide soft one for the halo, a tight
+    // one for the hot rim. One blur alone is either a smear or a hairline.
+    MultiEffect {
+      source: cgEdge
+      anchors.fill: cgEdge
+      blurEnabled: true
+      blur: 1
+      blurMax: 64
+      autoPaddingEnabled: true
+      opacity: 0.8
+    }
+    MultiEffect {
+      source: cgEdge
+      anchors.fill: cgEdge
+      blurEnabled: true
+      blur: 1
+      blurMax: 18
+      autoPaddingEnabled: true
+    }
+  }
+
+  component SubCard: Rectangle {
+    id: card
+    property string agent: "claude"
+
+    readonly property color accent: panel.agentHot(agent)
+    readonly property var windows: { void panel.tick; return panel.agentWindows(agent) }
+    readonly property var primary: { void panel.tick; return panel.primaryWindow(agent) }
+    readonly property bool primaryUnknown: panel.windowUnknown(agent, primary)
+    readonly property var pace: primary && primary.pace && !primaryUnknown ? primary.pace : null
+    readonly property var verdict: panel.paceVerdict(primary, primaryUnknown)
+    readonly property var sentence: panel.paceText(primary, primaryUnknown)
+    // Budget leads when there is a budget to lead with; a subscription whose
+    // quota is unknown falls back to tokens rather than printing a dash at
+    // display size.
+    readonly property bool budgetHero: panel.heroMode === "budget" && primary !== null && !primaryUnknown
+    readonly property real total: Number(panel.sv(agent, "Total", 0))
+    // Nothing burned in the window: the budget half of the card still matters,
+    // the burn half is rows of zeros and an empty graph. It collapses to a line.
+    readonly property bool active: total > 0
+    readonly property var split: panel.sv(agent, "Split", ({}))
+    readonly property real splitSum: Math.max(1, panel.splitTotal(split))
+    readonly property var models: panel.sortedModels(panel.sv(agent, "ByModel", ({})))
+    readonly property string tier: agent === "kimi" ? String(panel.sv("kimi", "PlanTier", "")) : ""
+    readonly property var glow: panel.glowFor(agent, primary, primaryUnknown)
+    readonly property bool lit: visible && Number(glow.strength) > 0
+    readonly property var trust: {
+      void panel.tick
+      return panel.limitNote(panel.sv(agent, "LimitsMeasuredAt", 0), String(panel.sv(agent, "LimitsStatus", "")),
+        String(panel.sv(agent, "LimitsHelp", "")), panel.sv(agent, "LimitsLive", true),
+        agent === "kimi" ? panel.sv("kimi", "LimitsInfo", false) : false)
+    }
+
+    visible: panel.agentShown(agent)
+    Layout.fillWidth: visible
+    Layout.fillHeight: true
+    Layout.preferredWidth: visible ? 1 : 0
+    Layout.minimumWidth: 0
+    implicitHeight: visible ? body.implicitHeight + Style.space(26) : 0
+    radius: Style.cornerRadius
+    color: Util.alpha(card.accent, 0.055)
+    border.width: 1
+    border.color: card.lit ? Util.alpha(card.glow.color, 0.5 + 0.45 * Number(card.glow.strength))
+      : Util.alpha(card.sentence.urgent ? Color.urgent : card.accent, card.sentence.urgent ? 0.6 : 0.32)
+    opacity: panel.reveal
+    transform: Translate { y: (1 - panel.reveal) * 12 }
+
+    CardGlow {
+      tone: card.glow.color
+      strength: card.visible ? Number(card.glow.strength) : 0
+      breathe: card.glow.breathe === true
+      corner: card.radius
+    }
+
+    // A lit edge in the subscription's own colour: which card is which, from
+    // across the room.
+    Rectangle {
+      anchors.top: parent.top
+      anchors.horizontalCenter: parent.horizontalCenter
+      width: parent.width - Style.space(24)
+      height: 2
+      radius: 1
+      color: card.accent
+      opacity: 0.35 + 0.5 * Math.min(1, panel.rateNow(card.agent) / Math.max(1, panel.rateHour(card.agent) * 2 + 1))
+    }
+
+    ColumnLayout {
+      id: body
+      anchors.fill: parent
+      anchors.margins: Style.space(13)
+      spacing: Style.space(8)
+
+      // ── name · tier · verdict ──────────────────────────────────────────
+      RowLayout {
+        Layout.fillWidth: true
+        spacing: Style.space(8)
+        Text {
+          text: panel.agentName(card.agent).toUpperCase()
+          textFormat: Text.PlainText
+          color: card.accent
+          font.family: panel.fontFamily
+          font.pixelSize: Style.font.title
+          font.bold: true
+        }
+        Caption { text: card.tier !== "" ? card.tier + " plan" : ""; visible: card.tier !== "" }
+        Item { Layout.fillWidth: true }
+        Pill { text: card.verdict.word; tone: card.verdict.color }
+      }
+
+      // ── the headline: budget or tokens, click to flip ──────────────────
+      Item {
+        Layout.fillWidth: true
+        implicitHeight: heroRow.implicitHeight
+        RowLayout {
+          id: heroRow
+          anchors.left: parent.left
+          anchors.right: parent.right
+          spacing: Style.space(10)
+          Counter {
+            target: card.budgetHero ? Number(card.primary.percent) * 100 : card.total
+            format: card.budgetHero ? function(v) { return Math.round(v) + "%" } : panel.widget.compact
+            color: card.budgetHero ? (card.verdict.word !== "" ? card.verdict.color : card.accent) : card.accent
+            font.pixelSize: Style.font.displayLarge
+            font.bold: true
+          }
+          ColumnLayout {
+            Layout.fillWidth: true
+            Layout.alignment: Qt.AlignVCenter
+            spacing: 0
+            Caption {
+              Layout.fillWidth: true
+              font.bold: true
+              color: panel.foreground
+              text: card.budgetHero
+                ? "of " + panel.windowShort(card.primary.label) + " budget spent"
+                : "tokens  ·  last " + panel.widget.windowLabel(panel.windowMinutes)
+            }
+            Caption {
+              Layout.fillWidth: true
+              text: {
+                void panel.tick
+                if (card.budgetHero)
+                  return panel.widget.compact(card.total) + " tokens  ·  resets in " + panel.untilText(card.primary.resetsAt)
+                if (card.primary && !card.primaryUnknown)
+                  return Math.round(Number(card.primary.percent) * 100) + "% of " + panel.windowShort(card.primary.label)
+                    + "  ·  resets in " + panel.untilText(card.primary.resetsAt)
+                return panel.sv(card.agent, "Turns", 0) + " turns  ·  " + panel.sv(card.agent, "Sessions", 0) + " sessions"
+              }
+            }
+          }
+          Caption {
+            text: "⇄"
+            color: heroFlip.containsMouse ? panel.foreground : panel.dim
+            font.pixelSize: Style.font.body
+          }
+        }
+        MouseArea {
+          id: heroFlip
+          anchors.fill: parent
+          hoverEnabled: true
+          cursorShape: Qt.PointingHandCursor
+          onClicked: panel.widget.setHeroMode(panel.heroMode === "budget" ? "tokens" : "budget")
+        }
+      }
+
+      // ── burndown: the verdict as geometry ──────────────────────────────
+      RowLayout {
+        Layout.fillWidth: true
+        visible: card.primary !== null
+        Caption {
+          Layout.fillWidth: true
+          font.bold: true
+          text: card.primary ? "BURNDOWN  ·  " + String(card.primary.label).toUpperCase() : ""
+        }
+        Caption { text: "╌ even pace"; visible: card.pace !== null }
+      }
+      Burndown {
+        visible: card.pace !== null
+        series: card.pace ? (card.pace.series || []) : []
+        elapsed: card.pace ? Number(card.pace.elapsed) : -1
+        percent: card.primary && !card.primaryUnknown ? Number(card.primary.percent) : -1
+        projected: card.pace && Number(card.pace.ratePerHour) > 0.00005 ? Number(card.pace.projected) : -1
+        tone: card.verdict.word !== "" ? card.verdict.color : card.accent
+      }
+      Body {
+        visible: card.sentence.text !== ""
+        Layout.fillWidth: true
+        text: card.sentence.text
+        color: card.sentence.urgent ? Color.urgent : panel.foreground
+        wrapMode: Text.WordWrap
+        elide: Text.ElideNone
+      }
+
+      // ── every window this plan meters ──────────────────────────────────
+      Repeater {
+        model: card.windows
+        delegate: ColumnLayout {
+          id: win
+          required property var modelData
+          readonly property bool unknown: panel.windowUnknown(card.agent, modelData)
+          readonly property var v: panel.paceVerdict(modelData, unknown)
+          Layout.fillWidth: true
+          spacing: 2
+          RowLayout {
+            Layout.fillWidth: true
+            spacing: Style.space(6)
+            Body { text: modelData.label; Layout.fillWidth: true }
+            Caption {
+              text: { void panel.tick; return win.unknown ? "awaiting refresh" : "resets " + panel.untilText(modelData.resetsAt) }
+            }
+            Body {
+              text: win.unknown ? "--" : Math.round(Number(modelData.percent) * 100) + "%"
+              color: win.unknown ? panel.dim : (win.v.word !== "" ? win.v.color : panel.foreground)
+              font.bold: true
+              Layout.preferredWidth: Style.space(38)
+              horizontalAlignment: Text.AlignRight
+            }
+          }
+          BudgetGauge {
+            implicitHeight: Style.space(7)
+            fraction: win.unknown ? 0 : Number(modelData.percent)
+            elapsed: win.unknown || !modelData.pace ? -1 : Number(modelData.pace.elapsed)
+            accent: win.unknown ? panel.dim : (win.v.word !== "" ? win.v.color : card.accent)
+          }
+        }
+      }
+      Caption {
+        visible: card.trust.text !== ""
+        Layout.fillWidth: true
+        text: card.trust.text
+        color: card.trust.urgent === true ? Color.urgent : panel.dim
+        wrapMode: Text.WordWrap
+        elide: Text.ElideNone
+      }
+
+      Caption {
+        visible: !card.active
+        Layout.fillWidth: true
+        text: {
+          void panel.tick
+          var last = Number(panel.sv(card.agent, "LastAt", 0))
+          return "no burn in the last " + panel.widget.windowLabel(panel.windowMinutes)
+            + (last > 0 ? "  ·  last active " + panel.agoText(last) : "")
+        }
+      }
+
+      // ── burn: how hard, and when ───────────────────────────────────────
+      RowLayout {
+        visible: card.active
+        Layout.fillWidth: true
+        Caption { Layout.fillWidth: true; font.bold: true; text: "BURN  ·  TOKENS / MIN" }
+        Caption {
+          text: "peak " + panel.widget.compact(panel.sv(card.agent, "Peak", 0)) + " at " + panel.clockText(panel.sv(card.agent, "PeakAt", 0))
+        }
+      }
+      RowLayout {
+        visible: card.active
+        Layout.fillWidth: true
+        spacing: Style.space(8)
+        MiniStat { label: "5 MIN"; value: panel.rateNow(card.agent); tone: card.accent }
+        MiniStat { label: "1 HOUR"; value: panel.rateHour(card.agent) }
+        MiniStat { label: panel.widget.windowLabel(panel.windowMinutes).toUpperCase(); value: panel.rateWindow(card.agent) }
+      }
+      BurnBars { agent: card.agent; visible: card.active }
+
+      // ── what burned, and how much came out of the cache ────────────────
+      RowLayout {
+        visible: card.active
+        Layout.fillWidth: true
+        Caption { Layout.fillWidth: true; font.bold: true; text: "TOKEN MIX" }
+        Caption {
+          text: "cache read " + panel.widget.compact(card.split.cacheRead || 0) + "  ·  "
+            + Math.round(panel.cacheShare(card.split) * 100) + "% of input"
+          color: card.accent
+          font.bold: true
+        }
+      }
+      Item {
+        visible: card.active
+        Layout.fillWidth: true
+        implicitHeight: Style.space(8)
+        Rectangle { anchors.fill: parent; radius: height / 2; color: panel.faint }
+        Row {
+          anchors.fill: parent
+          Rectangle {
+            height: parent.height
+            width: parent.width * Number(card.split.input || 0) / card.splitSum * panel.reveal
+            color: Util.alpha(card.accent, 0.45)
+            Behavior on width { NumberAnimation { duration: 500; easing.type: Easing.OutCubic } }
+          }
+          Rectangle {
+            height: parent.height
+            width: parent.width * Number(card.split.cacheWrite || 0) / card.splitSum * panel.reveal
+            color: Util.alpha(card.accent, 0.75)
+            Behavior on width { NumberAnimation { duration: 500; easing.type: Easing.OutCubic } }
+          }
+          Rectangle {
+            height: parent.height
+            width: parent.width * Number(card.split.output || 0) / card.splitSum * panel.reveal
+            color: card.accent
+            Behavior on width { NumberAnimation { duration: 500; easing.type: Easing.OutCubic } }
+          }
+        }
+      }
+      Caption {
+        visible: card.active
+        Layout.fillWidth: true
+        text: "in " + panel.widget.compact(card.split.input || 0)
+          + "  ·  cache-write " + panel.widget.compact(card.split.cacheWrite || 0)
+          + "  ·  out " + panel.widget.compact(card.split.output || 0)
+      }
+
+      // ── which models did the burning ───────────────────────────────────
+      Caption { visible: card.active && card.models.length > 0; font.bold: true; text: "BY MODEL" }
+      Repeater {
+        model: card.active ? card.models.slice(0, 4) : []
+        delegate: RowLayout {
+          required property var modelData
+          readonly property real share: card.total > 0 ? modelData.tokens / card.total : 0
+          Layout.fillWidth: true
+          spacing: Style.space(6)
+          Body { text: panel.prettyModel(modelData.id); Layout.preferredWidth: Style.space(92) }
+          Gauge { fraction: share; accent: card.accent }
+          Caption { text: Math.round(share * 100) + "%"; Layout.preferredWidth: Style.space(28); horizontalAlignment: Text.AlignRight }
+          Body {
+            text: panel.widget.compact(modelData.tokens)
+            color: card.accent
+            font.bold: true
+            Layout.preferredWidth: Style.space(40)
+            horizontalAlignment: Text.AlignRight
+          }
+        }
+      }
+
+      Item { Layout.fillHeight: true }
+
+      Caption {
+        visible: card.active
+        Layout.fillWidth: true
+        text: {
+          void panel.tick
+          return panel.sv(card.agent, "Turns", 0) + " turns  ·  " + panel.sv(card.agent, "Sessions", 0)
+            + " sessions  ·  active " + panel.agoText(panel.sv(card.agent, "LastAt", 0))
+        }
+      }
+    }
+  }
+
   KeyboardPanel {
     id: kpanel
     anchorItem: panel.widget.anchorItem
@@ -745,13 +1607,13 @@ Panel {
     bar: panel.widget.bar
     open: panel.opened
     focusTarget: keyCatcher
-    contentWidth: panel.mode === "menu"
-      ? fittedContentWidth(Style.space(330))
+    contentWidth: panel.mode === "setup"
+      ? fittedContentWidth(Style.space(1040))
       : fittedContentWidth(panel.panelWidth)
     // Never a Flickable in here: the cap is the screen, and everything below
     // is sized to fit inside it.
-    contentHeight: panel.mode === "menu"
-      ? fittedContentHeight(menuContent.implicitHeight, Style.space(600))
+    contentHeight: panel.mode === "setup"
+      ? fittedContentHeight(setupContent.implicitHeight, Style.space(700))
       : fittedContentHeight(content.implicitHeight, Style.space(960))
 
     PanelKeyCatcher {
@@ -764,96 +1626,247 @@ Panel {
         if (text === "r" || text === "R") panel.refreshAll()
       }
 
-      // ── the right-click menu ───────────────────────────────────────────
-      // Every option at once, rather than a cycle you have to walk blind.
+      // ── SETUP ───────────────────────────────────────────────────────────
+      // Fred, 2026-09-20: "move the sub selection away from right click and add
+      // it to SETUP button where all options are available across all
+      // features." Every choice the plugin offers, in one place, three columns
+      // wide so none of it scrolls. Each row writes straight through the bar,
+      // so a change here is the same change the shell's own settings page
+      // would make, and it survives a restart.
       ColumnLayout {
-        id: menuContent
-        visible: panel.mode === "menu"
+        id: setupContent
+        visible: panel.mode === "setup"
         width: parent.width
-        spacing: Style.space(4)
+        spacing: Style.space(10)
 
-        PanelSectionHeader {
+        RowLayout {
           Layout.fillWidth: true
-          text: "SHOW ON THE ICON  ·  TICK ANY"
-          foreground: panel.foreground
-          fontFamily: panel.fontFamily
+          spacing: Style.space(10)
+          Text {
+            text: "SETUP"
+            textFormat: Text.PlainText
+            color: panel.foreground
+            font.family: panel.fontFamily
+            font.pixelSize: Style.font.title
+            font.bold: true
+          }
+          Caption { Layout.fillWidth: true; text: "everything Burn Bar can show, and how" }
+          Button {
+            text: "Back to the cockpit"
+            onClicked: panel.mode = "cockpit"
+          }
         }
 
-        Repeater {
-          model: panel.viewOptions()
-          delegate: Rectangle {
-            id: optionRow
-            required property var modelData
+        GridLayout {
+          Layout.fillWidth: true
+          columns: 3
+          columnSpacing: Style.space(18)
+          rowSpacing: Style.space(8)
+
+          // ── column 1: what gets a card and a lane ──────────────────────
+          ColumnLayout {
             Layout.fillWidth: true
-            implicitHeight: Style.space(30)
-            radius: Style.space(4)
-            color: optionHover.hovered ? Util.alpha(panel.foreground, 0.12)
-              : modelData.current ? Util.alpha(panel.foreground, 0.06) : "transparent"
-            HoverHandler { id: optionHover }
-
-            RowLayout {
-              anchors.fill: parent
-              anchors.leftMargin: Style.space(10)
-              anchors.rightMargin: Style.space(10)
-              spacing: Style.space(8)
-              Body {
-                // A box, not a dot: these are checkboxes now, and several of
-                // them can be ticked at the same time.
-                text: optionRow.modelData.current ? "☑" : "☐"
-                color: optionRow.modelData.current ? optionRow.modelData.accent : panel.dim
-                Layout.preferredWidth: Style.space(14)
-              }
-              Body {
-                text: optionRow.modelData.label
-                color: optionRow.modelData.accent
-                Layout.fillWidth: true
-              }
-              Caption {
-                text: optionRow.modelData.note
-                color: String(optionRow.modelData.note).indexOf("over") >= 0 ? Color.urgent : panel.dim
+            Layout.alignment: Qt.AlignTop
+            Layout.preferredWidth: 1
+            spacing: Style.space(4)
+            PanelSectionHeader {
+              Layout.fillWidth: true
+              text: "SUBSCRIPTIONS  ·  TICK ANY"
+              foreground: panel.foreground
+              fontFamily: panel.fontFamily
+            }
+            Repeater {
+              model: panel.viewOptions()
+              delegate: SetupRow {
+                required property var modelData
+                mark: modelData.current ? "☑" : "☐"
+                on: modelData.current
+                label: modelData.label
+                note: modelData.note
+                tone: modelData.accent
+                noteUrgent: String(modelData.note).indexOf("over") >= 0
+                onActivated: panel.chooseView(modelData.id)
               }
             }
-
-            MouseArea {
-              anchors.fill: parent
-              cursorShape: Qt.PointingHandCursor
-              onClicked: panel.chooseView(optionRow.modelData.id)
-            }
-          }
-        }
-
-        PanelSectionHeader {
-          Layout.fillWidth: true
-          text: "WARNINGS"
-          foreground: panel.foreground
-          fontFamily: panel.fontFamily
-        }
-
-        // Answered warnings stay answered until a worse stage. This is how to
-        // ask for them all back without waiting to overspend further.
-        Rectangle {
-          Layout.fillWidth: true
-          implicitHeight: Style.space(30)
-          radius: Style.space(4)
-          color: rearmHover.hovered ? Util.alpha(panel.foreground, 0.12) : "transparent"
-          HoverHandler { id: rearmHover }
-          RowLayout {
-            anchors.fill: parent
-            anchors.leftMargin: Style.space(10)
-            anchors.rightMargin: Style.space(10)
-            spacing: Style.space(8)
-            Body { text: "↺"; color: panel.dim; Layout.preferredWidth: Style.space(14) }
-            Body { text: "Warn me again"; color: panel.foreground; Layout.fillWidth: true }
             Caption {
-              text: panel.widget.acknowledgedCount > 0
+              Layout.fillWidth: true
+              wrapMode: Text.WordWrap
+              elide: Text.ElideNone
+              text: "A ticked subscription gets a card in the cockpit and a lane on the bar. Unticked, it has neither."
+            }
+
+            PanelSectionHeader {
+              Layout.fillWidth: true
+              text: "WARNINGS"
+              foreground: panel.foreground
+              fontFamily: panel.fontFamily
+            }
+            SetupRow {
+              mark: "↺"
+              label: "Warn me again"
+              note: panel.widget.acknowledgedCount > 0
                 ? panel.widget.acknowledgedCount + " dismissed" : "nothing dismissed"
-              color: panel.dim
+              onActivated: panel.widget.clearPaceAck()
             }
           }
-          MouseArea {
-            anchors.fill: parent
-            cursorShape: Qt.PointingHandCursor
-            onClicked: { panel.widget.clearPaceAck(); panel.widget.close() }
+
+          // ── column 2: what the cards say ───────────────────────────────
+          ColumnLayout {
+            Layout.fillWidth: true
+            Layout.alignment: Qt.AlignTop
+            Layout.preferredWidth: 1
+            spacing: Style.space(4)
+            PanelSectionHeader {
+              Layout.fillWidth: true
+              text: "CARD HEADLINE"
+              foreground: panel.foreground
+              fontFamily: panel.fontFamily
+            }
+            SetupRow {
+              mark: panel.heroMode === "budget" ? "◉" : "○"
+              on: panel.heroMode === "budget"
+              label: "Budget"
+              note: "how much is spent, and will it last"
+              onActivated: panel.widget.setHeroMode("budget")
+            }
+            SetupRow {
+              mark: panel.heroMode === "tokens" ? "◉" : "○"
+              on: panel.heroMode === "tokens"
+              label: "Tokens"
+              note: "raw burn in the window"
+              onActivated: panel.widget.setHeroMode("tokens")
+            }
+
+            PanelSectionHeader {
+              Layout.fillWidth: true
+              text: "CARD GLOW  ·  WHAT LIGHTS A CARD UP"
+              foreground: panel.foreground
+              fontFamily: panel.fontFamily
+            }
+            Repeater {
+              model: panel.glowOptions
+              delegate: SetupRow {
+                required property var modelData
+                mark: panel.glowMode === modelData.id ? "◉" : "○"
+                on: panel.glowMode === modelData.id
+                label: modelData.label
+                note: modelData.note
+                onActivated: panel.widget.setGlowMode(modelData.id)
+              }
+            }
+
+            PanelSectionHeader {
+              Layout.fillWidth: true
+              text: "BUDGET WINDOWS"
+              foreground: panel.foreground
+              fontFamily: panel.fontFamily
+            }
+            SetupRow {
+              mark: panel.showSessionWindows ? "☑" : "☐"
+              on: panel.showSessionWindows
+              label: "5-hour session windows"
+              note: "off by default"
+              onActivated: panel.widget.toggleSessionWindows()
+            }
+
+            PanelSectionHeader {
+              Layout.fillWidth: true
+              text: "HISTORY WINDOW"
+              foreground: panel.foreground
+              fontFamily: panel.fontFamily
+            }
+            RowLayout {
+              Layout.fillWidth: true
+              spacing: Style.space(6)
+              Repeater {
+                model: [180, 360, 720, 1440]
+                delegate: Rectangle {
+                  id: chip
+                  required property int modelData
+                  readonly property bool on: Math.round(panel.windowMinutes) === modelData
+                  Layout.fillWidth: true
+                  implicitHeight: Style.space(28)
+                  radius: height / 2
+                  color: chip.on ? Util.alpha(panel.foreground, 0.16) : chipHover.hovered ? Util.alpha(panel.foreground, 0.08) : "transparent"
+                  border.width: 1
+                  border.color: Util.alpha(panel.foreground, chip.on ? 0.55 : 0.2)
+                  HoverHandler { id: chipHover }
+                  Body {
+                    anchors.centerIn: parent
+                    text: panel.widget.windowLabel(chip.modelData)
+                    font.bold: chip.on
+                  }
+                  MouseArea {
+                    anchors.fill: parent
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: panel.widget.persist({ windowMinutes: chip.modelData })
+                  }
+                }
+              }
+            }
+
+          }
+
+          // ── column 3: how the strip on the bar behaves ─────────────────
+          ColumnLayout {
+            Layout.fillWidth: true
+            Layout.alignment: Qt.AlignTop
+            Layout.preferredWidth: 1
+            spacing: Style.space(4)
+            PanelSectionHeader {
+              Layout.fillWidth: true
+              text: "THE STRIP ON THE BAR"
+              foreground: panel.foreground
+              fontFamily: panel.fontFamily
+            }
+            SetupRow {
+              mark: panel.optOn("showGauges", true) ? "☑" : "☐"
+              on: panel.optOn("showGauges", true)
+              label: "Quota gauges"
+              note: "a fuel gauge per subscription"
+              onActivated: panel.flip("showGauges", true)
+            }
+            SetupRow {
+              mark: panel.optOn("showLocal", true) ? "☑" : "☐"
+              on: panel.optOn("showLocal", true)
+              label: "Local GPU lane"
+              note: "when this machine has one"
+              onActivated: panel.flip("showLocal", true)
+            }
+            SetupRow {
+              mark: panel.optOn("stretch", false) ? "☑" : "☐"
+              on: panel.optOn("stretch", false)
+              label: "Fill the room beside it"
+              note: "off = a fixed size"
+              onActivated: panel.flip("stretch", false)
+            }
+            SetupRow {
+              mark: panel.optOn("emberFlicker", true) ? "☑" : "☐"
+              on: panel.optOn("emberFlicker", true)
+              label: "Ember flicker"
+              note: "live cells breathe"
+              onActivated: panel.flip("emberFlicker", true)
+            }
+            SetupRow {
+              mark: panel.optOn("sparks", true) ? "☑" : "☐"
+              on: panel.optOn("sparks", true)
+              label: "Rising sparks"
+              note: "on fresh burn"
+              onActivated: panel.flip("sparks", true)
+            }
+            SetupRow {
+              mark: panel.optOn("themeColors", true) ? "☑" : "☐"
+              on: panel.optOn("themeColors", true)
+              label: "Follow theme colours"
+              note: "else the built-in ramp"
+              onActivated: panel.flip("themeColors", true)
+            }
+            Caption {
+              Layout.fillWidth: true
+              wrapMode: Text.WordWrap
+              elide: Text.ElideNone
+              text: "Widths, refresh intervals and the Ollama address are numbers, and live with the rest of the bar's settings in the shell."
+            }
           }
         }
       }
@@ -916,7 +1929,8 @@ Panel {
                   target: panel.svc
                     ? (panel.showClaude ? panel.svc.claudeTotal : 0)
                       + (panel.showCodex ? panel.svc.codexTotal : 0)
-                      + (panel.showGrok ? panel.svc.grokTotal : 0) : 0
+                      + (panel.showGrok ? panel.svc.grokTotal : 0)
+                      + (panel.showKimi ? panel.svc.kimiTotal : 0) : 0
                   format: panel.widget.compact
                   color: panel.widget.claudeHot
                   font.pixelSize: Style.font.displayLarge
@@ -926,747 +1940,84 @@ Panel {
             }
           }
           trailingControl: Component {
-            PanelActionButton {
-              iconText: "󰑐"
-              tooltipText: "Refresh everything (R)"
-              foreground: panel.foreground
-              fontFamily: panel.fontFamily
-              onClicked: panel.refreshAll()
-            }
-          }
-        }
-
-        // ── agent tiles, same order as the bar (Claude/Codex/Grok + local) ─
-        RowLayout {
-          Layout.fillWidth: true
-          spacing: Style.space(8)
-          opacity: panel.reveal
-          transform: Translate { y: (1 - panel.reveal) * 8 }
-
-          // A fixed model of three keys. A model built as a fresh array of
-          // values was replaced on every tick, which destroyed and recreated
-          // the tiles — and a recreated Counter initialises straight to its
-          // target, so the count-up never showed.
-          Repeater {
-            model: ["claude", "codex", "grok", "kimi", "local"]
-            delegate: Rectangle {
-              id: tile
-              required property string modelData
-              readonly property bool isClaude: modelData === "claude"
-              readonly property bool isCodex: modelData === "codex"
-              readonly property bool isGrok: modelData === "grok"
-              readonly property bool isKimi: modelData === "kimi"
-              readonly property bool isCloud: isClaude || isCodex || isGrok || isKimi
-              readonly property var s: panel.svc
-              readonly property color accent: isClaude ? panel.widget.claudeHot
-                : isCodex ? panel.widget.codexHot
-                : isGrok ? panel.widget.grokHot
-                : isKimi ? panel.widget.kimiHot : panel.localState
-              // Cloud tiles lead with tokens. Local leads with tokens when the
-              // journal gives them; otherwise it falls back to live load.
-              readonly property real value: !s ? 0 : isClaude ? s.claudeTotal
-                : isCodex ? s.codexTotal
-                : isGrok ? s.grokTotal
-                : isKimi ? s.kimiTotal
-                : panel.localTokens ? s.localTokensTotal : (panel.localOnline ? s.localLoad : 0)
-              readonly property var format: (isCloud || panel.localTokens) ? panel.widget.compact
-                : function(v) { return panel.localOnline ? Math.round(v) + "%" : "off" }
-              readonly property string sub: {
-                void panel.tick
-                if (!s) return ""
-                if (isClaude) return s.claudeTurns + " turns · " + s.claudeSessions + " sessions · "
-                  + panel.widget.compact(panel.rateNow("claude")) + "/min"
-                if (isCodex) return s.codexTurns + " turns · " + s.codexSessions + " sessions · "
-                  + panel.widget.compact(panel.rateNow("codex")) + "/min"
-                if (isGrok) return s.grokTurns + " turns · " + s.grokSessions + " sessions · "
-                  + panel.widget.compact(panel.rateNow("grok")) + "/min"
-                if (isKimi) return s.kimiTurns + " turns · " + s.kimiSessions + " sessions · "
-                  + panel.widget.compact(panel.rateNow("kimi")) + "/min"
-                if (panel.localTokens) return Math.round(panel.offload * 100) + "% offloaded · "
-                  + s.localTokensTurns + " turns · " + panel.widget.compact(panel.rateNow("local")) + "/min"
-                if (!panel.localOnline) return "ollama not answering"
-                return (s.localActive ? "inferencing" : "idle") + " · " + s.localModelCount + " warm"
-                  + (s.localPowerW > 0 ? " · " + s.localPowerW.toFixed(1) + " W" : "")
-              }
-              readonly property string sub2: {
-                void panel.tick
-                if (!s) return ""
-                if (isClaude) return "peak " + panel.widget.compact(s.claudePeak) + " at " + panel.clockText(s.claudePeakAt)
-                  + " · active " + panel.agoText(s.claudeLastAt)
-                if (isCodex) return "peak " + panel.widget.compact(s.codexPeak) + " at " + panel.clockText(s.codexPeakAt)
-                  + " · active " + panel.agoText(s.codexLastAt)
-                if (isGrok) return "peak " + panel.widget.compact(s.grokPeak) + " at " + panel.clockText(s.grokPeakAt)
-                  + " · active " + panel.agoText(s.grokLastAt)
-                if (isKimi) return "peak " + panel.widget.compact(s.kimiPeak) + " at " + panel.clockText(s.kimiPeakAt)
-                  + " · active " + panel.agoText(s.kimiLastAt)
-                if (!panel.localOnline) return s.localError
-                var live = (s.localActive ? "inferencing " : "idle ") + Math.round(s.localLoad) + "% · " + s.localModelCount + " warm"
-                if (panel.localTokens) return live + " · active " + panel.agoText(s.localTokensLastAt)
-                return live + " · peak " + Math.round(s.localPeakLoad) + "% · " + s.localPeakPowerW.toFixed(0) + " W"
-              }
-
-              // The quota that actually bites, per agent. Kimi meters by the
-              // month; the rest by the week. -1 means withheld — stale, expired
-              // or never read — and is drawn as "—", never as a confident 0%.
-              readonly property real quota: {
-                void panel.tick
-                if (!s || !isCloud) return -1
-                return isClaude ? s.claudeWeekly
-                  : isCodex ? s.codexWeekly
-                  : isGrok ? s.grokWeekly
-                  : s.kimiMonthly
-              }
-              readonly property string quotaLabel: isClaude || isCodex || isGrok
-                ? "weekly" : "monthly"
-
-              visible: (isClaude && panel.showClaude) || (isCodex && panel.showCodex)
-                || (isGrok && panel.showGrok) || (isKimi && panel.showKimiPlan)
-                || (!isCloud && panel.showLocal)
-              Layout.fillWidth: visible
-              Layout.preferredWidth: visible ? -1 : 0
-              implicitHeight: visible ? Style.space(isCloud ? 94 : 76) : 0
-              radius: Style.cornerRadius
-              color: Util.alpha(tile.accent, 0.10)
-              border.width: 1
-              border.color: Util.alpha(tile.accent, 0.30)
-
-              ColumnLayout {
-                anchors.fill: parent
-                anchors.margins: Style.space(9)
-                spacing: 1
-                RowLayout {
-                  Layout.fillWidth: true
-                  Counter {
-                    target: tile.value
-                    format: tile.format
-                    color: tile.accent
-                    font.bold: true
-                    font.pixelSize: Style.font.display
-                  }
-                  Item { Layout.fillWidth: true }
-                  Caption { text: tile.isCloud ? tile.modelData.toUpperCase() : panel.boxLabel; color: panel.foreground; font.bold: true }
-                }
-                Caption { text: tile.sub; Layout.fillWidth: true }
-                Caption { text: tile.sub2; Layout.fillWidth: true }
-
-                // How close this agent is to its wall, on the row you look at
-                // first. Local has no quota, so it keeps the shorter card.
-                Item { visible: tile.isCloud; Layout.fillWidth: true; implicitHeight: Style.space(3) }
-                RowLayout {
-                  visible: tile.isCloud
-                  Layout.fillWidth: true
-                  spacing: Style.space(6)
-                  Caption {
-                    text: tile.quotaLabel
-                    color: panel.dim
-                  }
-                  Gauge {
-                    fraction: tile.quota >= 0 ? tile.quota : 0
-                    accent: tile.quota >= 0 ? panel.widget.gaugeColor(tile.quota) : panel.dim
-                    Layout.alignment: Qt.AlignVCenter
-                  }
-                  Caption {
-                    text: tile.quota >= 0 ? Math.round(tile.quota * 100) + "%" : "—"
-                    color: tile.quota >= 0 ? panel.widget.gaugeColor(tile.quota) : panel.dim
-                    font.bold: true
-                    Layout.preferredWidth: Style.space(30)
-                    horizontalAlignment: Text.AlignRight
-                  }
-                }
-              }
-            }
-          }
-        }
-
-        // ── the two columns ──────────────────────────────────────────────────
-        // Explicit geometry. See the file comment for why this is not a RowLayout.
-        Item {
-          id: columns
-          Layout.fillWidth: true
-          implicitHeight: Math.max(cloudCol.implicitHeight, cloudDetailCol.implicitHeight,
-            panel.showLocal ? localCol.implicitHeight : 0)
-          // Three columns, so the cloud side stops being one tall stack. On a
-          // 1080p screen that stack ran off the bottom and took CLAUDE BY
-          // MODEL, the status line and the About row with it.
-          readonly property int gaps: panel.showLocal ? panel.columnGap * 2 : panel.columnGap
-          readonly property int usable: Math.max(1, width - gaps)
-          readonly property int leftWidth: panel.showLocal
-            ? Math.round(usable * 0.37) : Math.round(usable * 0.52)
-          readonly property int midWidth: panel.showLocal
-            ? Math.round(usable * 0.35) : usable - leftWidth
-          readonly property int rightWidth: panel.showLocal
-            ? usable - leftWidth - midWidth : 0
-          readonly property int midX: leftWidth + panel.columnGap
-          readonly property int rightX: midX + midWidth + panel.columnGap
-
-          // ════ CLOUD ═════════════════════════════════════════════════════════
-          ColumnLayout {
-            id: cloudCol
-            x: 0
-            width: columns.leftWidth
-            spacing: Style.space(8)
-            opacity: panel.reveal
-            transform: Translate { y: (1 - panel.reveal) * 10 }
-
             RowLayout {
-              Layout.fillWidth: true
-              PanelSectionHeader {
-                Layout.fillWidth: true
-                text: "BURN OVER TIME  ·  " + panel.bucketLabel(panel.bucketMinutes) + " MIN BUCKETS"
+              spacing: Style.space(6)
+              Button {
+                text: "SETUP"
+                onClicked: panel.mode = "setup"
+              }
+              PanelActionButton {
+                iconText: "󰑐"
+                tooltipText: "Refresh everything (R)"
                 foreground: panel.foreground
                 fontFamily: panel.fontFamily
-                elide: Text.ElideRight
-              }
-              Caption { visible: panel.showClaude; text: "▲ " + panel.widget.compact(panel.svc ? panel.svc.claudePeak : 0); color: panel.widget.claudeHot; font.bold: true }
-              Caption { visible: panel.showCodex; text: "▼ " + panel.widget.compact(panel.svc ? panel.svc.codexPeak : 0); color: panel.widget.codexHot; font.bold: true }
-              Caption { visible: panel.showGrok; text: "◆ " + panel.widget.compact(panel.svc ? panel.svc.grokPeak : 0); color: panel.widget.grokHot; font.bold: true }
-            }
-
-            // Mirrored bars around a midline: Claude rises, Codex falls, both
-            // coloured on the heat ramp the bar uses — so the panel and the
-            // strip teach each other. Newest on the right, like every trace.
-            Item {
-              id: chart
-              Layout.fillWidth: true
-              implicitHeight: Style.space(132)
-              clip: true
-              readonly property int labelBand: Style.space(14)
-              readonly property real plotHeight: height - labelBand
-              readonly property real mid: plotHeight / 2
-              readonly property int n: panel.buckets.length
-              readonly property real slot: n > 0 ? width / n : width
-              readonly property real claudeRef: Math.max(1, panel.svc ? panel.svc.claudePeak : 1)
-              readonly property real codexRef: Math.max(1, panel.svc ? panel.svc.codexPeak : 1)
-              readonly property real grokRef: Math.max(1, panel.svc ? panel.svc.grokPeak : 1)
-
-              Rectangle {
-                y: chart.mid
-                width: parent.width
-                height: 1
-                color: Util.alpha(panel.foreground, 0.25)
-              }
-
-              Repeater {
-                model: chart.n
-                delegate: Item {
-                  id: col
-                  required property int index
-                  readonly property var b: panel.buckets[index]
-                  readonly property real c: Number(b ? b.claude : 0)
-                  readonly property real x_: Number(b ? b.codex : 0)
-                  readonly property real g: Number(b ? b.grok : 0)
-                  readonly property real cl: Math.min(1, Math.pow(c / chart.claudeRef, 0.6))
-                  readonly property real xl: Math.min(1, Math.pow(x_ / chart.codexRef, 0.6))
-                  readonly property real gl: Math.min(1, Math.pow(g / chart.grokRef, 0.6))
-                  readonly property bool live: index === chart.n - 1
-                  readonly property real grow: panel.wipe(index, chart.n)
-                  readonly property real barWidth: Math.max(2, chart.slot - 3)
-                  x: index * chart.slot
-                  width: chart.slot
-                  height: chart.height
-
-                  Rectangle {
-                    visible: panel.showClaude
-                    y: chart.mid - height
-                    anchors.horizontalCenter: parent.horizontalCenter
-                    width: col.barWidth
-                    height: Math.max(col.c > 0 ? 2 : 0, (chart.mid - 3) * col.cl) * col.grow
-                    radius: 2
-                    color: panel.widget.heat(col.cl, panel.widget.claudeCold, panel.widget.claudeWarm, panel.widget.claudeHot)
-                    opacity: 0.55 + 0.45 * (col.index / Math.max(1, chart.n - 1))
-                    Behavior on height { NumberAnimation { duration: 320; easing.type: Easing.OutCubic } }
-                  }
-                  // Grok takes the up-bars when Claude is not on this machine.
-                  Rectangle {
-                    visible: panel.showGrok && !panel.showClaude
-                    y: chart.mid - height
-                    anchors.horizontalCenter: parent.horizontalCenter
-                    width: col.barWidth
-                    height: Math.max(col.g > 0 ? 2 : 0, (chart.mid - 3) * col.gl) * col.grow
-                    radius: 2
-                    color: panel.widget.heat(col.gl, panel.widget.grokCold, panel.widget.grokWarm, panel.widget.grokHot)
-                    opacity: 0.55 + 0.45 * (col.index / Math.max(1, chart.n - 1))
-                    Behavior on height { NumberAnimation { duration: 320; easing.type: Easing.OutCubic } }
-                  }
-                  Rectangle {
-                    visible: panel.showCodex
-                    y: chart.mid + 1
-                    anchors.horizontalCenter: parent.horizontalCenter
-                    width: col.barWidth
-                    height: Math.max(col.x_ > 0 ? 2 : 0, (chart.mid - 3) * col.xl) * col.grow
-                    radius: 2
-                    color: panel.widget.heat(col.xl, panel.widget.codexCold, panel.widget.codexWarm, panel.widget.codexHot)
-                    opacity: 0.55 + 0.45 * (col.index / Math.max(1, chart.n - 1))
-                    Behavior on height { NumberAnimation { duration: 320; easing.type: Easing.OutCubic } }
-                  }
-                  // Grok rides as a thin rose filament on the midline so the
-                  // Claude▲ / Codex▼ mirror stays intact — only when Claude
-                  // already owns the up-bars.
-                  Rectangle {
-                    visible: panel.showGrok && panel.showClaude
-                    anchors.horizontalCenter: parent.horizontalCenter
-                    y: chart.mid - height / 2
-                    width: Math.max(2, col.barWidth * 0.42)
-                    height: Math.max(col.g > 0 ? 2 : 0, (chart.mid - 4) * col.gl * 0.55) * col.grow
-                    radius: width / 2
-                    color: panel.widget.heat(col.gl, panel.widget.grokCold, panel.widget.grokWarm, panel.widget.grokHot)
-                    opacity: 0.70 + 0.30 * (col.index / Math.max(1, chart.n - 1))
-                    Behavior on height { NumberAnimation { duration: 320; easing.type: Easing.OutCubic } }
-                  }
-                  // Live column breathes, same as the live cell on the bar, and
-                  // flashes when the collector lands new burn.
-                  Rectangle {
-                    id: liveFrame
-                    visible: col.live
-                    anchors.horizontalCenter: parent.horizontalCenter
-                    width: col.barWidth
-                    height: chart.plotHeight
-                    radius: 2
-                    color: Util.alpha(panel.widget.whiteHot, panel.chartFlash * 0.25)
-                    border.width: 1
-                    border.color: panel.widget.whiteHot
-                    property real breathe: 0
-                    opacity: Math.min(1, breathe + panel.chartFlash)
-                    SequentialAnimation on breathe {
-                      running: col.live && panel.opened
-                      loops: Animation.Infinite
-                      NumberAnimation { to: 0.45; duration: 900; easing.type: Easing.InOutQuad }
-                      NumberAnimation { to: 0.06; duration: 900; easing.type: Easing.InOutQuad }
-                    }
-                  }
-                  Caption {
-                    // Hour marks on the bucket that starts each hour, with the
-                    // minutes shown when that bucket does not start on the
-                    // hour itself (a :30 grid used to label 7:30 as "7 PM").
-                    // The last one or two are suppressed so they never crowd
-                    // the "now" label.
-                    readonly property real t: Number(col.b ? col.b.t : 0)
-                    readonly property bool onHour: t > 0 && (t % 3600000) < panel.bucketMinutes * 60000
-                    visible: col.live || (onHour && col.index <= chart.n - 3)
-                    anchors.bottom: parent.bottom
-                    anchors.horizontalCenter: parent.horizontalCenter
-                    text: col.live ? "now" : Qt.formatTime(new Date(t), (t % 3600000) === 0 ? "h AP" : "h:mm AP")
-                    font.pixelSize: Style.font.caption - 1
-                    font.bold: col.live
-                    color: col.live ? panel.foreground : panel.dim
-                    elide: Text.ElideNone
-                  }
-                }
-              }
-            }
-
-            PanelSectionHeader {
-              Layout.fillWidth: true
-              text: "PLAN LIMITS"
-              foreground: panel.foreground
-              fontFamily: panel.fontFamily
-            }
-
-            // The note behind an agent's limits, when the record is not to be
-            // trusted: written too long ago, carrying a status ("Waiting for
-            // auth"), or unrefreshable. "" when the record is healthy.
-            //
-            // An agent with limit rows carries its note under them, so the
-            // name is printed once. Only an agent with no rows at all — Kimi,
-            // which publishes a tier and no quota — gets a labelled line of
-            // its own. Grok used to appear twice for exactly this reason.
-            Repeater {
-              model: {
-                void panel.tick
-                var out = []
-                if (!panel.svc) return out
-                var rows = []
-                if (panel.showClaude)
-                  rows.push({ agent: "Claude", accent: panel.widget.claudeHot, limits: panel.svc.claudeLimits,
-                    updatedAt: panel.svc.claudeLimitsMeasuredAt, status: panel.svc.claudeLimitsStatus, help: panel.svc.claudeLimitsHelp,
-                    live: panel.svc.claudeLimitsLive })
-                if (panel.showCodex)
-                  rows.push({ agent: "Codex", accent: panel.widget.codexHot, limits: panel.svc.codexLimits,
-                    updatedAt: panel.svc.codexLimitsMeasuredAt, status: panel.svc.codexLimitsStatus, help: panel.svc.codexLimitsHelp,
-                    live: panel.svc.codexLimitsLive })
-                if (panel.showGrok)
-                  rows.push({ agent: "Grok", accent: panel.widget.grokHot, limits: panel.svc.grokLimits,
-                    updatedAt: panel.svc.grokLimitsMeasuredAt, status: panel.svc.grokLimitsStatus, help: panel.svc.grokLimitsHelp,
-                    live: panel.svc.grokLimitsLive })
-                // Kimi has no limits array at all: the caption carries its tier
-                // and says plainly that Kimi publishes no quota, so the row
-                // exists without pretending to a percentage.
-                if (panel.showKimiPlan)
-                  rows.push({ agent: "Kimi", accent: panel.widget.kimiHot, limits: panel.svc.kimiLimits,
-                    updatedAt: panel.svc.kimiLimitsMeasuredAt, status: panel.svc.kimiLimitsStatus, help: panel.svc.kimiLimitsHelp,
-                    live: panel.svc.kimiLimitsLive, info: panel.svc.kimiLimitsInfo })
-                for (var i = 0; i < rows.length; i++) {
-                  var r = rows[i]
-                  // No record and nothing to say: this agent is simply not
-                  // in use here. Do not nag about it.
-                  if (r.limits.length === 0 && r.status === "") continue
-                  // An agent with rows of its own carries the note under them;
-                  // printing it here too is what made Grok read as two agents.
-                  if (r.limits.length > 0) continue
-                  var note = panel.limitNote(r.updatedAt, r.status, r.help, r.live, r.info)
-                  if (note.text === "") continue
-                  r.text = note.text
-                  r.urgent = note.urgent
-                  out.push(r)
-                }
-                return out
-              }
-              delegate: RowLayout {
-                required property var modelData
-                Layout.fillWidth: true
-                spacing: Style.space(6)
-                Body { text: modelData.agent; color: modelData.accent; Layout.preferredWidth: Style.space(48) }
-                Caption {
-                  text: modelData.text
-                  color: modelData.urgent === false ? panel.dim : Color.urgent
-                  Layout.fillWidth: true
-                }
-              }
-            }
-
-            Repeater {
-              model: {
-                var out = []
-                var c = panel.svc ? panel.svc.claudeLimits : []
-                var x = panel.svc ? panel.svc.codexLimits : []
-                var g = panel.svc ? panel.svc.grokLimits : []
-                var cAt = panel.svc ? panel.svc.claudeLimitsMeasuredAt : 0
-                var xAt = panel.svc ? panel.svc.codexLimitsMeasuredAt : 0
-                var gAt = panel.svc ? panel.svc.grokLimitsMeasuredAt : 0
-                var cLive = panel.svc ? panel.svc.claudeLimitsLive : true
-                var xLive = panel.svc ? panel.svc.codexLimitsLive : true
-                var gLive = panel.svc ? panel.svc.grokLimitsLive : false
-                var km = panel.svc ? panel.svc.kimiLimits : []
-                var kAt = panel.svc ? panel.svc.kimiLimitsMeasuredAt : 0
-                var kLive = panel.svc ? panel.svc.kimiLimitsLive : true
-                if (panel.showClaude)
-                  for (var i = 0; i < c.length; i++)
-                    out.push({ agent: "Claude", accent: panel.widget.claudeHot, limit: c[i], updatedAt: cAt, live: cLive })
-                if (panel.showCodex)
-                  for (var j = 0; j < x.length; j++)
-                    out.push({ agent: "Codex", accent: panel.widget.codexHot, limit: x[j], updatedAt: xAt, live: xLive })
-                if (panel.showGrok)
-                  for (var k = 0; k < g.length; k++)
-                    out.push({ agent: "Grok", accent: panel.widget.grokHot, limit: g[k], updatedAt: gAt, live: gLive })
-                if (panel.showKimiPlan)
-                  for (var q = 0; q < km.length; q++)
-                    out.push({ agent: "Kimi", accent: panel.widget.kimiHot, limit: km[q], updatedAt: kAt, live: kLive })
-                // The note belongs under the rows it describes, on the last of
-                // them, so the agent's name is printed exactly once.
-                for (var n = 0; n < out.length; n++) out[n].note = ""
-                var seen = {}
-                for (var m = out.length - 1; m >= 0; m--) {
-                  if (seen[out[m].agent]) continue
-                  seen[out[m].agent] = true
-                  var note = panel.limitNote(out[m].updatedAt,
-                    out[m].agent === "Claude" ? (panel.svc ? panel.svc.claudeLimitsStatus : "")
-                    : out[m].agent === "Codex" ? (panel.svc ? panel.svc.codexLimitsStatus : "")
-                    : out[m].agent === "Kimi" ? (panel.svc ? panel.svc.kimiLimitsStatus : "")
-                    : (panel.svc ? panel.svc.grokLimitsStatus : ""),
-                    out[m].agent === "Claude" ? (panel.svc ? panel.svc.claudeLimitsHelp : "")
-                    : out[m].agent === "Codex" ? (panel.svc ? panel.svc.codexLimitsHelp : "")
-                    : out[m].agent === "Kimi" ? (panel.svc ? panel.svc.kimiLimitsHelp : "")
-                    : (panel.svc ? panel.svc.grokLimitsHelp : ""),
-                    out[m].live,
-                    out[m].agent === "Kimi" ? (panel.svc ? panel.svc.kimiLimitsInfo : false) : false)
-                  out[m].note = note.text
-                  out[m].noteUrgent = note.urgent
-                }
-                return out
-              }
-              delegate: ColumnLayout {
-                id: limitRow
-                required property var modelData
-                Layout.fillWidth: true
-                spacing: 2
-
-                // A window whose reset time has passed is over; the figure
-                // describes a period that is finished. A record older than
-                // the staleness bound may describe anything. Either way the
-                // percentage is withheld, not shown as a live 0%.
-                readonly property bool expired: {
-                  void panel.tick
-                  return panel.svc ? panel.svc.limitExpired(modelData.limit) : false
-                }
-                readonly property bool stale: {
-                  void panel.tick
-                  return panel.svc ? panel.svc.limitsStale(modelData.updatedAt, modelData.live) : true
-                }
-                // The collector marks a figure it could not read as -1; that
-                // is unknown too, not -100%.
-                readonly property bool unknown: expired || stale || !(Number(modelData.limit.percent) >= 0)
-                readonly property real fraction: unknown ? 0 : Number(modelData.limit.percent)
-                readonly property var pace: {
-                  void panel.tick
-                  return panel.paceText(modelData.limit, unknown)
-                }
-                readonly property var verdict: {
-                  void panel.tick
-                  return panel.paceVerdict(modelData.limit, unknown)
-                }
-
-                RowLayout {
-                  Layout.fillWidth: true
-                  spacing: Style.space(6)
-                  Body { text: modelData.agent; color: modelData.accent; Layout.preferredWidth: Style.space(48) }
-                  Body { text: modelData.limit.label; Layout.fillWidth: true }
-                  Caption {
-                    text: limitRow.expired
-                      ? "window rolled over  ·  awaiting refresh"
-                      : "resets in " + panel.untilText(modelData.limit.resetsAt)
-                        + "  ·  " + panel.dayClockText(modelData.limit.resetsAt)
-                    color: limitRow.expired ? Color.urgent : panel.dim
-                  }
-                  Body {
-                    text: limitRow.verdict.word
-                    color: limitRow.verdict.color
-                    font.bold: true
-                    Layout.preferredWidth: Style.space(72)
-                    horizontalAlignment: Text.AlignRight
-                  }
-                  Body {
-                    text: limitRow.unknown ? "—" : Math.round(Number(modelData.limit.percent) * 100) + "%"
-                    color: limitRow.unknown ? panel.dim : panel.widget.gaugeColor(Number(modelData.limit.percent))
-                    font.bold: true
-                    Layout.preferredWidth: Style.space(34)
-                    horizontalAlignment: Text.AlignRight
-                  }
-                }
-                BudgetGauge {
-                  fraction: limitRow.fraction
-                  elapsed: limitRow.unknown || !modelData.limit.pace ? -1 : Number(modelData.limit.pace.elapsed)
-                  accent: limitRow.unknown ? panel.dim
-                    : (limitRow.pace.urgent ? Color.urgent : panel.widget.gaugeColor(Number(modelData.limit.percent)))
-                }
-                // Am I over budget, may I keep spending, and when do I get back
-                // to "making it" - the three questions a percentage cannot answer.
-                Body {
-                  visible: limitRow.pace.text !== ""
-                  Layout.fillWidth: true
-                  Layout.leftMargin: Style.space(48) + Style.space(6)
-                  text: limitRow.pace.text
-                  color: limitRow.pace.urgent ? Color.urgent : panel.foreground
-                  // The explanation is the point of the row; eliding it to
-                  // "still ma…" defeats the purpose. Let it take a second line.
-                  wrapMode: Text.WordWrap
-                }
-                // Why this agent's figures are or are not to be trusted, under
-                // the rows it applies to rather than as a second agent above.
-                Caption {
-                  visible: String(modelData.note || "") !== ""
-                  Layout.fillWidth: true
-                  Layout.leftMargin: Style.space(48) + Style.space(6)
-                  text: modelData.note || ""
-                  color: modelData.noteUrgent === true ? Color.urgent : panel.dim
-                  elide: Text.ElideRight
-                }
+                onClicked: panel.refreshAll()
               }
             }
           }
+        }
 
-          // ════ CLOUD DETAIL ══════════════════════════════════════════════════
-          // Rates, mix and per-model bars. Its own column purely so the cloud
-          // side is two short stacks instead of one that overruns the screen.
-          ColumnLayout {
-            id: cloudDetailCol
-            x: columns.midX
-            width: columns.midWidth
-            spacing: Style.space(8)
-            opacity: panel.reveal
-            transform: Translate { y: (1 - panel.reveal) * 10 }
+        // ── the cards ───────────────────────────────────────────────────────
+        // One per subscription that is ticked in the right-click menu, side by
+        // side, equal width, and all of it on screen: width is the remedy here,
+        // never a scrollbar. The model is a fixed list - a list rebuilt on every
+        // tick would destroy and recreate the cards, and a recreated Counter
+        // snaps straight to its target instead of counting up.
+        RowLayout {
+          id: cards
+          Layout.fillWidth: true
+          spacing: Style.space(14)
 
-            // Rates: tokens per minute, three horizons, both agents.
-            GridLayout {
-              Layout.fillWidth: true
-              columns: 4
-              columnSpacing: Style.space(8)
-              rowSpacing: 2
-              Caption { text: "RATE  ·  TOKENS / MIN"; font.bold: true; Layout.fillWidth: true }
-              Caption { text: "5 MIN"; font.bold: true; Layout.preferredWidth: Style.space(58); horizontalAlignment: Text.AlignRight }
-              Caption { text: "1 HOUR"; font.bold: true; Layout.preferredWidth: Style.space(58); horizontalAlignment: Text.AlignRight }
-              Caption { text: panel.widget.windowLabel(panel.windowMinutes).toUpperCase(); font.bold: true; Layout.preferredWidth: Style.space(58); horizontalAlignment: Text.AlignRight }
-
-              Body { visible: panel.showClaude; text: "Claude"; color: panel.widget.claudeHot; Layout.fillWidth: true }
-              Counter { visible: panel.showClaude; target: panel.rateNow("claude"); format: panel.widget.compact; color: panel.foreground; font.bold: true; font.pixelSize: Style.font.bodySmall; Layout.preferredWidth: Style.space(58); horizontalAlignment: Text.AlignRight }
-              Counter { visible: panel.showClaude; target: panel.rateHour("claude"); format: panel.widget.compact; color: panel.foreground; font.pixelSize: Style.font.bodySmall; Layout.preferredWidth: Style.space(58); horizontalAlignment: Text.AlignRight }
-              Counter { visible: panel.showClaude; target: panel.rateWindow("claude"); format: panel.widget.compact; color: panel.foreground; font.pixelSize: Style.font.bodySmall; Layout.preferredWidth: Style.space(58); horizontalAlignment: Text.AlignRight }
-
-              Body { visible: panel.showCodex; text: "Codex"; color: panel.widget.codexHot; Layout.fillWidth: true }
-              Counter { visible: panel.showCodex; target: panel.rateNow("codex"); format: panel.widget.compact; color: panel.foreground; font.bold: true; font.pixelSize: Style.font.bodySmall; Layout.preferredWidth: Style.space(58); horizontalAlignment: Text.AlignRight }
-              Counter { visible: panel.showCodex; target: panel.rateHour("codex"); format: panel.widget.compact; color: panel.foreground; font.pixelSize: Style.font.bodySmall; Layout.preferredWidth: Style.space(58); horizontalAlignment: Text.AlignRight }
-              Counter { visible: panel.showCodex; target: panel.rateWindow("codex"); format: panel.widget.compact; color: panel.foreground; font.pixelSize: Style.font.bodySmall; Layout.preferredWidth: Style.space(58); horizontalAlignment: Text.AlignRight }
-
-              Body { visible: panel.showGrok; text: "Grok"; color: panel.widget.grokHot; Layout.fillWidth: true }
-              Counter { visible: panel.showGrok; target: panel.rateNow("grok"); format: panel.widget.compact; color: panel.foreground; font.bold: true; font.pixelSize: Style.font.bodySmall; Layout.preferredWidth: Style.space(58); horizontalAlignment: Text.AlignRight }
-              Counter { visible: panel.showGrok; target: panel.rateHour("grok"); format: panel.widget.compact; color: panel.foreground; font.pixelSize: Style.font.bodySmall; Layout.preferredWidth: Style.space(58); horizontalAlignment: Text.AlignRight }
-              Counter { visible: panel.showGrok; target: panel.rateWindow("grok"); format: panel.widget.compact; color: panel.foreground; font.pixelSize: Style.font.bodySmall; Layout.preferredWidth: Style.space(58); horizontalAlignment: Text.AlignRight }
-              // Kimi rides inside Claude's transcripts, but it is its own
-              // subscription with its own money: it gets its own rate row.
-              Body { visible: panel.showKimi; text: "Kimi"; color: panel.widget.kimiHot; Layout.fillWidth: true }
-              Counter { visible: panel.showKimi; target: panel.rateNow("kimi"); format: panel.widget.compact; color: panel.foreground; font.bold: true; font.pixelSize: Style.font.bodySmall; Layout.preferredWidth: Style.space(58); horizontalAlignment: Text.AlignRight }
-              Counter { visible: panel.showKimi; target: panel.rateHour("kimi"); format: panel.widget.compact; color: panel.foreground; font.pixelSize: Style.font.bodySmall; Layout.preferredWidth: Style.space(58); horizontalAlignment: Text.AlignRight }
-              Counter { visible: panel.showKimi; target: panel.rateWindow("kimi"); format: panel.widget.compact; color: panel.foreground; font.pixelSize: Style.font.bodySmall; Layout.preferredWidth: Style.space(58); horizontalAlignment: Text.AlignRight }
-
-              Body { visible: panel.showLocal && panel.localTokens; text: panel.boxName; color: panel.widget.localHot; Layout.fillWidth: true }
-              Counter { visible: panel.showLocal && panel.localTokens; target: panel.rateNow("local"); format: panel.widget.compact; color: panel.foreground; font.bold: true; font.pixelSize: Style.font.bodySmall; Layout.preferredWidth: Style.space(58); horizontalAlignment: Text.AlignRight }
-              Counter { visible: panel.showLocal && panel.localTokens; target: panel.rateHour("local"); format: panel.widget.compact; color: panel.foreground; font.pixelSize: Style.font.bodySmall; Layout.preferredWidth: Style.space(58); horizontalAlignment: Text.AlignRight }
-              Counter { visible: panel.showLocal && panel.localTokens; target: panel.rateWindow("local"); format: panel.widget.compact; color: panel.foreground; font.pixelSize: Style.font.bodySmall; Layout.preferredWidth: Style.space(58); horizontalAlignment: Text.AlignRight }
-            }
-
-            PanelSectionHeader {
-              Layout.fillWidth: true
-              text: "TOKEN MIX  ·  INPUT / CACHE WRITE / OUTPUT"
-              foreground: panel.foreground
-              fontFamily: panel.fontFamily
-              elide: Text.ElideRight
-            }
-
-            // What burned, by kind — and how much of everything the model
-            // touched came out of the cache instead. That second number is the
-            // one people never think to look at and always want once they
-            // have seen it. It is a token share; cache hits still cost money.
-            Repeater {
-              model: {
-                var rows = []
-                if (panel.showClaude)
-                  rows.push({ name: "Claude", accent: panel.widget.claudeHot, split: panel.svc ? panel.svc.claudeSplit : ({}) })
-                if (panel.showCodex)
-                  rows.push({ name: "Codex", accent: panel.widget.codexHot, split: panel.svc ? panel.svc.codexSplit : ({}) })
-                if (panel.showGrok)
-                  rows.push({ name: "Grok", accent: panel.widget.grokHot, split: panel.svc ? panel.svc.grokSplit : ({}) })
-                if (panel.showKimi)
-                  rows.push({ name: "Kimi", accent: panel.widget.kimiHot, split: panel.svc ? panel.svc.kimiSplit : ({}) })
-                // Local: evaluated prompt as "in", generated as "out", the
-                // reused prefix as the cache read. There is no cache write.
-                if (panel.showLocal && panel.localTokens)
-                  rows.push({ name: panel.boxName, accent: panel.widget.localHot, split: panel.svc.localTokensSplit })
-                return rows
-              }
-              delegate: ColumnLayout {
-                required property var modelData
-                readonly property real total: Math.max(1, panel.splitTotal(modelData.split))
-                Layout.fillWidth: true
-                spacing: 2
-                RowLayout {
-                  Layout.fillWidth: true
-                  spacing: Style.space(6)
-                  Body { text: modelData.name; color: modelData.accent; Layout.preferredWidth: Style.space(48) }
-                  Caption {
-                    Layout.fillWidth: true
-                    text: "in " + panel.widget.compact(modelData.split.input || 0)
-                      + " · cache-w " + panel.widget.compact(modelData.split.cacheWrite || 0)
-                      + " · out " + panel.widget.compact(modelData.split.output || 0)
-                  }
-                  Caption {
-                    text: "cache read " + panel.widget.compact(modelData.split.cacheRead || 0)
-                      + " · " + Math.round(panel.cacheShare(modelData.split) * 100) + "% of all input"
-                    color: modelData.accent
-                    font.bold: true
-                  }
-                }
-                Item {
-                  Layout.fillWidth: true
-                  implicitHeight: Style.space(7)
-                  Rectangle { anchors.fill: parent; radius: height / 2; color: panel.faint }
-                  Row {
-                    id: mixRow
-                    anchors.fill: parent
-                    readonly property real grow: panel.reveal
-                    Rectangle {
-                      height: parent.height
-                      width: parent.width * Number(modelData.split.input || 0) / total * mixRow.grow
-                      color: Util.alpha(modelData.accent, 0.45)
-                      Behavior on width { NumberAnimation { duration: 500; easing.type: Easing.OutCubic } }
-                    }
-                    Rectangle {
-                      height: parent.height
-                      width: parent.width * Number(modelData.split.cacheWrite || 0) / total * mixRow.grow
-                      color: Util.alpha(modelData.accent, 0.75)
-                      Behavior on width { NumberAnimation { duration: 500; easing.type: Easing.OutCubic } }
-                    }
-                    Rectangle {
-                      height: parent.height
-                      width: parent.width * Number(modelData.split.output || 0) / total * mixRow.grow
-                      color: modelData.accent
-                      Behavior on width { NumberAnimation { duration: 500; easing.type: Easing.OutCubic } }
-                    }
-                  }
-                }
-              }
-            }
-
-            PanelSectionHeader {
-              Layout.fillWidth: true
-              text: "CLAUDE BY MODEL"
-              foreground: panel.foreground
-              fontFamily: panel.fontFamily
-              visible: panel.showClaude && modelRepeater.count > 0
-            }
-
-            Repeater {
-              id: modelRepeater
-              readonly property var rows: panel.showClaude
-                ? panel.sortedModels(panel.svc ? panel.svc.claudeByModel : ({})) : []
-              model: rows.slice(0, panel.maxRows)
-              delegate: RowLayout {
-                required property var modelData
-                readonly property real share: panel.svc && panel.svc.claudeTotal > 0
-                  ? modelData.tokens / panel.svc.claudeTotal : 0
-                Layout.fillWidth: true
-                spacing: Style.space(8)
-                Body { text: panel.prettyModel(modelData.id); Layout.preferredWidth: Style.space(110) }
-                Gauge { fraction: share; accent: panel.widget.claudeHot }
-                Caption { text: Math.round(share * 100) + "%"; Layout.preferredWidth: Style.space(30); horizontalAlignment: Text.AlignRight }
-                Body { text: panel.widget.compact(modelData.tokens); color: panel.widget.claudeHot; font.bold: true; Layout.preferredWidth: Style.space(44); horizontalAlignment: Text.AlignRight }
-              }
-            }
-            Caption {
-              visible: modelRepeater.rows.length > panel.maxRows
-              text: "+ " + (modelRepeater.rows.length - panel.maxRows) + " more, smaller"
-              Layout.fillWidth: true
-            }
-
-            PanelSectionHeader {
-              Layout.fillWidth: true
-              text: "GROK BY MODEL"
-              foreground: panel.foreground
-              fontFamily: panel.fontFamily
-              visible: panel.showGrok && grokModelRepeater.count > 0
-            }
-
-            Repeater {
-              id: grokModelRepeater
-              readonly property var rows: panel.showGrok
-                ? panel.sortedModels(panel.svc ? panel.svc.grokByModel : ({})) : []
-              model: rows.slice(0, panel.maxRows)
-              delegate: RowLayout {
-                required property var modelData
-                readonly property real share: panel.svc && panel.svc.grokTotal > 0
-                  ? modelData.tokens / panel.svc.grokTotal : 0
-                Layout.fillWidth: true
-                spacing: Style.space(8)
-                Body { text: panel.prettyModel(modelData.id); Layout.preferredWidth: Style.space(110) }
-                Gauge { fraction: share; accent: panel.widget.grokHot }
-                Caption { text: Math.round(share * 100) + "%"; Layout.preferredWidth: Style.space(30); horizontalAlignment: Text.AlignRight }
-                Body { text: panel.widget.compact(modelData.tokens); color: panel.widget.grokHot; font.bold: true; Layout.preferredWidth: Style.space(44); horizontalAlignment: Text.AlignRight }
-              }
-            }
-            Caption {
-              visible: grokModelRepeater.rows.length > panel.maxRows
-              text: "+ " + (grokModelRepeater.rows.length - panel.maxRows) + " more, smaller"
-              Layout.fillWidth: true
+          Repeater {
+            model: ["claude", "codex", "grok", "kimi"]
+            delegate: SubCard {
+              required property string modelData
+              agent: modelData
             }
           }
 
-          // ════ LOCAL ═════════════════════════════════════════════════════════
-          ColumnLayout {
-            id: localCol
+          // The local GPU is a card like the rest. It has no plan to run out
+          // of, so it leads with what it saved instead.
+          Rectangle {
+            id: localCard
             visible: panel.showLocal
-            x: columns.rightX
-            width: columns.rightWidth
-            spacing: Style.space(8)
+            Layout.fillWidth: visible
+            Layout.fillHeight: true
+            Layout.preferredWidth: visible ? 1 : 0
+            Layout.minimumWidth: 0
+            implicitHeight: visible ? localBody.implicitHeight + Style.space(26) : 0
+            radius: Style.cornerRadius
+            color: Util.alpha(panel.widget.localHot, 0.055)
+            border.width: 1
+            border.color: Util.alpha(panel.localState, 0.32)
             opacity: panel.reveal
-            transform: Translate { y: (1 - panel.reveal) * 10 }
+            transform: Translate { y: (1 - panel.reveal) * 12 }
+
+            // No plan to run out of, so the only reason that applies here is
+            // "burning now": the GPU card lights while the GPU is working.
+            CardGlow {
+              tone: panel.widget.localHot
+              strength: localCard.visible && panel.glowMode === "burn" && panel.localActive ? 0.8 : 0
+              breathe: true
+              corner: localCard.radius
+            }
+
+            Rectangle {
+              anchors.top: parent.top
+              anchors.horizontalCenter: parent.horizontalCenter
+              width: parent.width - Style.space(24)
+              height: 2
+              radius: 1
+              color: panel.localState
+              opacity: panel.localActive ? 0.85 : 0.35
+            }
+
+            ColumnLayout {
+              id: localBody
+              anchors.fill: parent
+              anchors.margins: Style.space(13)
+              spacing: Style.space(8)
+
 
             RowLayout {
               Layout.fillWidth: true
@@ -1877,7 +2228,7 @@ Panel {
 
             Caption {
               visible: residentRepeater.count === 0
-              text: panel.localOnline ? "nothing warm — pick a model below and load it" : (panel.svc ? panel.svc.localError : "")
+              text: panel.localOnline ? "nothing warm: pick a model below and load it" : (panel.svc ? panel.svc.localError : "")
               Layout.fillWidth: true
               wrapMode: Text.WordWrap
               elide: Text.ElideNone
@@ -1959,6 +2310,9 @@ Panel {
               wrapMode: Text.WordWrap
               elide: Text.ElideNone
             }
+
+              Item { Layout.fillHeight: true }
+            }
           }
         }
 
@@ -1970,13 +2324,9 @@ Panel {
           Caption {
             Layout.fillWidth: true
             text: panel.svc && panel.svc.lastError !== "" ? panel.svc.lastError
-              : (panel.showClaude ? "Claude" : "")
-                + (panel.showClaude && panel.showCodex ? " ◄ now ► " : "")
-                + (panel.showCodex ? "Codex" : "")
-                + (panel.showGrok ? ((panel.showClaude || panel.showCodex) ? "  │ Grok" : "Grok") : "")
-                + (panel.showLocal ? "  ║  " + panel.boxName : "")
-                + "  ·  colour is heat"
-                + (panel.showLocal ? "  ·  cloud is tokens per bucket, " + panel.boxName + " is load per second" : "")
+              : "the dashed diagonal is an even spend: a line above it is over budget"
+                + "  ·  click a headline to flip budget and tokens"
+                + (panel.glowMode !== "off" ? "  ·  a card glows for: " + panel.glowLabel() + " (SETUP)" : "")
             color: panel.svc && panel.svc.lastError !== "" ? Color.urgent : panel.dim
           }
           Caption {

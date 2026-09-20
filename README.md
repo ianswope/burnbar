@@ -99,43 +99,53 @@ Motion is data, never decoration:
 
 ## The cockpit
 
-Left click the strip. The panel is two columns at a fixed width, fitted to its
-content, and it never scrolls — the whole instrument is one glance. Left is
-metered cloud spend in tokens; right is the Ollama box in watts, degrees and
-megabytes. Different money, different units, so they never share a column.
-Everything grows into place on open, then moves only when the data does.
+Left click the strip. One card per subscription, side by side at equal width,
+and the panel never scrolls: width is the remedy, never a scrollbar. A
+subscription that is not ticked in SETUP has no card, and one that burned
+nothing in the window folds its burn half down to a single line. The local GPU
+is a card like the rest.
 
-**Header** — tokens burned in the exact trailing window (fresh input, cache
+**Header.** Tokens burned in the exact trailing window (fresh input, cache
 writes and output; cache reads are left out, and they are billed too, at a
-lower rate), turns and sessions across both cloud agents, and a refresh
-button.
+lower rate), turns and sessions across the cloud agents, the share kept on
+localhost, a SETUP button and a refresh button.
 
-**Three tiles** — Claude, Codex and nano, each with its own hue: turns,
-sessions, tokens per minute, when the peak bucket happened, and how long ago
-the agent was last active. The nano tile shows state, warm-model count and
-watts, plus the session's peak load and power.
+**A subscription card**, top to bottom:
 
-**Cloud column**
+- *Name and verdict.* ON TRACK, AT PACE, OVER or WAY OVER: the one word the
+  card is really about.
+- *Headline.* Budget (how much of the plan is spent) or tokens (raw burn in
+  the window). Click it to flip, or pick one in SETUP. A subscription whose
+  quota cannot be measured falls back to tokens.
+- *Burndown.* The dashed diagonal is an even spend across the window. The
+  solid line is what actually happened, and a dashed projection carries the
+  current rate to the reset or to the moment the plan runs dry. A line above
+  the diagonal is over budget.
+- *The sentence.* Spent against elapsed, what you can spend per hour and still
+  make it, when the plan runs dry at this rate, when you are back on pace if
+  you stop, and when to stop today so tomorrow keeps its own share.
+- *Windows.* Every limit the provider reports, each with a gauge, the reset
+  time and a tick for where an even spend would be. 5-hour session windows are
+  hidden unless you turn them on in SETUP. A window whose reset has passed
+  reads "rolled over" with the percentage withheld, and a record that is stale
+  or carries a status ("Sign-in expired") says so in red.
+- *Burn.* Tokens per minute over the last five minutes, the last hour and the
+  whole window, with one bar per bucket on the same heat ramp as the strip.
+- *Token mix.* Input, cache write and output, with cache reads on their own
+  line and their share of everything the model took in. That is a token share,
+  not a cost saving.
+- *By model.* Spend split by model with share bars.
 
-- *Burn over time* — Claude grows upward, Codex downward, one bar per bucket,
-  coloured on the same heat ramp as the strip. Hour labels underneath, the
-  peak of each agent flagged at the top right, and the live bucket breathes
-  until the window rolls.
-- *Rate* — tokens per minute for each agent over three horizons: the last
-  five minutes, the last hour and the whole window, each measured exactly
-  from timestamped points rather than from buckets.
-- *Token mix* — input, cache write and output per agent, with cache reads on
-  their own line and their share of everything the model took in. That is a
-  token share, not a cost saving: cache hits are billed too, at a lower rate.
-  Cache reads are kept out of the heat map but visible here on purpose.
-- *Plan limits* — every limit Omarchy's agent-usage records track (Claude
-  session, weekly and any extra weekly buckets; Codex weekly), each with a
-  countdown, the wall-clock reset time and a percentage bar. A window whose
-  reset time has passed reads "rolled over · awaiting refresh" with the
-  percentage withheld, and a record that is stale or carries a status
-  ("Sign-in expired") says so under the header, in red.
-- *Claude by model* — spend split by model with share bars, so you can see
-  which model actually ate the window.
+**The glow.** A card lights up for one reason, which you choose in SETUP:
+over pace (the default), burning now, budget spent, time to stop, or off. Over
+pace climbs amber to red and breathes while there is still something to slow
+down; a window that is already spent out burns steady. Burning now also lights
+the local GPU card while the GPU is working.
+
+**SETUP.** Every option in one place, three columns, no scrolling:
+subscriptions (tick any), card headline, card glow, budget windows, history
+window, warnings, and the toggles for the strip on the bar. Each row writes
+through the bar, so it survives a restart.
 
 **Local column**
 
@@ -335,9 +345,13 @@ Set from the Omarchy plugin settings UI, or in `shell.json`.
 
 | Key | Default | Meaning |
 |---|---|---|
-| `width` | 158 | Minimum width in px — the floor the strip grows from, or its fixed width with `stretch` off (raised automatically if too narrow for the configured cells) |
-| `stretch` | true | Fill the free room between the strip and the next section of the bar |
-| `maxWidth` | 1200 | Ceiling for the fill, px |
+| `width` | 150 | Minimum width in px: the floor the strip grows from, or its fixed width with `stretch` off (raised automatically if too narrow for the configured cells) |
+| `stretch` | false | Fill the free room between the strip and the next section of the bar. Off means a fixed size |
+| `lanes` | `""` | Comma list of subscriptions to show (`claude,codex,grok,kimi`). Empty means every lane this machine knows |
+| `hero` | `budget` | Card headline: `budget` or `tokens` |
+| `glow` | `pace` | What lights a card up: `pace`, `burn`, `spent`, `stop` or `off` |
+| `showSession` | false | Show 5-hour session windows on the cards |
+| `maxWidth` | 2400 | Ceiling for the fill, px |
 | `stretchGap` | 14 | Breathing room kept between the strip and the neighbour it grows towards, px |
 | `bars` | 12 | Cells per cloud agent (the collector makes exactly this many buckets) |
 | `windowMinutes` | 360 | How far back the cloud lanes and the cockpit chart reach |

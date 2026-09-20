@@ -21,9 +21,9 @@ def load(now_ms=NOW):
     """The pace helpers, with the module-level clock and sample store faked."""
     tree = ast.parse((REPO / "bin" / "burnbar-collect").read_text())
     want_fn = {"window_ms_for", "recent_rate_per_hour", "pace_for", "parse_iso_ms",
-               "local_midnight_ms", "norm_percent", "window_id"}
+               "local_midnight_ms", "norm_percent", "window_id", "burndown_series"}
     want_const = {"RATE_WINDOW_MS", "RATE_MIN_SPAN_MS", "DAILY_MIN_WINDOW_MS",
-                  "SAMPLE_MAX_AGE_MS", "FUTURE_SLACK_MS", "MALFORMED"}
+                  "SAMPLE_MAX_AGE_MS", "FUTURE_SLACK_MS", "MALFORMED", "SERIES_MAX_POINTS"}
     body = [n for n in tree.body
             if isinstance(n, (ast.Import, ast.ImportFrom))
             or (isinstance(n, ast.FunctionDef) and n.name in want_fn)
@@ -101,6 +101,51 @@ class WindowIdTests(unittest.TestCase):
         ns = load()
         base = NOW + 6 * DAY
         self.assertNotEqual(ns["window_id"](base), ns["window_id"](base + 60_000))
+
+
+class BurndownSeriesTests(unittest.TestCase):
+    """The line a 2.0 card draws: x is the window elapsed, y the plan spent."""
+
+    def test_the_series_is_normalised_and_ends_on_the_present(self):
+        ns = load()
+        resets = ns["window_id"](NOW + 3 * DAY)
+        window = 7 * DAY
+        start = resets - window
+        pts = [(start + DAY, 0.10, resets), (start + 2 * DAY, 0.25, resets)]
+        s = ns["burndown_series"](pts, resets, window, 0.40)
+        self.assertEqual(len(s), 3)
+        self.assertAlmostEqual(s[0][0], 1 / 7, places=3)
+        self.assertAlmostEqual(s[0][1], 0.10, places=5)
+        # The last point is now, at the percentage the card's headline shows.
+        self.assertAlmostEqual(s[-1][0], (NOW - start) / window, places=3)
+        self.assertAlmostEqual(s[-1][1], 0.40, places=5)
+        for x, y in s:
+            self.assertTrue(0 <= x <= 1 and 0 <= y <= 1)
+
+    def test_another_windows_samples_never_leak_into_this_line(self):
+        ns = load()
+        resets = ns["window_id"](NOW + 3 * DAY)
+        older = resets - 7 * DAY
+        pts = [(NOW - DAY, 0.90, older), (NOW - HOUR, 0.20, resets)]
+        s = ns["burndown_series"](pts, resets, 7 * DAY, 0.22)
+        self.assertEqual([round(p[1], 2) for p in s], [0.20, 0.22])
+
+    def test_a_long_window_is_thinned_not_shipped_whole(self):
+        ns = load()
+        resets = ns["window_id"](NOW + DAY)
+        window = 7 * DAY
+        start = resets - window
+        pts = [(start + i * 60_000 * 5, i / 2000.0, resets) for i in range(1, 1500)]
+        s = ns["burndown_series"](pts, resets, window, 0.76)
+        self.assertLessEqual(len(s), ns["SERIES_MAX_POINTS"])
+        self.assertAlmostEqual(s[-1][1], 0.76, places=5)
+
+    def test_no_samples_is_still_a_point_the_card_can_draw(self):
+        ns = load()
+        resets = ns["window_id"](NOW + 3 * DAY)
+        s = ns["burndown_series"]([], resets, 7 * DAY, 0.05)
+        self.assertEqual(len(s), 1)
+        self.assertAlmostEqual(s[0][1], 0.05, places=5)
 
 
 class PaceTests(unittest.TestCase):
