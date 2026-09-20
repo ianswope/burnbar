@@ -1326,17 +1326,30 @@ def local_midnight_ms():
     return int(d.replace(hour=0, minute=0, second=0, microsecond=0).timestamp() * 1000)
 
 
+def window_id(resets_ms):
+    """Which window instance this is, to the minute. Providers re-state the same
+    reset with millisecond jitter - Claude's weekly moved across 56 distinct
+    values inside one second - and matching those exactly meant a sample almost
+    never belonged to "this" window, so no rate could ever form and no
+    acknowledgement could ever stick."""
+    return (int(resets_ms) // 60_000) * 60_000
+
+
+
 def pace_for(row, key, live):
     """The pace block for one limit row. Unknowns are -1 (a rate we cannot
     measure) or 0 (a moment that does not apply), never an invented number."""
     pct = row.get("percent")
-    resets = parse_iso_ms(row.get("resetsAt"))
+    resets = window_id(parse_iso_ms(row.get("resetsAt")))
     # resetsMs identifies WHICH window instance this is. A warning answered in
     # one window must not stay answered into the next, and backOnPaceAt cannot
     # play that role: it moves every time the percentage does.
     out = {"windowMs": 0, "resetsMs": 0, "elapsed": -1, "ratio": -1, "allowancePerHour": -1,
            "ratePerHour": -1, "projected": -1, "dryAt": 0, "backOnPaceAt": 0,
-           "todayUsed": -1, "todayAllowance": -1, "overDaily": False}
+           "todayUsed": -1, "todayAllowance": -1, "overDaily": False,
+           # Today's share of what is left, and when to put this subscription
+           # down so tomorrow still has its own.
+           "todayCeiling": -1, "stopInMs": -1, "stopAtMs": 0, "recoverInMs": -1}
     if not isinstance(pct, (int, float)) or pct < 0 or not resets:
         return out
     points = PACE["samples"].get(key) or []
@@ -1370,6 +1383,21 @@ def pace_for(row, key, live):
     # Stopping now, the window catches up with what was spent at this moment.
     if out["ratio"] > 1.0:
         out["backOnPaceAt"] = int(resets - window * (1.0 - pct))
+    # Fred, 2026-09-20: "tell you that you should stop for the day with this sub
+    # in $time to recover for the next day." An even spend gives the next 24
+    # hours this slice of what is left; burning past it today is borrowing from
+    # tomorrow. At the measured rate that slice has a clock on it.
+    if window >= DAILY_MIN_WINDOW_MS and hours_left > 0:
+        ceiling = max(0.0, (1.0 - pct) * min(1.0, 24.0 / hours_left))
+        out["todayCeiling"] = ceiling
+        # A rate near zero divides into "stop in 165 hours", which is not advice.
+        # The clock is only worth printing when it lands inside the window.
+        if rate is not None and rate > 0.0005:
+            hours = ceiling / rate
+            if hours * 3600_000 < left_ms:
+                out["stopInMs"] = int(hours * 3600_000)
+                out["stopAtMs"] = int(now_ms + hours * 3600_000)
+
     if window >= DAILY_MIN_WINDOW_MS:
         midnight = local_midnight_ms()
         before = [p for p in points if p[0] <= midnight and p[2] == resets]
@@ -1380,6 +1408,12 @@ def pace_for(row, key, live):
             # An even pace spends today the 24-hour share of what was left.
             out["todayAllowance"] = max(0.0, (1.0 - at_midnight) * min(1.0, 24.0 / left_then))
             out["overDaily"] = out["todayUsed"] > out["todayAllowance"] > 0
+            # Already past today's share: the allowance accrues again at
+            # todayCeiling per 24 hours, so that is how long being square takes.
+            ceiling = out["todayCeiling"]
+            if out["overDaily"] and ceiling > 0:
+                over = out["todayUsed"] - out["todayAllowance"]
+                out["recoverInMs"] = int((over / (ceiling / 24.0)) * 3600_000)
     return out
 
 
@@ -1395,7 +1429,7 @@ def with_pace(agent_payload, agent_name):
         key = "%s|%s" % (agent_name, str(row.get("label") or "")[:64])
         row["pace"] = pace_for(row, key, live)
         pct = row.get("percent")
-        resets = parse_iso_ms(row.get("resetsAt"))
+        resets = window_id(parse_iso_ms(row.get("resetsAt")))
         if not isinstance(pct, (int, float)) or pct < 0 or not resets:
             continue
         points = PACE["samples"].get(key) or []

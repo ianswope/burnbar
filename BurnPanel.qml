@@ -252,8 +252,25 @@ Panel {
     if (back > 0 && (!isFinite(resets) || back < resets - 60_000))
       parts.push("back on pace " + dayClockText(new Date(back).toISOString()) + " if you stop")
 
-    if (p.overDaily === true) parts.push("today's budget eaten")
+    // The rate says how fast; this says when to put it down so tomorrow still
+    // has its own share of what is left.
+    var stopIn = Number(p.stopInMs)
+    if (stopIn > 0)
+      parts.push("stop in " + spanText(stopIn) + " (" + clockText(Number(p.stopAtMs)) + ") to leave tomorrow whole")
+
+    if (p.overDaily === true) {
+      var rec = Number(p.recoverInMs)
+      parts.push(rec > 0 ? "today's share is gone · square again in " + spanText(rec) + " if you stop"
+                         : "today's share is gone")
+    }
     return { text: parts.join("  ·  "), urgent: over }
+  }
+
+  // "2h 10m", "45m" - a duration a human can act on, never a decimal of hours.
+  function spanText(ms) {
+    var mins = Math.max(0, Math.round(Number(ms) / 60000))
+    var h = Math.floor(mins / 60), m = mins % 60
+    return h > 0 ? (m > 0 ? h + "h " + m + "m" : h + "h") : m + "m"
   }
 
   function dayClockText(iso) {

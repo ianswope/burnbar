@@ -143,6 +143,12 @@ ok "a Kimi turn is not billed to Claude"
 
 # Grok has no stock probe, so its record freezes while its log keeps moving.
 # Picking between two sources has to go on evidence, not on argument order.
+# A duplicate name at a QML root scope makes the whole type unavailable, and the
+# bar simply goes empty. qmllint parses it happily; only the shell complains.
+python3 -m unittest discover -s tests -p 'test_qml_duplicates.py' -q >/dev/null \
+  || fail "QML duplicate declaration tests"
+ok "no QML file declares a function, handler or property twice at its root"
+
 # Budget pace: on-pace is used% == elapsed%, and every unknown stays unknown.
 python3 -m unittest discover -s tests -p 'test_pace_math.py' -q >/dev/null \
   || fail "pace math tests"

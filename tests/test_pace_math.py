@@ -21,7 +21,7 @@ def load(now_ms=NOW):
     """The pace helpers, with the module-level clock and sample store faked."""
     tree = ast.parse((REPO / "bin" / "burnbar-collect").read_text())
     want_fn = {"window_ms_for", "recent_rate_per_hour", "pace_for", "parse_iso_ms",
-               "local_midnight_ms", "norm_percent"}
+               "local_midnight_ms", "norm_percent", "window_id"}
     want_const = {"RATE_WINDOW_MS", "RATE_MIN_SPAN_MS", "DAILY_MIN_WINDOW_MS",
                   "SAMPLE_MAX_AGE_MS", "FUTURE_SLACK_MS", "MALFORMED"}
     body = [n for n in tree.body
@@ -88,6 +88,21 @@ class RateTests(unittest.TestCase):
         self.assertAlmostEqual(r, 0.10, places=6)
 
 
+class WindowIdTests(unittest.TestCase):
+    """The jitter that stopped every rate from forming, 2026-09-20."""
+
+    def test_the_same_window_stated_with_jitter_is_one_window(self):
+        ns = load()
+        base = NOW + 6 * DAY
+        ids = {ns["window_id"](base + ms) for ms in (0, 53, 407, 828, 950)}
+        self.assertEqual(len(ids), 1)
+
+    def test_windows_a_minute_apart_stay_different(self):
+        ns = load()
+        base = NOW + 6 * DAY
+        self.assertNotEqual(ns["window_id"](base), ns["window_id"](base + 60_000))
+
+
 class PaceTests(unittest.TestCase):
     def row(self, pct, resets_ms, label="Weekly (7-day)"):
         return {"label": label, "percent": pct, "resetsAt": iso(resets_ms)}
@@ -101,7 +116,9 @@ class PaceTests(unittest.TestCase):
 
     def test_a_blown_window_reports_no_allowance_and_recovers_only_at_the_reset(self):
         ns = load()
-        resets = NOW + 6 * DAY
+        # Rounded, because a window is identified to the minute: providers
+        # re-state the same reset with millisecond jitter.
+        resets = ns["window_id"](NOW + 6 * DAY)
         p = ns["pace_for"](self.row(1.0, resets), "codex|w", True)
         self.assertGreater(p["ratio"], 1.0)
         self.assertEqual(p["allowancePerHour"], 0.0)
@@ -110,7 +127,7 @@ class PaceTests(unittest.TestCase):
 
     def test_half_spent_early_comes_back_on_pace_midway_through_the_window(self):
         ns = load()
-        resets = NOW + 6 * DAY
+        resets = ns["window_id"](NOW + 6 * DAY)
         p = ns["pace_for"](self.row(0.5, resets), "claude|w", True)
         self.assertGreater(p["ratio"], 1.0)
         # reset - L*(1-p) = reset - 3.5 days
@@ -147,18 +164,23 @@ class PaceTests(unittest.TestCase):
 
     def test_at_this_rate_projects_past_the_reset_and_names_the_dry_moment(self):
         ns = load()
-        resets = NOW + 10 * HOUR
+        # Samples belong to a window by its rounded id, which is what lets a
+        # rate form at all: keyed on the raw value, Claude's jitter put 56
+        # different windows inside one second and no two samples ever matched.
+        resets = ns["window_id"](NOW + 10 * HOUR)
         # 40% gone and burning 10 points an hour: 6 hours of headroom, 10 to go.
         ns["PACE"]["samples"]["claude|w"] = [
             (NOW - 2 * HOUR, 0.20, resets), (NOW - HOUR, 0.30, resets), (NOW, 0.40, resets)]
         p = ns["pace_for"](self.row(0.40, resets), "claude|w", True)
         self.assertAlmostEqual(p["ratePerHour"], 0.10, places=6)
-        self.assertAlmostEqual(p["projected"], 1.40, places=3)
+        # 2 places, not 3: rounding the reset down to its minute shortens the
+        # window by up to 60s, which moves the projection in the third decimal.
+        self.assertAlmostEqual(p["projected"], 1.40, places=2)
         self.assertAlmostEqual((p["dryAt"] - NOW) / HOUR, 6.0, places=3)
 
     def test_a_rate_that_still_lands_inside_the_window_names_no_dry_moment(self):
         ns = load()
-        resets = NOW + 10 * HOUR
+        resets = ns["window_id"](NOW + 10 * HOUR)
         ns["PACE"]["samples"]["claude|w"] = [
             (NOW - 2 * HOUR, 0.10, resets), (NOW, 0.12, resets)]
         p = ns["pace_for"](self.row(0.12, resets), "claude|w", True)

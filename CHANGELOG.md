@@ -1,5 +1,29 @@
 # Changelog
 
+## 1.27.0 — 2026-09-20
+
+### Added
+- **"Stop in 12h 8m (1:04 AM) to leave tomorrow whole."** Fred: *"tell you that
+  you should stop for the day with this sub in $time to recover for the next
+  day."* A rate per hour says how fast, not when to put it down. Each limit now
+  works out the share of what is left that belongs to the next 24 hours, divides
+  it by how fast the subscription is actually burning, and names the moment.
+  When today's share is already gone it says so and, if it can, how long
+  stopping takes to square it.
+
+### Fixed
+- **No rate could ever form for Claude.** Providers re-state the same reset with
+  millisecond jitter: Claude's weekly moved across 56 distinct values inside one
+  second, and samples were matched to a window by exact equality, so a sample
+  almost never belonged to "this" window. A window is now identified to the
+  minute, which also makes a dismissed warning stay dismissed. Stored samples
+  were migrated in place.
+- **A duplicate declaration made the widget vanish twice in one afternoon** (a
+  second `onOpenedChanged`, then a second `clockText`). QML allows one handler
+  per signal and one method per name; qmllint parses both happily and only the
+  shell complains, by which point the bar is empty. `tests/test_qml_duplicates.py`
+  now fails the build instead.
+
 ## 1.26.0 — 2026-09-20
 
 ### Added
