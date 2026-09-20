@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.26.0 — 2026-09-20
+
+### Added
+- **The right-click menu is multi-select.** Fred: *"on right click multi
+  selection possible."* Every lane is a tickbox and any combination can be on at
+  once: Claude and Kimi without the rest, say. The menu stays open while you
+  pick, ticking every lane or unticking the last one both mean "all of them"
+  (an empty strip helps nobody), and a single-lane pick made before this still
+  means what it said.
+
+### Fixed
+- **"1.0x over" contradicted itself.** 1.0x is exactly on target, so a ratio
+  that rounds to 1.0 now reads "at pace" and only a real overspend carries a
+  multiplier.
+
 ## 1.25.0 — 2026-09-20
 
 ### Fixed

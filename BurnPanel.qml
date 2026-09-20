@@ -42,7 +42,11 @@ Panel {
     if (s && s.grokPresent) out.push({ id: "grok", label: "Grok", accent: w.grokHot, note: paceNote(s.grokWeeklyPace) })
     if (s && s.kimiPresent) out.push({ id: "kimi", label: "Kimi", accent: w.kimiHot, note: paceNote(s.kimiMonthlyPace) })
     if (s && s.hasComputeGpu) out.push({ id: "local", label: "Local GPU", accent: w.localHot, note: "" })
-    for (var i = 0; i < out.length; i++) out[i].current = (String(w.focusAgent || "") === out[i].id)
+    // "All lanes" is ticked when nothing in particular is; every other row is
+    // ticked when that lane is in the set. Several can be ticked at once.
+    var lanes = w.focusLanes || []
+    for (var i = 0; i < out.length; i++)
+      out[i].current = out[i].id === "" ? lanes.length === 0 : lanes.indexOf(out[i].id) >= 0
     return out
   }
 
@@ -50,13 +54,16 @@ Panel {
     if (!pace) return ""
     var r = Number(pace.ratio)
     if (!(r >= 0)) return ""
-    return r > 1.0 ? (r >= 10 ? Math.round(r) : r.toFixed(1)) + "x over" : "on track"
+    // 1.0x IS on target, so a figure that rounds to 1.0 must not be printed as
+    // "1.0x over" - it contradicts the number beside it. Only a real overspend
+    // gets a multiplier.
+    if (r < 1.05) return r > 0.9 ? "at pace" : "on track"
+    return (r >= 10 ? Math.round(r) : r.toFixed(1)) + "x over"
   }
 
-  function chooseView(id) {
-    panel.widget.persist({ focus: String(id || "") })
-    panel.widget.close()
-  }
+  // Ticking a lane leaves the menu open: picking two of four should not cost
+  // two round trips through a right click.
+  function chooseView(id) { panel.widget.toggleLane(id) }
 
   readonly property color foreground: widget.bar ? widget.bar.foreground : Color.foreground
   readonly property color dim: Qt.darker(foreground, 1.5)
@@ -750,7 +757,7 @@ Panel {
 
         PanelSectionHeader {
           Layout.fillWidth: true
-          text: "SHOW ON THE ICON"
+          text: "SHOW ON THE ICON  ·  TICK ANY"
           foreground: panel.foreground
           fontFamily: panel.fontFamily
         }
@@ -773,7 +780,9 @@ Panel {
               anchors.rightMargin: Style.space(10)
               spacing: Style.space(8)
               Body {
-                text: optionRow.modelData.current ? "●" : "○"
+                // A box, not a dot: these are checkboxes now, and several of
+                // them can be ticked at the same time.
+                text: optionRow.modelData.current ? "☑" : "☐"
                 color: optionRow.modelData.current ? optionRow.modelData.accent : panel.dim
                 Layout.preferredWidth: Style.space(14)
               }

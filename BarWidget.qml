@@ -514,10 +514,49 @@ BarWidget {
       bar.shell.updateEntryInline(moduleName, entry)
   }
 
-  // What the icon is showing: "" is every lane, otherwise the one subscription
-  // Fred cycled to with a right click.
-  readonly property string focusAgent: String(setting("focus", "") || "")
-  function focusOk(id) { return focusAgent === "" || focusAgent === id }
+  // What the icon is showing: an empty list is every lane, otherwise exactly
+  // the subscriptions ticked in the right-click menu. Fred, 2026-09-20: "on
+  // right click multi selection possible" - one lane was never the only useful
+  // answer; Claude AND Kimi without the rest is.
+  readonly property var focusLanes: {
+    var raw = String(setting("lanes", "") || "").trim()
+    if (raw === "") {
+      // A single-lane pick from before multi-select still means what it said.
+      var old = String(setting("focus", "") || "").trim()
+      return old === "" ? [] : [old]
+    }
+    var out = []
+    var parts = raw.split(",")
+    for (var i = 0; i < parts.length; i++) {
+      var id = parts[i].trim()
+      if (id !== "" && out.indexOf(id) < 0) out.push(id)
+    }
+    return out
+  }
+  function focusOk(id) { return focusLanes.length === 0 || focusLanes.indexOf(id) >= 0 }
+
+  // Tick or untick one lane. Ticking every lane, or unticking the last one,
+  // both mean "all of them": an empty strip helps nobody.
+  function toggleLane(id) {
+    if (String(id || "") === "") { persist({ lanes: "", focus: "" }); return }
+    var next = focusLanes.slice()
+    var at = next.indexOf(id)
+    if (at >= 0) next.splice(at, 1)
+    else next.push(id)
+    if (next.length === 0 || next.length >= knownLanes().length) persist({ lanes: "", focus: "" })
+    else persist({ lanes: next.join(","), focus: "" })
+  }
+
+  // Every lane this machine knows about, in strip order.
+  function knownLanes() {
+    var out = []
+    if (svc && svc.claudePresent) out.push("claude")
+    if (svc && svc.codexPresent) out.push("codex")
+    if (svc && svc.grokPresent) out.push("grok")
+    if (svc && svc.kimiPresent) out.push("kimi")
+    if (svc && svc.hasComputeGpu) out.push("local")
+    return out
+  }
 
   // What the right-click menu offers to re-arm, and what it says it will.
   readonly property int acknowledgedCount: {
