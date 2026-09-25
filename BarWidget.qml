@@ -1338,7 +1338,7 @@ BarWidget {
   property real pulseMs: 0
 
   Timer {
-    interval: 200
+    interval: 100
     running: root.pulseDemand > 0 && root.visible && !(emberClock.running && !emberClock.resting)
     repeat: true
     onTriggered: root.pulseMs += interval
