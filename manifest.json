@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "nixfred.burnbar",
   "name": "Burn Bar",
-  "version": "2.4.0",
+  "version": "2.5.0",
   "author": "nixfred",
   "license": "MIT",
   "description": "Live thermal heat map of the AIs this machine actually uses (Claude, Codex, Grok, Kimi, and local Ollama when a GPU is present), with budget pacing per subscription, quota gauges, and the share of tokens kept off frontier models.",
@@ -52,7 +52,8 @@
       "meterUnit": "ollama-meter",
       "emberFlicker": true,
       "sparks": true,
-      "themeColors": true
+      "themeColors": true,
+      "showAccounts": true
     },
     "schema": [
       {
@@ -165,6 +166,13 @@
         "key": "showGauges",
         "type": "boolean",
         "label": "Show weekly quota gauges",
+        "defaultValue": true
+      },
+      {
+        "key": "showAccounts",
+        "type": "boolean",
+        "label": "Show which account each subscription is signed in to",
+        "description": "Each card and tooltip names the login Burn Bar is reading (an email, else a name), as the tool itself records it. Turn it off before a screen share.",
         "defaultValue": true
       },
       {

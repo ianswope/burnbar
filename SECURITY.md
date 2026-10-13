@@ -20,6 +20,18 @@ files you worked on. There is no way to count per-turn tokens without reading
 them, because the token counts are interleaved with the conversation. If you
 are not comfortable with a bar widget opening those files, do not install this.
 
+**It also opens each tool's login file to read who is signed in**, so a card can
+name the account it is measuring: `~/.claude.json` (only its `oauthAccount`
+block), `~/.codex/auth.json` and `$GROK_HOME/auth.json` (default `~/.grok`).
+Those files also hold OAuth access and refresh tokens. Burn Bar parses the file,
+takes one display field (the email, else a name; for Codex the claim inside the
+ID token, which it decodes without verifying because it only labels a card), and
+lets go of the rest. A token is never copied, logged, sent anywhere or written to
+`history.json`, and the test suite fails if one appears in the output, the state
+directory or stderr. The **Account names** switch in SETUP (`showAccounts`) hides
+the label from the cards and tooltips; the collector still writes it to the
+state files below.
+
 **Burn Bar also logs in to another machine, but only when a compute GPU
 exists and `localHost` is not this machine.** Intel integrated graphics does
 not count. On a GPU-less laptop there is no ssh, no Ollama poll, and no
@@ -56,7 +68,7 @@ prompt, never the reply. The journal line is the whole record.
 ## What leaves your machine
 
 Burn Bar has no telemetry, no update check, and no remote endpoint of its
-own. Three things do generate network traffic, and you should know all three:
+own. Four things do generate network traffic, and you should know all four:
 
 1. **Omarchy's usage collectors, which Burn Bar triggers.** Every
    `limitsRefreshSec` seconds (default 300), on panel open and on refresh,
@@ -83,7 +95,13 @@ own. Three things do generate network traffic, and you should know all three:
    | `bin/burnbar-local-control load` | ssh `sudo -n /usr/local/bin/ollama-prepare.sh`, then `POST /api/show`, then `POST /api/generate` or `POST /api/embed` | Drop the box's page cache; capabilities; warm the model you picked (`keep_alive: -1`); no prompt is sent |
    | `bin/burnbar-local-control unload` | `POST /api/generate` | Evict the model you picked (`keep_alive: 0`) |
 
-3. Nothing else.
+3. **Kimi's API**, only when `KIMI_API_KEY` is set (in the environment or in
+   `~/.env`). `GET {KIMI_BASE_URL}/me`, by default `https://api.kimi.com/coding/v1/me`,
+   about twice a day, for the plan tier and the email or nickname of the key's
+   owner (the account named on the Kimi card); and `GET .../usages` about every
+   four minutes for the quota. The key goes in an `Authorization` header, never
+   on a command line, and is never written to disk by Burn Bar.
+4. Nothing else.
 
 The Ollama URL is validated (http/https with a host, no query or fragment)
 before use, responses are capped at 1 MiB, model counts and string fields are
@@ -98,7 +116,8 @@ timer tick.
 
 | Path | Contents |
 |---|---|
-| `~/.local/state/omarchy/burnbar/history.json` | Bucketed token totals, per-agent splits, model names, and plan-limit percentages |
+| `~/.local/state/omarchy/burnbar/history.json` | Bucketed token totals, per-agent splits, model names, plan-limit percentages, and per subscription the label of the signed-in account (an email or a name, at most 80 printable characters) |
+| `~/.local/state/omarchy/burnbar/kimi-plan.json` | Kimi's plan tier, the email or nickname of the key's owner from Kimi's `/me`, and when it was fetched |
 | `~/.local/state/omarchy/burnbar/scan-cache.json` | Per transcript file: size, mtime, byte offset, a 48-byte fingerprint of the bytes before that offset, the extracted numeric points (timestamp, counts, model name, Claude `message.id`), and for Codex the last cumulative counter. For the meter journal: the last cursor and the points |
 | `~/.local/state/omarchy/burnbar/collect.lock` | Empty; held while a collector runs so two never race |
 

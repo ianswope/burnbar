@@ -480,6 +480,16 @@ page cache. The meter on that box logs one line per request, path,
 model, status, two token counts, latency and the client address, and never
 the prompt or the reply.
 
+Each card also names the account it is reading (an email, else a name), for
+anyone who runs more than one subscription. That comes from the login file each
+tool already keeps: the `oauthAccount` block of `~/.claude.json`, the ChatGPT
+identity in `~/.codex/auth.json`, `$GROK_HOME/auth.json`, and the owner of the
+Kimi key that Kimi's own `/me` call returns. Those files also hold the tokens
+that grant access; Burn Bar takes the one display field and drops the rest, and
+the tests fail if any token reaches its output. The **Account names** switch in
+SETUP hides it. It shows the default config of each tool, not a profile chosen
+with an environment variable.
+
 It also runs Omarchy's own usage collectors every few minutes to keep the plan
 limits fresh. Those are Omarchy's, not Burn Bar's, and the Claude one contacts
 Anthropic's usage endpoint with the sign-in Claude Code already saved; Burn
@@ -500,6 +510,7 @@ Set from the Omarchy plugin settings UI, or in `shell.json`.
 | `glow` | `pace` | What lights a card up: `pace`, `burn`, `spent`, `stop` or `off` |
 | `showSession` | false | Always list 5-hour session windows on the cards. Off, Claude's still appears on its card and the strip while it is the one about to run out |
 | `advice` | true | With two or more subscriptions, name the one to use next on the strip when nothing is over pace. The local GPU is never suggested |
+| `showAccounts` | true | Name the login each subscription is signed in to, on its card and in its tooltip. Turn it off before a screen share |
 | `maxWidth` | 2400 | Ceiling for the fill, px |
 | `stretchGap` | 14 | Breathing room kept between the strip and the neighbour it grows towards, px |
 | `bars` | 12 | Cells per cloud agent (the collector makes exactly this many buckets) |

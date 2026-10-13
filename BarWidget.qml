@@ -119,6 +119,9 @@ BarWidget {
   }
   readonly property int configuredWidth: Math.max(minWidthForCells, boundedInt("width", 150, 110, 400))
   readonly property bool showGauges: setting("showGauges", true) !== false
+  // Who each subscription is signed in to: on the cards and in the tooltips. On by
+  // default; off for a screen share, where an email is not for everyone watching.
+  readonly property bool showAccounts: setting("showAccounts", true) !== false
   // Local settings stay in the plugin schema so a GPU box can be pointed at,
   // but the lane itself only appears when a compute GPU was actually found.
   readonly property bool showLocal: setting("showLocal", true) !== false && (svc ? svc.hasComputeGpu : false) && focusOk("local")
@@ -447,6 +450,16 @@ BarWidget {
     return h > 0 ? (r > 0 ? h + "h" + r + "m" : h + "h") : m + "m"
   }
 
+  // "signed in as ..." for the tooltip, or nothing when the tool does not say or
+  // the switch is off. The detail (an organisation) rides on the same line.
+  function accountLine(id) {
+    if (!showAccounts || !svc) return ""
+    var who = String(svc[id + "Account"] || "")
+    if (who === "") return ""
+    var more = String(svc[id + "AccountDetail"] || "")
+    return "\nsigned in as " + who + (more !== "" ? "  ·  " + more : "")
+  }
+
   // Guidance under the numbers: where this sub stands, and whether it is the
   // one to reach for. The same words the cockpit uses.
   function adviceLines(id) {
@@ -468,7 +481,7 @@ BarWidget {
       return "CLOUD FAULT: " + (svc.lastError || "collector failed")
     var span = windowLabel(svc.windowMinutes || 360)
     if (zone === zoneClaude)
-      return "CLAUDE  ·  " + compact(svc.claudeTotal) + " tokens / last " + span
+      return "CLAUDE  ·  " + compact(svc.claudeTotal) + " tokens / last " + span + accountLine("claude")
         + "\nnow " + compact(svc.claudeLatest) + " this bucket  ·  " + svc.claudeSessions + " sessions"
         + "\nweekly quota " + quotaText(svc.claudeWeekly, svc.claudeLimitsMeasuredAt)
         + (claudeSessionHeat.hot ? "\n5-hour window " + Math.round(claudeSessionHeat.used * 100) + "%  ·  resets "
@@ -476,22 +489,22 @@ BarWidget {
             + " (in " + spanWords(claudeSessionHeat.resetsMs - Date.now()) + ")" : "")
         + adviceLines("claude")
     if (zone === zoneCodex)
-      return "CODEX  ·  " + compact(svc.codexTotal) + " tokens / last " + span
+      return "CODEX  ·  " + compact(svc.codexTotal) + " tokens / last " + span + accountLine("codex")
         + "\nnow " + compact(svc.codexLatest) + " this bucket  ·  " + svc.codexSessions + " sessions"
         + "\nweekly quota " + quotaText(svc.codexWeekly, svc.codexLimitsMeasuredAt)
         + adviceLines("codex")
     if (zone === zoneKimi)
-      return "KIMI  ·  " + compact(svc.kimiTotal) + " tokens / last " + span
+      return "KIMI  ·  " + compact(svc.kimiTotal) + " tokens / last " + span + accountLine("kimi")
         + "\nnow " + compact(svc.kimiLatest) + " this bucket  ·  " + svc.kimiSessions + " sessions"
         + "\n" + (svc.kimiPlanTier !== "" ? svc.kimiPlanTier + " plan" : "plan unknown")
         + "  ·  monthly quota " + quotaText(svc.kimiMonthly, svc.kimiLimitsMeasuredAt)
         + adviceLines("kimi")
     if (zone === zoneZcode)
-      return "ZCODE  ·  " + compact(svc.zcodeTotal) + " tokens / last " + span
+      return "ZCODE  ·  " + compact(svc.zcodeTotal) + " tokens / last " + span + accountLine("zcode")
         + "\nnow " + compact(svc.zcodeLatest) + " this bucket  ·  " + svc.zcodeSessions + " sessions"
         + adviceLines("zcode")
     if (zone === zoneGrok)
-      return "GROK  ·  " + compact(svc.grokTotal) + " tokens / last " + span
+      return "GROK  ·  " + compact(svc.grokTotal) + " tokens / last " + span + accountLine("grok")
         + "\nnow " + compact(svc.grokLatest) + " this bucket  ·  " + svc.grokSessions + " sessions"
         + "\n" + (svc.grokPlanTier !== "" ? svc.grokPlanTier + " plan  ·  " : "")
         + "weekly quota " + quotaText(svc.grokWeekly, svc.grokLimitsMeasuredAt)

@@ -49,6 +49,7 @@ points, so "last 6h" means the last 360 minutes and "1 HOUR" means 60.
 
 import datetime
 import fcntl
+import base64
 import json
 import os
 import re
@@ -1967,7 +1968,9 @@ def refresh_kimi_plan():
     path = OUT_DIR / "kimi-plan.json"
     try:
         cached = json.loads(path.read_text())
-        if now_ms - int(cached.get("measuredAt") or 0) < KIMI_PLAN_TTL_MS:
+        # A record written before Burn Bar named accounts has no "account" key at
+        # all; that is stale on purpose, so one /me call fills it in.
+        if "account" in cached and now_ms - int(cached.get("measuredAt") or 0) < KIMI_PLAN_TTL_MS:
             return
     except (OSError, ValueError, TypeError):
         pass
@@ -1982,16 +1985,18 @@ def refresh_kimi_plan():
                                      headers={"Authorization": "Bearer " + key})
         with urllib.request.urlopen(req, timeout=4) as response:
             data = json.loads(response.read(65536).decode("utf-8", "replace"))
-        tier = str((data or {}).get("user_level_name") or "")[:40]
+        info = data if isinstance(data, dict) else {}
+        tier = str(info.get("user_level_name") or "")[:40]
+        account = clean_account(info.get("email")) or clean_account(info.get("nickname"))
     except (urllib.error.URLError, OSError, ValueError, TypeError):
         return
-    if not tier:
+    if not tier and not account:
         return
     try:
         OUT_DIR.mkdir(parents=True, exist_ok=True)
         fd, tmp = tempfile.mkstemp(dir=str(OUT_DIR), prefix=".kimi-plan.", suffix=".tmp")
         with os.fdopen(fd, "w") as stream:
-            stream.write(json.dumps({"tier": tier, "measuredAt": now_ms}))
+            stream.write(json.dumps({"tier": tier, "account": account, "measuredAt": now_ms}))
         os.replace(tmp, path)
     except OSError:
         pass
@@ -2029,6 +2034,114 @@ def with_kimi_plan(agent_payload):
     agent_payload["limitsStatus"] = ("%s plan" % tier) if (tier and not limits) else ""
     agent_payload["limitsInfo"] = True
     return agent_payload
+
+
+# ── Which account each subscription is signed in to ───────────────────────────
+# Fred, 2026-10-13: "Some people run more than one subscription like me and I
+# want to see who im loggin in as." Every tool already records who is signed in,
+# in its own file; this reads the one human-facing field (an email, else a name)
+# and nothing else. The same files hold access and refresh tokens. Those are
+# never copied, never logged, never written to history.json: the readers return
+# a label and a detail string and the rest of the object is dropped on the floor.
+ACCOUNT_MAX = 80
+ACCOUNT_FILE_MAX = 16 * 1024 * 1024
+CLAUDE_ACCOUNT_FILE = HOME / ".claude.json"
+CODEX_AUTH_FILE = HOME / ".codex" / "auth.json"
+GROK_AUTH_FILE = GROK_HOME / "auth.json"
+
+
+def clean_account(value, limit=ACCOUNT_MAX):
+    """A label that is safe to draw: one printable line. Control characters,
+    newlines and the zero-width and bidi-override marks are all non-printable,
+    so a hostile display name cannot reorder or hide what the bar shows."""
+    if not isinstance(value, str):
+        return ""
+    text = "".join(ch for ch in value if ch.isprintable()).strip()
+    return text if len(text) <= limit else text[:limit - 1].rstrip() + "\u2026"
+
+
+def read_json_object(path):
+    """The file as a dict, or {} for missing, unreadable, oversized or malformed."""
+    try:
+        if path.stat().st_size > ACCOUNT_FILE_MAX:
+            return {}
+        data = json.loads(path.read_text(errors="replace"))
+    except (OSError, ValueError, TypeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def jwt_claims(token):
+    """The claims of a JWT, read and not verified: this only labels a card, it
+    never decides anything. {} for anything that is not a JWT."""
+    try:
+        part = token.split(".")[1]
+        part += "=" * (-len(part) % 4)
+        claims = json.loads(base64.urlsafe_b64decode(part))
+    except (AttributeError, IndexError, ValueError, TypeError):
+        return {}
+    return claims if isinstance(claims, dict) else {}
+
+
+def claude_account():
+    """Claude Code keeps the signed-in account at oauthAccount in ~/.claude.json.
+    The detail is the organisation, unless it is the default "<email>'s
+    Organization" every personal account gets, which would only repeat the email."""
+    acct = read_json_object(CLAUDE_ACCOUNT_FILE).get("oauthAccount")
+    if not isinstance(acct, dict):
+        return "", ""
+    label = clean_account(acct.get("emailAddress")) or clean_account(acct.get("displayName"))
+    org = clean_account(acct.get("organizationName"))
+    if not label or (org and org.lower().startswith(label.lower())):
+        org = ""
+    return label, org
+
+
+def codex_account():
+    """Codex signs in with ChatGPT, and its id_token names the account. A
+    machine on an API key has no account to name, which is worth saying: that
+    one is billed by the token, not covered by a subscription."""
+    auth = read_json_object(CODEX_AUTH_FILE)
+    tokens = auth.get("tokens")
+    claims = jwt_claims(tokens.get("id_token")) if isinstance(tokens, dict) else {}
+    label = clean_account(claims.get("email")) or clean_account(claims.get("name"))
+    if label:
+        return label, ""
+    if auth.get("OPENAI_API_KEY"):
+        return "API key", ""
+    return "", ""
+
+
+def grok_account():
+    """Grok Build keeps one entry per sign-in in $GROK_HOME/auth.json, each with
+    the account's email. More than one means an old login was never removed; the
+    newest is the one in use."""
+    best = None
+    for entry in read_json_object(GROK_AUTH_FILE).values():
+        if not isinstance(entry, dict):
+            continue
+        label = clean_account(entry.get("email")) or clean_account(entry.get("first_name"))
+        if not label:
+            continue
+        stamp = str(entry.get("create_time") or "")
+        if best is None or stamp > best[0]:
+            best = (stamp, label)
+    return (best[1], "") if best else ("", "")
+
+
+def kimi_account():
+    """Kimi has no login file; its /me answer (already fetched for the tier) names
+    the key's owner, and refresh_kimi_plan keeps that."""
+    return clean_account(read_json_object(OUT_DIR / "kimi-plan.json").get("account")), ""
+
+
+def safe_account(reader):
+    """An identity file that will not parse must never cost a collection."""
+    try:
+        label, detail = reader()
+    except Exception:
+        return "", ""
+    return label, detail
 
 
 refresh_kimi_plan()
@@ -2070,6 +2183,13 @@ payload = {
         "zcode": zcode_present,
     },
 }
+
+
+# Who is signed in, per subscription. Zcode has no documented identity file, so
+# its card stays quiet rather than guess.
+for _name, _reader in (("claude", claude_account), ("codex", codex_account), ("grok", grok_account),
+                       ("kimi", kimi_account), ("zcode", lambda: ("", ""))):
+    payload[_name]["accountLabel"], payload[_name]["accountDetail"] = safe_account(_reader)
 
 
 def write_atomic(target, text):

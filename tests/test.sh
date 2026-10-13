@@ -26,6 +26,8 @@ jq -e '
   .barWidget.allowMultiple == false and
   .barWidget.defaultSection == "center" and
   .barWidget.defaults.showLocal == true and
+  .barWidget.defaults.showAccounts == true and
+  (.barWidget.schema | map(.key) | index("showAccounts")) != null and
   (.barWidget.schema | map(.key) | index("localThreshold")) != null and
   (.barWidget.schema | map(.key) | index("ollamaUrl")) != null and
   (.barWidget.schema | map(.key) | index("localHost")) != null and
@@ -182,6 +184,15 @@ ok "a Grok plan change is named, keeps the whole week and is never mistaken for 
 python3 -m unittest discover -s tests -p 'test_grok_unknowns.py' -q >/dev/null \
   || fail "grok unknown-versus-zero tests"
 ok "a Grok figure that is absent reads as unknown, never as zero"
+
+# Which login each subscription is reading. The tools keep that next to the
+# tokens that grant access, so the same tests pin the other half: the label
+# comes out and no secret does, from the output, the state dir or stderr.
+python3 -m unittest discover -s tests -p 'test_accounts.py' -q >/dev/null \
+  || fail "account identity tests"
+grep -q accountLabel Service.qml && grep -q accountLine BarWidget.qml && grep -q card.account BurnPanel.qml \
+  || fail "the signed-in account is not wired through the QML"
+ok "each subscription names the account it is signed in to, and no token leaves its file"
 
 python3 -m unittest discover -s tests -p 'test_limits_selection.py' -q >/dev/null \
   || fail "limit source selection tests"

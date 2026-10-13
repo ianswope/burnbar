@@ -1371,6 +1371,9 @@ Panel {
     readonly property real splitSum: Math.max(1, panel.splitTotal(split))
     readonly property var models: panel.sortedModels(panel.sv(agent, "ByModel", ({})))
     readonly property string tier: (agent === "kimi" || agent === "grok") ? String(panel.sv(agent, "PlanTier", "")) : ""
+    // Who this subscription is signed in to. Fred, 2026-10-13: people run more than
+    // one subscription and want to see which login each card is reading.
+    readonly property string account: panel.widget.showAccounts ? String(panel.sv(agent, "Account", "")) : ""
     readonly property var planChange: agent === "grok" ? panel.sv("grok", "PlanChange", ({})) : ({})
     readonly property var glow: panel.glowFor(agent, primary, primaryUnknown)
     // Where this sub stands this second, and whether it is the one to use.
@@ -1438,6 +1441,16 @@ Panel {
         Caption { text: card.tier !== "" ? card.tier + " plan" : ""; visible: card.tier !== "" }
         Item { Layout.fillWidth: true }
         Pill { text: card.verdict.word; tone: card.verdict.color }
+      }
+
+      // ── who is signed in ───────────────────────────────────────────────
+      // One dim line under the name. Middle-elided so a long address keeps its
+      // domain, which is the part that tells two accounts apart.
+      Caption {
+        visible: card.account !== ""
+        Layout.fillWidth: true
+        text: card.account
+        elide: Text.ElideMiddle
       }
 
       // ── what to do about it ────────────────────────────────────────────
@@ -2112,6 +2125,13 @@ Panel {
               label: "Suggest a sub"
               note: "when nothing is over pace"
               onActivated: panel.flip("advice", true)
+            }
+            SetupRow {
+              mark: panel.optOn("showAccounts", true) ? "☑" : "☐"
+              on: panel.optOn("showAccounts", true)
+              label: "Account names"
+              note: "who each sub is signed in as"
+              onActivated: panel.flip("showAccounts", true)
             }
             SetupRow {
               mark: panel.optOn("showLocal", true) ? "☑" : "☐"

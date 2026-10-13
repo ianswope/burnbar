@@ -72,6 +72,18 @@ Item {
   // one lands, so the card has to say so.
   property string grokPlanTier: ""
   property var grokPlanChange: ({})
+  // Who each subscription is signed in to, as the tool itself records it: an email,
+  // else a name. Empty when the tool does not say. Never a token, never a key.
+  property string claudeAccount: ""
+  property string claudeAccountDetail: ""
+  property string codexAccount: ""
+  property string codexAccountDetail: ""
+  property string grokAccount: ""
+  property string grokAccountDetail: ""
+  property string kimiAccount: ""
+  property string kimiAccountDetail: ""
+  property string zcodeAccount: ""
+  property string zcodeAccountDetail: ""
   property var grokByModel: ({})
   // Codex had a split and no by-model: every other subscription carries both,
   // and a 2.0 card draws the same sections for all of them.
@@ -581,6 +593,16 @@ Item {
       root.zcodePeakAt = num(zc.peakAt)
       root.zcodeTrailing5 = num(zc.trailing ? zc.trailing.m5 : 0)
       root.zcodeTrailing60 = num(zc.trailing ? zc.trailing.m60 : 0)
+      root.claudeAccount = String(c.accountLabel || "")
+      root.claudeAccountDetail = String(c.accountDetail || "")
+      root.codexAccount = String(x.accountLabel || "")
+      root.codexAccountDetail = String(x.accountDetail || "")
+      root.grokAccount = String(g.accountLabel || "")
+      root.grokAccountDetail = String(g.accountDetail || "")
+      root.kimiAccount = String(km.accountLabel || "")
+      root.kimiAccountDetail = String(km.accountDetail || "")
+      root.zcodeAccount = String(zc.accountLabel || "")
+      root.zcodeAccountDetail = String(zc.accountDetail || "")
       var l = parsed.local && typeof parsed.local === "object" ? parsed.local : null
       root.localTokensAvailable = !!l && l.available === true
       root.localTokensReason = l ? String(l.reason || "") : "collector predates local token counting"

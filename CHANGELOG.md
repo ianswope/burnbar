@@ -1,5 +1,41 @@
 # Changelog
 
+## 2.5.0 (2026-10-13)
+
+### Added
+- **Every card says which account it is reading.** Claude on one login, Codex
+  on another, Grok on a third: the three cards looked alike apart from their
+  names, and a person with more than one subscription could not tell which
+  login Burn Bar was measuring. Each card now carries one dim line under the
+  name (`you@work.com`, middle-elided so a long address keeps its domain), and
+  the bar tooltip says `signed in as ...`. It is read from where each tool
+  already records it, with nothing new to sign in to:
+  - **Claude**: `oauthAccount` in `~/.claude.json`. The email, else the display
+    name. An organisation other than the default personal one rides in the
+    tooltip.
+  - **Codex**: the email in the ChatGPT `id_token` of `~/.codex/auth.json`. A
+    machine signed in with an API key says `API key`, because that one is billed
+    by the token rather than covered by a subscription.
+  - **Grok**: the email in `$GROK_HOME/auth.json`. If an old sign-in was never
+    removed, the newest one is used.
+  - **Kimi**: the owner of the API key, from the `/me` call Burn Bar already
+    makes for the plan tier. A cache written before this release is refreshed
+    once.
+  - **Zcode**: nothing. It has no documented identity file, so the card stays
+    quiet rather than guess.
+- **Account names** switch in SETUP (`showAccounts`, on by default) hides the
+  line and the tooltip text, for a screen share.
+
+### Privacy
+- Those login files also hold OAuth access and refresh tokens. Burn Bar takes
+  one display field from each and drops the rest: no token is copied, logged,
+  or written to `history.json`. The tests plant secrets in all three files and
+  fail if any appears in the output, the state directory or stderr.
+- The label is cleaned before it is drawn: one printable line, no control,
+  zero-width or bidi-override characters, at most 80 characters.
+- `history.json` (mode 0600) now holds the labels, and `kimi-plan.json` (0600)
+  the Kimi key owner's email or nickname. `SECURITY.md` says so.
+
 ## 2.4.0 (2026-10-12)
 
 ### Added
