@@ -872,15 +872,30 @@ if cache:
 zcode.files = len(touched)
 
 
-def grok_limits_from_log():
-    """Weekly credit %% from the newest billing snapshot in unified.jsonl."""
-    latest = None
-    measured = 0
+# Grok's billing snapshots are the one place it names the plan, so one read per
+# run answers both the weekly figure and the plan.
+GROK_BILLING = {"done": False, "entries": None}
+# Plan names Grok has been seen to report, lowest to highest, so a change can be
+# called an upgrade or a downgrade. A name that is not listed is still shown
+# exactly as Grok wrote it and a change to or from it is still noticed; it is
+# only left unranked. "Ultra" is Cursor's name for the SuperGrok Heavy sized
+# grant, not something Grok has been seen to report, so it is not guessed at.
+GROK_TIER_RANK = {"groklite": 1, "supergroklite": 1, "supergrok": 2,
+                  "grokplus": 3, "supergrokplus": 3, "supergrokheavy": 4}
+
+
+def grok_billing_entries():
+    """[(ts_ms, config, tier)] oldest first, from the "billing: fetched credits
+    config" records. None when the log cannot be read at all."""
+    if GROK_BILLING["done"]:
+        return GROK_BILLING["entries"]
+    GROK_BILLING["done"] = True
     try:
         with GROK_LOG.open("rb") as fh:
             data = fh.read()
     except OSError:
-        return [], 0, ""
+        return None
+    out = []
     for raw in data.split(b"\n"):
         if b"billing: fetched credits config" not in raw:
             continue
@@ -894,10 +909,59 @@ def grok_limits_from_log():
         config = ctx.get("config") if isinstance(ctx.get("config"), dict) else {}
         if not config:
             continue
-        latest = dict(config)
-        if ctx.get("subscriptionTier"):
-            latest["subscriptionTier"] = ctx.get("subscriptionTier")
-        measured = parse_ts(entry.get("ts")) or 0
+        out.append((parse_ts(entry.get("ts")) or 0, dict(config), str(ctx.get("subscriptionTier") or "")[:40]))
+    GROK_BILLING["entries"] = out
+    return out
+
+
+def grok_tier_short(label):
+    """"SuperGrok Heavy" -> "Heavy": the card already says GROK. A bare
+    "SuperGrok" has nothing left to strip and stays as it is."""
+    short = re.sub(r"^(super)?grok[\s_-]*", "", str(label or ""), flags=re.I).strip()
+    return short or str(label or "")
+
+
+def grok_tier_from_log():
+    """The plan Grok says this account is on, and the one before it when the log
+    shows a change: {label, short, since, from, fromShort, direction}. since is
+    the first snapshot that named the current plan. {} when no snapshot names one."""
+    entries = grok_billing_entries() or []
+    run, since, prev = "", 0, ""
+    for ts, _config, tier in entries:
+        if tier and tier != run:
+            prev, run, since = run, tier, ts
+    if not run:
+        return {}
+    old = GROK_TIER_RANK.get(re.sub(r"[^a-z0-9]", "", prev.lower())) if prev else None
+    new = GROK_TIER_RANK.get(re.sub(r"[^a-z0-9]", "", run.lower()))
+    direction = "" if not (old and new) else "up" if new > old else "down" if new < old else ""
+    return {"label": run, "short": grok_tier_short(run), "since": since, "from": prev,
+            "fromShort": grok_tier_short(prev) if prev else "", "direction": direction}
+
+
+def grok_plan_change(tier, limits, now):
+    """A plan change worth saying on the card: one that landed inside the
+    current weekly window. An older one already belongs to last week's numbers."""
+    if not tier.get("from") or not limits:
+        return None
+    end = parse_iso_ms((limits[0] or {}).get("resetsAt"))
+    start = end - 7 * 86400_000 if end else 0
+    if not start or not (start < tier["since"] <= now):
+        return None
+    return {"from": tier["fromShort"], "to": tier["short"], "at": tier["since"],
+            "direction": tier["direction"]}
+
+
+def grok_limits_from_log():
+    """Weekly credit %% from the newest billing snapshot in unified.jsonl."""
+    entries = grok_billing_entries()
+    if entries is None:
+        return [], 0, ""
+    latest = None
+    measured = 0
+    for ts, config, _tier in entries:
+        latest = config
+        measured = ts
     if not latest:
         return [], 0, "Grok billing data unavailable"
     period = latest.get("currentPeriod") if isinstance(latest.get("currentPeriod"), dict) else {}
@@ -948,6 +1012,11 @@ def with_grok_limits(agent_payload):
     # expired window read as a confident 0%. ~/.grok/logs/unified.jsonl is the
     # live source; choose between them on evidence rather than on order.
     chosen = pick_limits([limits_for("grok"), grok_limits_from_log()], now_ms)
+    tier = grok_tier_from_log()
+    agent_payload["planTier"] = tier.get("short", "")
+    agent_payload["planLabel"] = tier.get("label", "")
+    agent_payload["planChange"] = None
+    agent_payload["planChangedAt"] = 0
     if chosen is None:
         agent_payload["limits"] = []
         agent_payload["limitsMeasuredAt"] = 0
@@ -964,6 +1033,10 @@ def with_grok_limits(agent_payload):
     agent_payload["limitsMeasuredAt"] = measured
     agent_payload["limitsStatus"] = status
     agent_payload["limitsHelp"] = ""
+    change = grok_plan_change(tier, limits, now_ms)
+    if change:
+        agent_payload["planChange"] = change
+        agent_payload["planChangedAt"] = change["at"]
     return agent_payload
 
 
@@ -1568,7 +1641,7 @@ def burndown_series(points, resets, window, pct_now, since=0):
     return out
 
 
-def pace_for(row, key, live):
+def pace_for(row, key, live, rebase_at=0):
     """The pace block for one limit row. Unknowns are -1 (a rate we cannot
     measure) or 0 (a moment that does not apply), never an invented number."""
     pct = row.get("percent")
@@ -1589,7 +1662,10 @@ def pace_for(row, key, live):
            # A surprise reset inside this window: when it landed, and how long
            # the window is on paper. windowMs is then what is left to budget
            # across, gift to reset, so every clock downstream re-bases itself.
-           "giftAt": 0, "fullWindowMs": 0}
+           "giftAt": 0, "fullWindowMs": 0,
+           # A plan change inside this window: samples before it were measured
+           # against another pool and are not compared with the ones after.
+           "rebaseAt": 0}
     if not isinstance(pct, (int, float)) or pct < 0 or not resets:
         return out
     points = PACE["samples"].get(key) or []
@@ -1602,6 +1678,14 @@ def pace_for(row, key, live):
     if window <= 0 or left_ms <= 0:
         return out
     out["fullWindowMs"] = window
+    # Fred, 2026-10-12: SuperGrok Plus to Heavy, 14% to 8% with the reset date
+    # untouched. That is the same week re-expressed against a bigger pool, not a
+    # wiped meter, and reading it as a gift re-based the week on the upgrade
+    # (1% of the clock gone, Grok "8x over pace"). The window stays whole; only
+    # the samples that are comparable with the figure now are kept.
+    if rebase_at and resets - window < rebase_at <= now_ms:
+        points = [p for p in points if p[0] >= rebase_at]
+        out["rebaseAt"] = int(rebase_at)
     gift = gift_reset_at(points, resets, pct)
     if gift and resets - window < gift < resets:
         # Same reset date, brand new plan: an even spend now runs from the gift
@@ -1684,7 +1768,7 @@ def with_pace(agent_payload, agent_name):
         if not isinstance(row, dict):
             continue
         key = "%s|%s" % (agent_name, str(row.get("label") or "")[:64])
-        row["pace"] = pace_for(row, key, live)
+        row["pace"] = pace_for(row, key, live, int(agent_payload.get("planChangedAt") or 0))
         pct = row.get("percent")
         resets = window_id(parse_iso_ms(row.get("resetsAt")))
         if not isinstance(pct, (int, float)) or pct < 0 or not resets:

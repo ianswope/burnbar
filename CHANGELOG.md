@@ -1,5 +1,32 @@
 # Changelog
 
+## 2.4.0 (2026-10-12)
+
+### Added
+- **Burn Bar reads which Grok plan you are on.** Grok's billing snapshots
+  (`~/.grok/logs/unified.jsonl`) name the plan next to the weekly credit figure,
+  and Burn Bar dropped it. The Grok card now says it beside the name (`HEAVY
+  plan`, `Plus plan`), exactly as Grok words it, so a plan Burn Bar has never
+  seen (a renamed tier, a new one) shows up without a code change.
+- **A plan change inside the week is said on the card**, with the time:
+  `upgraded to Heavy Mon 8:58 PM`. Upgrade, downgrade or neither is only claimed
+  for names Grok has been seen to report (Lite, SuperGrok, Plus, Heavy); anything
+  else reads `plan now X`. Cursor's `Ultra` is the SuperGrok Heavy sized grant
+  and Grok reports `SuperGrok Heavy`, so that is what you see.
+
+### Fixed
+- **Changing plan no longer looks like a wiped meter.** SuperGrok Plus to Heavy
+  on 2026-10-12 moved the weekly figure from 14% to 8% with the reset date
+  untouched, because the same week was re-expressed against a bigger pool. 2.2.1's
+  gift-reset detector read that fall as a surprise reset and re-based the week on
+  the upgrade: 1% of the clock gone and Grok "8x over pace" with 71% of the week
+  behind it. A plan change now keeps the window whole and drops only the samples
+  measured against the old pool (the burndown starts at the change, and so does
+  the rate), so the verdict, the banked time and USE NEXT answer for the week you
+  actually have.
+- The collector reads the Grok billing log once per run instead of once per
+  question.
+
 ## 2.3.1 (2026-10-08)
 
 ### Fixed

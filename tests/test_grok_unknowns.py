@@ -15,8 +15,8 @@ REPO = Path(__file__).resolve().parents[1]
 
 def load(**extra):
     tree = ast.parse((REPO / "bin" / "burnbar-collect").read_text())
-    want_fn = {"grok_limits_from_log", "grok_points_from_updates", "parse_ts", "norm_percent", "count"}
-    want_const = {"MAX_TOKENS", "MALFORMED"}
+    want_fn = {"grok_limits_from_log", "grok_billing_entries", "grok_points_from_updates", "parse_ts", "norm_percent", "count"}
+    want_const = {"MAX_TOKENS", "MALFORMED", "GROK_BILLING"}
     body = [n for n in tree.body
             if isinstance(n, (ast.Import, ast.ImportFrom))
             or (isinstance(n, ast.FunctionDef) and n.name in want_fn)

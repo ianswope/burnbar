@@ -330,7 +330,10 @@ live:
   rollouts on the development machine).
 - **Grok**: `~/.grok/sessions/**/updates.jsonl`, `_meta.totalTokens` rise per
   `promptId` (estimate; Grok leaves no full API ledger). Weekly credits from
-  `~/.grok/logs/unified.jsonl` billing snapshots.
+  `~/.grok/logs/unified.jsonl` billing snapshots. The plan name (`SuperGrok
+  Heavy`, shown as `Heavy plan`) is in the same snapshot; a change inside the
+  week is noted on the card and the pace keeps the whole week but forgets the
+  samples measured against the old plan.
 - **Zcode**: `~/.zcode/cli/rollout/model-io-sess_*.jsonl`, one line per
   completed model request with its own usage object and the model id that
   served it. zcode's inputTokens is a bundle (input plus cache write plus

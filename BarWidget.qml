@@ -493,7 +493,8 @@ BarWidget {
     if (zone === zoneGrok)
       return "GROK  ·  " + compact(svc.grokTotal) + " tokens / last " + span
         + "\nnow " + compact(svc.grokLatest) + " this bucket  ·  " + svc.grokSessions + " sessions"
-        + "\nweekly quota " + quotaText(svc.grokWeekly, svc.grokLimitsMeasuredAt)
+        + "\n" + (svc.grokPlanTier !== "" ? svc.grokPlanTier + " plan  ·  " : "")
+        + "weekly quota " + quotaText(svc.grokWeekly, svc.grokLimitsMeasuredAt)
         + (svc.grokWeekly >= 0 && asOfText("grok") !== "" ? "  ·  " + asOfText("grok") : "")
         + (svc.grokLimitsStatus !== "" ? "\n" + svc.grokLimitsStatus : "")
         + adviceLines("grok")

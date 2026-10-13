@@ -1370,7 +1370,8 @@ Panel {
     readonly property var split: panel.sv(agent, "Split", ({}))
     readonly property real splitSum: Math.max(1, panel.splitTotal(split))
     readonly property var models: panel.sortedModels(panel.sv(agent, "ByModel", ({})))
-    readonly property string tier: agent === "kimi" ? String(panel.sv("kimi", "PlanTier", "")) : ""
+    readonly property string tier: (agent === "kimi" || agent === "grok") ? String(panel.sv(agent, "PlanTier", "")) : ""
+    readonly property var planChange: agent === "grok" ? panel.sv("grok", "PlanChange", ({})) : ({})
     readonly property var glow: panel.glowFor(agent, primary, primaryUnknown)
     // Where this sub stands this second, and whether it is the one to use.
     readonly property var live: { void panel.tick; return panel.widget.liveFor(agent, Date.now()) }
@@ -1607,8 +1608,15 @@ Panel {
                   // A surprise reset mid-window: say so, or a week that reads
                   // 11% on a Thursday night looks like a broken meter.
                   var gift = card.pace ? Number(card.pace.giftAt) || 0 : 0
+                  // A plan change mid-window moves the percentage without
+                  // anything being spent (14% to 8% on Plus to Heavy).
+                  var pc = card.planChange
+                  var change = pc && Number(pc.at) > 0
+                    ? (pc.direction === "up" ? "upgraded to " : pc.direction === "down" ? "moved down to " : "plan now ")
+                      + String(pc.to) + " " + Qt.formatDateTime(new Date(Number(pc.at)), "ddd h:mm AP") + "  ·  " : ""
                   return panel.widget.compact(card.total) + " tokens  ·  "
                     + (gift > 0 ? "bonus reset " + Qt.formatDateTime(new Date(gift), "ddd h:mm AP") + "  ·  " : "")
+                    + change
                     + "resets in " + panel.untilText(primary.resetsAt)
                 }
                 if (card.primary && !card.primaryUnknown)

@@ -67,6 +67,11 @@ Item {
   property real grokLastWriteAt: 0
   property bool grokLimitsLive: false
   property string grokLimitsStatus: ""
+  // The plan Grok's billing snapshots name ("Heavy"), and a plan change inside
+  // the current window: the percentage is re-expressed against the new pool when
+  // one lands, so the card has to say so.
+  property string grokPlanTier: ""
+  property var grokPlanChange: ({})
   property var grokByModel: ({})
   // Codex had a split and no by-model: every other subscription carries both,
   // and a 2.0 card draws the same sections for all of them.
@@ -533,6 +538,8 @@ Item {
       root.grokLimitsLive = g.limitsLive === true
       root.grokLimitsStatus = String(g.limitsStatus || "")
       root.grokLimitsHelp = String(g.limitsHelp || "")
+      root.grokPlanTier = String(g.planTier || "")
+      root.grokPlanChange = g.planChange && typeof g.planChange === "object" ? g.planChange : ({})
       root.grokByModel = g.byModel && typeof g.byModel === "object" ? g.byModel : ({})
       root.grokSplit = g.split && typeof g.split === "object" ? g.split : ({})
       root.grokTurns = num(g.turns)

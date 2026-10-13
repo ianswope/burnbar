@@ -172,6 +172,13 @@ python3 -m unittest discover -s tests -p 'test_pace_math.py' -q >/dev/null \
   || fail "pace math tests"
 ok "pace: ratio, allowance, projection, dry time and back-on-pace arithmetic"
 
+# A plan change (SuperGrok Plus to Heavy) moves the percentage with no reset and
+# no spend. The plan is read from the billing log and named on the card, and the
+# week keeps its whole length instead of being re-based as a "gift" reset.
+python3 -m unittest discover -s tests -p 'test_grok_plan.py' -q >/dev/null \
+  || fail "grok plan tests"
+ok "a Grok plan change is named, keeps the whole week and is never mistaken for a gift reset"
+
 python3 -m unittest discover -s tests -p 'test_grok_unknowns.py' -q >/dev/null \
   || fail "grok unknown-versus-zero tests"
 ok "a Grok figure that is absent reads as unknown, never as zero"
